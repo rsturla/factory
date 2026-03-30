@@ -8,7 +8,6 @@ import (
 
 	"github.com/hummingbird-org/factory/internal/authz"
 	cedarauthz "github.com/hummingbird-org/factory/internal/authz/cedar"
-	"github.com/hummingbird-org/factory/internal/authz/headergroups"
 	"github.com/hummingbird-org/factory/internal/authz/noop"
 	"github.com/hummingbird-org/factory/internal/authz/opa"
 )
@@ -17,9 +16,8 @@ import (
 //
 // Supported backends:
 //   - "noop" (default): allow everything
-//   - "headergroups": group-based rules from AUTHZ_CONFIG_FILE or AUTHZ_CONFIG
-//   - "opa": Open Policy Agent at AUTHZ_OPA_ENDPOINT
 //   - "cedar": Cedar policies from AUTHZ_POLICY_FILE (evaluated in-process)
+//   - "opa": Open Policy Agent at AUTHZ_OPA_ENDPOINT
 func CreateFromEnv() (authz.Authorizer, error) {
 	backend := os.Getenv("AUTHZ_BACKEND")
 	if backend == "" {
@@ -29,15 +27,6 @@ func CreateFromEnv() (authz.Authorizer, error) {
 	switch backend {
 	case "noop":
 		return noop.Authorizer{}, nil
-
-	case "headergroups":
-		if path := os.Getenv("AUTHZ_CONFIG_FILE"); path != "" {
-			return headergroups.NewFromFile(path)
-		}
-		if data := os.Getenv("AUTHZ_CONFIG"); data != "" {
-			return headergroups.NewFromJSON(data)
-		}
-		return nil, fmt.Errorf("headergroups backend requires AUTHZ_CONFIG_FILE or AUTHZ_CONFIG")
 
 	case "opa":
 		endpoint := os.Getenv("AUTHZ_OPA_ENDPOINT")
