@@ -38,9 +38,24 @@ func (s *Store) Pool() *pgxpool.Pool {
 }
 
 // Migrate applies the schema to the database.
+// Uses an advisory lock to prevent concurrent migration races.
 func (s *Store) Migrate(ctx context.Context) error {
-	_, err := s.pool.Exec(ctx, schemaSQL)
-	return err
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin migration tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// Advisory lock prevents concurrent migrations from racing.
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(42)"); err != nil {
+		return fmt.Errorf("advisory lock: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx, schemaSQL); err != nil {
+		return fmt.Errorf("apply schema: %w", err)
+	}
+
+	return tx.Commit(ctx)
 }
 
 // --- Work Queue Operations ---
