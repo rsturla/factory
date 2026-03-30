@@ -337,6 +337,15 @@ func (s *Store) ClaimBatch(ctx context.Context, queue string, batchSize int, wor
 			break
 		}
 
+		// Re-check concurrency after each claim to prevent over-claiming
+		// when multiple workers are claiming concurrently.
+		if len(claimed) > 0 {
+			currentInProgress, _ := s.countInProgressConsistent(ctx, queue)
+			if int(currentInProgress) >= cfg.MaxConcurrency {
+				break
+			}
+		}
+
 		var item ddbItem
 		if err := attributevalue.UnmarshalMap(rawItem, &item); err != nil {
 			continue

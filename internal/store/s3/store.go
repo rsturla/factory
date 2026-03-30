@@ -205,15 +205,32 @@ func metaTimePtr(md map[string]string, key string) *time.Time {
 func (s *Store) Enqueue(ctx context.Context, queue, key string, priority int, opts ...store.EnqueueOption) error {
 	o := store.ApplyEnqueueOptions(opts)
 
+	// Check if the item exists in ANY prefix (not just queued).
+	// If it's in-progress, succeeded, failed, or dead-lettered, don't overwrite.
+	for _, candidate := range []string{
+		inProgressKey(queue, key),
+		succeededKey(queue, key),
+		failedKey(queue, key),
+		deadLetterKey(queue, key),
+	} {
+		_, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
+			Bucket: &s.bucket,
+			Key:    &candidate,
+		})
+		if err == nil {
+			return nil // item exists in a non-pending state — no-op
+		}
+	}
+
 	objKey := queuedKey(queue, key)
 
-	// Check if already exists — merge priority upward.
+	// Check if already queued — merge priority upward.
 	head, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
 		Bucket: &s.bucket,
 		Key:    &objKey,
 	})
 	if err == nil {
-		// Exists — merge priority.
+		// Exists in queued — merge priority.
 		existing := decodeMeta(head.Metadata)
 		if priority > existing.Priority {
 			existing.Priority = priority
@@ -226,7 +243,7 @@ func (s *Store) Enqueue(ctx context.Context, queue, key string, priority int, op
 		return err
 	}
 
-	// Doesn't exist — create.
+	// Doesn't exist anywhere — create.
 	now := time.Now()
 	cfg := s.getConfig(queue)
 	meta := itemMeta{
@@ -311,6 +328,9 @@ func (s *Store) claimOne(ctx context.Context, queue string, item listedItem, wor
 	now := time.Now()
 	leaseExp := now.Add(leaseDuration)
 
+	srcKey := queuedKey(queue, item.key)
+	dstKey := inProgressKey(queue, item.key)
+
 	meta := item.meta
 	meta.Status = "claimed"
 	meta.Attempts++
@@ -318,20 +338,20 @@ func (s *Store) claimOne(ctx context.Context, queue string, item listedItem, wor
 	meta.LeaseExpires = &leaseExp
 	meta.ClaimedAt = &now
 
-	srcKey := queuedKey(queue, item.key)
-	dstKey := inProgressKey(queue, item.key)
-
-	// Write to in-progress.
+	// Atomic claim: PutObject with If-None-Match prevents two workers
+	// from both writing the in-progress object. Only the first one wins;
+	// the second gets 412 Precondition Failed.
 	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
-		Bucket:   &s.bucket,
-		Key:      &dstKey,
-		Metadata: encodeMeta(meta),
+		Bucket:      &s.bucket,
+		Key:         &dstKey,
+		Metadata:    encodeMeta(meta),
+		IfNoneMatch: aws.String("*"),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("put in-progress: %w", err)
+		return nil, fmt.Errorf("claim failed (likely already claimed): %w", err)
 	}
 
-	// Delete from queued. If this fails, the reaper will clean up.
+	// We won the claim — delete from queued.
 	s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: &s.bucket,
 		Key:    &srcKey,
@@ -730,7 +750,12 @@ func (s *Store) GetItem(ctx context.Context, queue, key string) (*store.WorkItem
 		})
 		if err == nil {
 			meta := decodeMeta(head.Metadata)
-			wi := metaToWorkItem(queue, key, entry.status, meta)
+			// Use metadata status if available (more precise than prefix).
+			status := entry.status
+			if meta.Status != "" {
+				status = store.Status(meta.Status)
+			}
+			wi := metaToWorkItem(queue, key, status, meta)
 			return &wi, nil
 		}
 	}
