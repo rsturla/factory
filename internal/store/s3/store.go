@@ -205,20 +205,31 @@ func metaTimePtr(md map[string]string, key string) *time.Time {
 func (s *Store) Enqueue(ctx context.Context, queue, key string, priority int, opts ...store.EnqueueOption) error {
 	o := store.ApplyEnqueueOptions(opts)
 
-	// Check if the item exists in ANY prefix (not just queued).
-	// If it's in-progress, succeeded, failed, or dead-lettered, don't overwrite.
+	// If the item is in-progress (claimed/running), don't overwrite.
+	_, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: &s.bucket,
+		Key:    aws.String(inProgressKey(queue, key)),
+	})
+	if err == nil {
+		return nil // in-flight — no-op
+	}
+
+	// If the item is in a terminal state (succeeded/failed/dead-letter),
+	// delete it so it can be re-enqueued as pending.
 	for _, candidate := range []string{
-		inProgressKey(queue, key),
 		succeededKey(queue, key),
 		failedKey(queue, key),
 		deadLetterKey(queue, key),
 	} {
-		_, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
+		_, headErr := s.client.HeadObject(ctx, &s3.HeadObjectInput{
 			Bucket: &s.bucket,
 			Key:    &candidate,
 		})
-		if err == nil {
-			return nil // item exists in a non-pending state — no-op
+		if headErr == nil {
+			s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+				Bucket: &s.bucket,
+				Key:    &candidate,
+			})
 		}
 	}
 

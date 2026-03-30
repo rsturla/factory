@@ -204,9 +204,21 @@ func (s *Store) Enqueue(ctx context.Context, queue, key string, priority int, op
 		INSERT INTO work_items (queue, key, priority, not_before, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?)
 		ON CONFLICT (queue, key) DO UPDATE SET
-			priority = MAX(work_items.priority, excluded.priority),
+			priority = CASE
+				WHEN work_items.status = 'pending'
+				THEN MAX(work_items.priority, excluded.priority)
+				ELSE excluded.priority
+			END,
+			status = 'pending',
+			attempts = CASE WHEN work_items.status = 'pending' THEN work_items.attempts ELSE 0 END,
+			not_before = excluded.not_before,
+			worker_id = NULL,
+			lease_expires = NULL,
+			error_message = NULL,
+			claimed_at = NULL,
+			completed_at = NULL,
 			updated_at = ?
-		WHERE work_items.status = 'pending'
+		WHERE work_items.status IN ('pending', 'succeeded', 'failed', 'dead_letter')
 	`, queue, key, priority, timePtrStr(o.NotBefore), now, now, now)
 
 	s.emit(store.Event{Queue: queue, Key: key, Status: "pending", Priority: priority})

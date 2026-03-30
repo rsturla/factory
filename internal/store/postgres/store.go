@@ -50,9 +50,21 @@ func (s *Store) Enqueue(ctx context.Context, queue, key string, priority int, op
 		INSERT INTO work_items (queue, key, priority, not_before)
 		VALUES ($1, $2, $3, $4)
 		ON CONFLICT (queue, key) DO UPDATE SET
-			priority = GREATEST(work_items.priority, EXCLUDED.priority),
+			priority = CASE
+				WHEN work_items.status = 'pending'
+				THEN GREATEST(work_items.priority, EXCLUDED.priority)
+				ELSE EXCLUDED.priority
+			END,
+			status = 'pending',
+			attempts = CASE WHEN work_items.status = 'pending' THEN work_items.attempts ELSE 0 END,
+			not_before = EXCLUDED.not_before,
+			worker_id = NULL,
+			lease_expires = NULL,
+			error_message = NULL,
+			claimed_at = NULL,
+			completed_at = NULL,
 			updated_at = now()
-		WHERE work_items.status = 'pending'
+		WHERE work_items.status IN ('pending', 'succeeded', 'failed', 'dead_letter')
 	`, queue, key, priority, o.NotBefore)
 	return err
 }

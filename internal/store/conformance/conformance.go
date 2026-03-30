@@ -447,13 +447,10 @@ func testReEnqueueAfterComplete(t *testing.T, setup func(t *testing.T) store.Int
 		t.Fatalf("re-enqueue after complete: %v", err)
 	}
 
-	// Should be claimable again.
+	// Should be claimable again — enqueue resets completed items to pending.
 	items, _ := s.ClaimBatch(ctx, "test", 1, "w2", time.Hour)
 	if len(items) != 1 {
-		// The item might not be claimable if the backend doesn't support
-		// re-enqueue after completion (S3/DynamoDB keep the completed item).
-		// This is acceptable — skip rather than fail.
-		t.Skipf("backend does not support re-enqueue after completion (got %d claimable)", len(items))
+		t.Fatalf("expected 1 claimable after re-enqueue, got %d", len(items))
 	}
 	if items[0].Key != "key-1" {
 		t.Errorf("expected key-1, got %s", items[0].Key)

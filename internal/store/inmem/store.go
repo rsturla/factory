@@ -55,10 +55,26 @@ func (s *Store) Enqueue(_ context.Context, queue, key string, priority int, opts
 
 	ik := itemKey{queue, key}
 	if existing, ok := s.items[ik]; ok {
-		if existing.Status == store.StatusPending {
+		switch existing.Status {
+		case store.StatusPending:
+			// Merge priority upward.
 			if priority > existing.Priority {
 				existing.Priority = priority
 			}
+			existing.UpdatedAt = time.Now()
+		case store.StatusClaimed, store.StatusRunning:
+			// In-flight — don't touch.
+		default:
+			// Succeeded, failed, dead_letter — reset to pending.
+			existing.Status = store.StatusPending
+			existing.Priority = priority
+			existing.Attempts = 0
+			existing.NotBefore = o.NotBefore
+			existing.WorkerID = ""
+			existing.LeaseExpires = nil
+			existing.ErrorMessage = ""
+			existing.ClaimedAt = nil
+			existing.CompletedAt = nil
 			existing.UpdatedAt = time.Now()
 		}
 		return nil

@@ -293,12 +293,48 @@ func (s *Store) Enqueue(ctx context.Context, queue, key string, priority int, op
 		ConditionExpression: aws.String("attribute_not_exists(PK)"),
 	})
 	if err != nil {
-		// Item already exists (not pending, or priority already >=). That's fine.
 		var condFail *dyntypes.ConditionalCheckFailedException
-		if ok := errors.As(err, &condFail); ok {
-			return nil
+		if !errors.As(err, &condFail) {
+			return fmt.Errorf("put item: %w", err)
 		}
-		return fmt.Errorf("put item: %w", err)
+
+		// Item exists. If it's in a terminal state, reset to pending.
+		// If it's pending (priority already >=) or in-flight, no-op.
+		_, resetErr := s.ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+			TableName: &s.table,
+			Key: map[string]dyntypes.AttributeValue{
+				"PK": &dyntypes.AttributeValueMemberS{Value: pk},
+				"SK": &dyntypes.AttributeValueMemberS{Value: itemSK},
+			},
+			ConditionExpression: aws.String("#status IN (:succeeded, :failed, :dead_letter)"),
+			UpdateExpression: aws.String(
+				"SET #status = :pending, #priority = :priority, #attempts = :zero, " +
+					"#gsi1pk = :gsi1pk, #gsi1sk = :gsi1sk, #updated = :now, " +
+					"#worker = :empty, #lease = :empty, #errmsg = :empty, " +
+					"#claimed_at = :empty, #completed_at = :empty, #not_before = :notbefore"),
+			ExpressionAttributeNames: map[string]string{
+				"#status": "status", "#priority": "priority", "#attempts": "attempts",
+				"#gsi1pk": "GSI1PK", "#gsi1sk": "GSI1SK", "#updated": "updated_at",
+				"#worker": "worker_id", "#lease": "lease_expires", "#errmsg": "error_message",
+				"#claimed_at": "claimed_at", "#completed_at": "completed_at", "#not_before": "not_before",
+			},
+			ExpressionAttributeValues: map[string]dyntypes.AttributeValue{
+				":succeeded":   &dyntypes.AttributeValueMemberS{Value: "succeeded"},
+				":failed":      &dyntypes.AttributeValueMemberS{Value: "failed"},
+				":dead_letter": &dyntypes.AttributeValueMemberS{Value: "dead_letter"},
+				":pending":     &dyntypes.AttributeValueMemberS{Value: "pending"},
+				":priority":    &dyntypes.AttributeValueMemberN{Value: strconv.Itoa(priority)},
+				":zero":        &dyntypes.AttributeValueMemberN{Value: "0"},
+				":gsi1pk":      &dyntypes.AttributeValueMemberS{Value: gsi1PK(queue, store.StatusPending)},
+				":gsi1sk":      &dyntypes.AttributeValueMemberS{Value: gsi1SK(priority, now)},
+				":now":         &dyntypes.AttributeValueMemberS{Value: timeStr(now)},
+				":empty":       &dyntypes.AttributeValueMemberS{Value: ""},
+				":notbefore":   &dyntypes.AttributeValueMemberS{Value: timePtrStr(o.NotBefore)},
+			},
+		})
+		// Ignore condition failure — means it's pending or in-flight, which is fine.
+		_ = resetErr
+		return nil
 	}
 	return nil
 }
