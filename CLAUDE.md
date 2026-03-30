@@ -1,6 +1,6 @@
 # Factory V2
 
-A pure workqueue platform for orchestrating software factory operations (RPM builds, container images, AI code generation, tests, MR reviews). Written in Go, backed by PostgreSQL, deployed on OpenShift.
+A pure workqueue platform for orchestrating software factory operations (RPM builds, container images, AI code generation, tests, MR reviews). Written in Go, deployed on OpenShift.
 
 ## Architecture
 
@@ -28,13 +28,17 @@ This repo is the **platform**. It must never contain domain-specific logic (RPM,
 
 - `internal/store/` — Unified persistence interface (`store.Interface`). All state flows through this.
 - `internal/store/postgres/` — PostgreSQL implementation (production).
-- `internal/store/inmem/` — In-memory implementation (testing).
-- `internal/store/conformance/` — Shared test suite. All store implementations must pass.
+- `internal/store/dynamodb/` — DynamoDB+S3 hybrid implementation (AWS serverless).
+- `internal/store/sqlite/` — SQLite implementation (single-node, edge, dev).
+- `internal/store/inmem/` — In-memory implementation (unit tests).
+- `internal/store/conformance/` — 31-test suite. All store implementations must pass.
+- `internal/storeutil/` — Store creation from `STORE_BACKEND` env var. Used by all binaries.
 - `internal/dispatcher/` — Dispatch/sweep/reaper/scale loops.
 - `internal/completion/` — Retry, backoff, dead-letter decisions.
 - `internal/compute/` — Compute provider abstraction (K8s, EC2, extensible).
 - `internal/admin/` — Admin API HTTP handlers.
 - `internal/webhook/` — Webhook handlers and key extractors.
+- `internal/metrics/` — Prometheus metric definitions.
 - `pkg/sdk/` — Public SDK: ProcessRequest, ProcessResponse, ReconcilerHandler, response builders.
 - `pkg/client/` — HTTP clients for inter-service communication.
 
@@ -43,16 +47,21 @@ This repo is the **platform**. It must never contain domain-specific logic (RPM,
 All persistence is abstracted behind `store.Interface`. To swap the storage backend:
 1. Implement `store.Interface` in a new package (e.g., `internal/store/cockroachdb/`).
 2. Pass the conformance test suite (`internal/store/conformance/`).
-3. Wire it up in the `cmd/` binaries.
+3. Add the backend to `internal/storeutil/create.go`.
 
 No other code needs to change — dispatcher, completion, webhook, admin all accept `store.Interface`.
 
+Current backends: `postgres` (default), `dynamodb`, `sqlite`, `inmem` (tests only).
+
 ## Testing
 
-- `go test ./...` must pass.
-- The conformance suite (`internal/store/conformance/`) is the source of truth for store behavior.
-- New store implementations must pass the full conformance suite (21 tests).
-- Integration tests requiring PostgreSQL should use build tags or skip when no database is available.
+- `go test ./...` must pass. Currently 171 tests.
+- The conformance suite (`internal/store/conformance/`) is the source of truth for store behavior (31 tests).
+- New store implementations must pass the full conformance suite.
+- PostgreSQL and DynamoDB conformance tests skip gracefully when services are unavailable.
+- Dispatcher tests use inmem store + httptest reconciler server.
+- Webhook tests verify HMAC signature verification and key extraction.
+- SDK tests verify the public API contract for reconciler authors.
 
 ## Building
 
@@ -63,27 +72,30 @@ go build ./cmd/admin/
 go build ./cmd/factoryctl/
 ```
 
-## Environment variables (dispatcher)
+Container images use `quay.io/hummingbird/go:1.26` for building and `quay.io/hummingbird/core-runtime:latest` for runtime.
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| QUEUE_NAME | yes | | Queue to dispatch |
-| DATABASE_URL | yes | | PostgreSQL connection string |
-| RECONCILER_ENDPOINT | yes | | Base URL of reconciler service |
-| WORKER_ID | no | hostname | Unique dispatcher ID |
-| COMPUTE_BACKEND | no | noop | "noop", "kubernetes", "ec2" |
-| MAX_CONCURRENCY | no | 10 | Max concurrent items |
-| MAX_RETRY | no | 5 | Max retry attempts |
-| BATCH_SIZE | no | 10 | Items per dispatch cycle |
-| DISPATCH_INTERVAL | no | 2s | Dispatch loop interval |
-| LEASE_DURATION | no | 1h | Lease for claimed items |
+## Running locally
 
-## Environment variables (receiver)
+```bash
+# PostgreSQL (recommended)
+cd deploy && docker compose -f docker-compose.postgres.yaml up --build -d
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| QUEUE_NAME | yes | | Queue to enqueue into |
-| DATABASE_URL | yes | | PostgreSQL connection string |
-| WEBHOOK_SECRET | no | | HMAC secret for signature verification |
-| WEBHOOK_SOURCE | no | github | "github" or "gitlab" |
-| LISTEN_ADDR | no | :8081 | HTTP listen address |
+# SQLite (no external deps)
+cd deploy && docker compose -f docker-compose.sqlite.yaml up --build -d
+
+# DynamoDB+S3 (uses DynamoDB Local + rustfs)
+cd deploy && docker compose -f docker-compose.dynamodb.yaml up --build -d
+
+# Stress test (10k items, max throughput)
+cd deploy && docker compose -f docker-compose.stress.yaml up --build -d
+```
+
+## Environment variables
+
+All binaries accept `STORE_BACKEND` (`postgres`, `dynamodb`, `sqlite`) plus backend-specific variables. See [README.md](README.md) for the full reference.
+
+## Documentation
+
+- [README.md](README.md) — project overview, quick start, full API reference
+- [docs/SCALING.md](docs/SCALING.md) — capacity planning for 500k+ jobs/day
+- [docs/MONITORING.md](docs/MONITORING.md) — Prometheus metrics, alerting, dashboards
