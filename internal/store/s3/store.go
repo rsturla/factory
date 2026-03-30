@@ -89,17 +89,22 @@ func NewWithClient(client *s3.Client, bucket string) *Store {
 
 func queuedPrefix(queue string) string      { return queue + "/queued/" }
 func inProgressPrefix(queue string) string   { return queue + "/in-progress/" }
+func succeededPrefix(queue string) string    { return queue + "/succeeded/" }
+func failedPrefix(queue string) string       { return queue + "/failed/" }
 func deadLetterPrefix(queue string) string   { return queue + "/dead-letter/" }
 func historyPrefix(queue, key string) string { return queue + "/history/" + key + "/" }
 
 func queuedKey(queue, key string) string      { return queuedPrefix(queue) + key }
 func inProgressKey(queue, key string) string   { return inProgressPrefix(queue) + key }
+func succeededKey(queue, key string) string    { return succeededPrefix(queue) + key }
+func failedKey(queue, key string) string       { return failedPrefix(queue) + key }
 func deadLetterKey(queue, key string) string   { return deadLetterPrefix(queue) + key }
 func queueConfigKey(queue string) string       { return "_queues/" + queue }
 
 // --- Metadata helpers ---
 
 type itemMeta struct {
+	Status       string // tracks sub-status within a prefix (e.g., "claimed" vs "running")
 	Priority     int
 	Attempts     int
 	MaxAttempts  int
@@ -118,6 +123,9 @@ func encodeMeta(m itemMeta) map[string]string {
 		"attempts":     strconv.Itoa(m.Attempts),
 		"max-attempts": strconv.Itoa(m.MaxAttempts),
 		"created-at":   m.CreatedAt.Format(time.RFC3339Nano),
+	}
+	if m.Status != "" {
+		md["status"] = m.Status
 	}
 	if m.NotBefore != nil {
 		md["not-before"] = m.NotBefore.Format(time.RFC3339Nano)
@@ -139,6 +147,7 @@ func encodeMeta(m itemMeta) map[string]string {
 
 func decodeMeta(md map[string]string) itemMeta {
 	m := itemMeta{}
+	m.Status = metaStr(md, "status")
 	if v, ok := md["priority-raw"]; ok {
 		m.Priority, _ = strconv.Atoi(v)
 	} else if v, ok := md["Priority-Raw"]; ok {
@@ -303,6 +312,7 @@ func (s *Store) claimOne(ctx context.Context, queue string, item listedItem, wor
 	leaseExp := now.Add(leaseDuration)
 
 	meta := item.meta
+	meta.Status = "claimed"
 	meta.Attempts++
 	meta.WorkerID = workerID
 	meta.LeaseExpires = &leaseExp
@@ -338,31 +348,37 @@ func (s *Store) claimOne(ctx context.Context, queue string, item listedItem, wor
 }
 
 func (s *Store) Complete(ctx context.Context, queue, key string) error {
-	return s.removeInProgress(ctx, queue, key, "succeeded")
+	return s.moveToTerminal(ctx, queue, key, "succeeded", succeededKey(queue, key), "")
 }
 
 func (s *Store) Fail(ctx context.Context, queue, key string, errMsg string) error {
-	// Keep in in-progress but update metadata — completion handler will decide requeue vs deadletter.
+	return s.moveToTerminal(ctx, queue, key, "failed", failedKey(queue, key), errMsg)
+}
+
+func (s *Store) moveToTerminal(ctx context.Context, queue, key, status, dstKey, errMsg string) error {
 	objKey := inProgressKey(queue, key)
 	head, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{Bucket: &s.bucket, Key: &objKey})
 	if err != nil {
 		return store.ErrNotFound
 	}
 	meta := decodeMeta(head.Metadata)
+	meta.Status = status
 	meta.ErrorMessage = errMsg
+	meta.LeaseExpires = nil
 
-	// Overwrite with updated metadata.
 	_, err = s.client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket:   &s.bucket,
-		Key:      &objKey,
+		Key:      &dstKey,
 		Metadata: encodeMeta(meta),
 	})
 	if err != nil {
-		return fmt.Errorf("update failed metadata: %w", err)
+		return fmt.Errorf("put %s: %w", status, err)
 	}
 
+	s.client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: &s.bucket, Key: &objKey})
+
 	s.writeHistory(ctx, queue, key, store.HistoryEntry{
-		Queue: queue, Key: key, FromStatus: "running", ToStatus: "failed",
+		Queue: queue, Key: key, FromStatus: "running", ToStatus: status,
 		ErrorMessage: errMsg, CreatedAt: time.Now(),
 	})
 	return nil
@@ -371,20 +387,22 @@ func (s *Store) Fail(ctx context.Context, queue, key string, errMsg string) erro
 func (s *Store) Requeue(ctx context.Context, queue, key string, opts ...store.RequeueOption) error {
 	o := store.ApplyRequeueOptions(opts)
 
-	objKey := inProgressKey(queue, key)
-	head, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{Bucket: &s.bucket, Key: &objKey})
+	// Find the item — could be in in-progress or failed.
+	srcKey, meta, err := s.findItem(ctx, queue, key,
+		inProgressKey(queue, key),
+		failedKey(queue, key),
+	)
 	if err != nil {
 		return store.ErrNotFound
 	}
 
-	meta := decodeMeta(head.Metadata)
+	meta.Status = "pending"
 	meta.WorkerID = ""
 	meta.LeaseExpires = nil
 	meta.ErrorMessage = ""
 	meta.ClaimedAt = nil
 	meta.NotBefore = o.NotBefore
 
-	// Write back to queued.
 	dstKey := queuedKey(queue, key)
 	_, err = s.client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket:   &s.bucket,
@@ -395,8 +413,7 @@ func (s *Store) Requeue(ctx context.Context, queue, key string, opts ...store.Re
 		return fmt.Errorf("put queued: %w", err)
 	}
 
-	// Delete from in-progress.
-	s.client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: &s.bucket, Key: &objKey})
+	s.client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: &s.bucket, Key: &srcKey})
 
 	s.writeHistory(ctx, queue, key, store.HistoryEntry{
 		Queue: queue, Key: key, FromStatus: "running", ToStatus: "pending", CreatedAt: time.Now(),
@@ -438,13 +455,15 @@ func (s *Store) RequeueUndoAttempt(ctx context.Context, queue, key string, notBe
 }
 
 func (s *Store) Deadletter(ctx context.Context, queue, key string) error {
-	objKey := inProgressKey(queue, key)
-	head, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{Bucket: &s.bucket, Key: &objKey})
+	srcKey, meta, err := s.findItem(ctx, queue, key,
+		inProgressKey(queue, key),
+		failedKey(queue, key),
+	)
 	if err != nil {
 		return store.ErrNotFound
 	}
 
-	meta := decodeMeta(head.Metadata)
+	meta.Status = "dead_letter"
 	meta.LeaseExpires = nil
 
 	dstKey := deadLetterKey(queue, key)
@@ -457,7 +476,7 @@ func (s *Store) Deadletter(ctx context.Context, queue, key string) error {
 		return fmt.Errorf("put dead-letter: %w", err)
 	}
 
-	s.client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: &s.bucket, Key: &objKey})
+	s.client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: &s.bucket, Key: &srcKey})
 
 	s.writeHistory(ctx, queue, key, store.HistoryEntry{
 		Queue: queue, Key: key, FromStatus: "failed", ToStatus: "dead_letter", CreatedAt: time.Now(),
@@ -487,7 +506,7 @@ func (s *Store) ExtendLease(ctx context.Context, queue, key string, duration tim
 func (s *Store) Transition(ctx context.Context, queue, key string, from, to store.Status, opts ...store.TransitionOption) error {
 	o := store.ApplyTransitionOptions(opts)
 
-	// Determine which prefix the item is currently in.
+	// Find the item and verify its current status via metadata.
 	srcKey := s.prefixForStatus(queue, key, from)
 	head, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{Bucket: &s.bucket, Key: &srcKey})
 	if err != nil {
@@ -495,6 +514,18 @@ func (s *Store) Transition(ctx context.Context, queue, key string, from, to stor
 	}
 
 	meta := decodeMeta(head.Metadata)
+
+	// Check actual status from metadata for conflict detection.
+	actualStatus := meta.Status
+	if actualStatus == "" {
+		// Infer from prefix.
+		actualStatus = string(from)
+	}
+	if actualStatus != string(from) {
+		return store.ErrConflict
+	}
+
+	meta.Status = string(to)
 	if o.WorkerID != "" {
 		meta.WorkerID = o.WorkerID
 	}
@@ -504,25 +535,27 @@ func (s *Store) Transition(ctx context.Context, queue, key string, from, to stor
 
 	dstKey := s.prefixForStatus(queue, key, to)
 	if srcKey == dstKey {
-		// Same prefix — just update metadata in place.
+		// Same prefix — update metadata in place.
 		_, err = s.client.PutObject(ctx, &s3.PutObjectInput{
 			Bucket:   &s.bucket,
 			Key:      &dstKey,
 			Metadata: encodeMeta(meta),
 		})
-		return err
+		if err != nil {
+			return err
+		}
+	} else {
+		// Move to new prefix.
+		_, err = s.client.PutObject(ctx, &s3.PutObjectInput{
+			Bucket:   &s.bucket,
+			Key:      &dstKey,
+			Metadata: encodeMeta(meta),
+		})
+		if err != nil {
+			return fmt.Errorf("put: %w", err)
+		}
+		s.client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: &s.bucket, Key: &srcKey})
 	}
-
-	// Move to new prefix.
-	_, err = s.client.PutObject(ctx, &s3.PutObjectInput{
-		Bucket:   &s.bucket,
-		Key:      &dstKey,
-		Metadata: encodeMeta(meta),
-	})
-	if err != nil {
-		return fmt.Errorf("put: %w", err)
-	}
-	s.client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: &s.bucket, Key: &srcKey})
 
 	s.writeHistory(ctx, queue, key, store.HistoryEntry{
 		Queue: queue, Key: key, FromStatus: string(from), ToStatus: string(to),
@@ -537,12 +570,27 @@ func (s *Store) prefixForStatus(queue, key string, status store.Status) string {
 		return queuedKey(queue, key)
 	case store.StatusClaimed, store.StatusRunning:
 		return inProgressKey(queue, key)
+	case store.StatusSucceeded:
+		return succeededKey(queue, key)
+	case store.StatusFailed:
+		return failedKey(queue, key)
 	case store.StatusDeadLetter:
 		return deadLetterKey(queue, key)
 	default:
-		// succeeded/failed items are deleted, so this shouldn't happen.
 		return inProgressKey(queue, key)
 	}
+}
+
+// findItem looks for an item across multiple candidate S3 keys and returns
+// the first match with its metadata.
+func (s *Store) findItem(ctx context.Context, queue, key string, candidates ...string) (string, itemMeta, error) {
+	for _, objKey := range candidates {
+		head, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{Bucket: &s.bucket, Key: &objKey})
+		if err == nil {
+			return objKey, decodeMeta(head.Metadata), nil
+		}
+	}
+	return "", itemMeta{}, store.ErrNotFound
 }
 
 // --- Queue Management ---
@@ -585,10 +633,14 @@ func (s *Store) CountByStatus(ctx context.Context, queue string) (map[store.Stat
 
 	pending, _ := s.countPrefix(ctx, queuedPrefix(queue))
 	inProgress, _ := s.countPrefix(ctx, inProgressPrefix(queue))
+	succeeded, _ := s.countPrefix(ctx, succeededPrefix(queue))
+	failed, _ := s.countPrefix(ctx, failedPrefix(queue))
 	deadLetter, _ := s.countPrefix(ctx, deadLetterPrefix(queue))
 
 	counts[store.StatusPending] = int64(pending)
-	counts[store.StatusClaimed] = int64(inProgress) // in-progress covers both claimed and running
+	counts[store.StatusClaimed] = int64(inProgress)
+	counts[store.StatusSucceeded] = int64(succeeded)
+	counts[store.StatusFailed] = int64(failed)
 	counts[store.StatusDeadLetter] = int64(deadLetter)
 
 	return counts, nil
@@ -602,6 +654,10 @@ func (s *Store) List(ctx context.Context, filter store.ListFilter) ([]store.Work
 			prefix = queuedPrefix(filter.Queue)
 		case store.StatusClaimed, store.StatusRunning:
 			prefix = inProgressPrefix(filter.Queue)
+		case store.StatusSucceeded:
+			prefix = succeededPrefix(filter.Queue)
+		case store.StatusFailed:
+			prefix = failedPrefix(filter.Queue)
 		case store.StatusDeadLetter:
 			prefix = deadLetterPrefix(filter.Queue)
 		default:
@@ -610,7 +666,11 @@ func (s *Store) List(ctx context.Context, filter store.ListFilter) ([]store.Work
 	} else {
 		// List all — merge from all prefixes.
 		var all []store.WorkItem
-		for _, pfx := range []string{queuedPrefix(filter.Queue), inProgressPrefix(filter.Queue), deadLetterPrefix(filter.Queue)} {
+		for _, pfx := range []string{
+			queuedPrefix(filter.Queue), inProgressPrefix(filter.Queue),
+			succeededPrefix(filter.Queue), failedPrefix(filter.Queue),
+			deadLetterPrefix(filter.Queue),
+		} {
 			items, _ := s.listItemsFromPrefix(ctx, filter.Queue, pfx)
 			all = append(all, items...)
 		}
@@ -660,6 +720,8 @@ func (s *Store) GetItem(ctx context.Context, queue, key string) (*store.WorkItem
 	}{
 		{queuedKey(queue, key), store.StatusPending},
 		{inProgressKey(queue, key), store.StatusClaimed},
+		{succeededKey(queue, key), store.StatusSucceeded},
+		{failedKey(queue, key), store.StatusFailed},
 		{deadLetterKey(queue, key), store.StatusDeadLetter},
 	} {
 		head, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
@@ -693,10 +755,14 @@ func (s *Store) ListQueues(ctx context.Context) ([]store.QueueInfo, error) {
 
 		pending, _ := s.countPrefix(ctx, queuedPrefix(name))
 		inProg, _ := s.countPrefix(ctx, inProgressPrefix(name))
+		succeeded, _ := s.countPrefix(ctx, succeededPrefix(name))
+		failed, _ := s.countPrefix(ctx, failedPrefix(name))
 		dead, _ := s.countPrefix(ctx, deadLetterPrefix(name))
 
 		qi.Counts["pending"] = pending
 		qi.Counts["claimed"] = inProg
+		qi.Counts["succeeded"] = succeeded
+		qi.Counts["failed"] = failed
 		qi.Counts["dead_letter"] = dead
 		qi.InProgress = inProg
 
@@ -836,21 +902,6 @@ func (s *Store) Subscribe(ctx context.Context, queue string) (<-chan store.Event
 
 // --- Internal helpers ---
 
-func (s *Store) removeInProgress(ctx context.Context, queue, key, historyStatus string) error {
-	objKey := inProgressKey(queue, key)
-	_, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{Bucket: &s.bucket, Key: &objKey})
-	if err != nil {
-		return store.ErrNotFound
-	}
-
-	s.client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: &s.bucket, Key: &objKey})
-
-	s.writeHistory(ctx, queue, key, store.HistoryEntry{
-		Queue: queue, Key: key, FromStatus: "running", ToStatus: historyStatus, CreatedAt: time.Now(),
-	})
-	return nil
-}
-
 type listedItem struct {
 	key  string
 	meta itemMeta
@@ -895,6 +946,10 @@ func (s *Store) listItemsFromPrefix(ctx context.Context, queue, prefix string) (
 	status := store.StatusPending
 	if strings.Contains(prefix, "/in-progress/") {
 		status = store.StatusClaimed
+	} else if strings.Contains(prefix, "/succeeded/") {
+		status = store.StatusSucceeded
+	} else if strings.Contains(prefix, "/failed/") {
+		status = store.StatusFailed
 	} else if strings.Contains(prefix, "/dead-letter/") {
 		status = store.StatusDeadLetter
 	}
