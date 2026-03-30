@@ -50,6 +50,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	cedarlib "github.com/cedar-policy/cedar-go"
 
@@ -72,13 +74,45 @@ func New(policies *cedarlib.PolicySet) *Authorizer {
 	return &Authorizer{policies: policies}
 }
 
-// NewFromFile loads Cedar policies from a file.
-func NewFromFile(path string) (*Authorizer, error) {
-	data, err := os.ReadFile(path)
+// NewFromPath loads Cedar policies from a file or a directory of .cedar files.
+func NewFromPath(path string) (*Authorizer, error) {
+	info, err := os.Stat(path)
 	if err != nil {
-		return nil, fmt.Errorf("read cedar policy: %w", err)
+		return nil, fmt.Errorf("stat cedar policy path: %w", err)
 	}
-	return NewFromBytes(path, data)
+
+	if !info.IsDir() {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read cedar policy: %w", err)
+		}
+		return NewFromBytes(path, data)
+	}
+
+	// Directory — load all .cedar files and concatenate.
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return nil, fmt.Errorf("read cedar policy dir: %w", err)
+	}
+
+	var combined strings.Builder
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".cedar") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(path, entry.Name()))
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", entry.Name(), err)
+		}
+		combined.Write(data)
+		combined.WriteString("\n")
+	}
+
+	if combined.Len() == 0 {
+		return nil, fmt.Errorf("no .cedar files found in %s", path)
+	}
+
+	return NewFromBytes(path, []byte(combined.String()))
 }
 
 // NewFromBytes parses Cedar policies from raw bytes.

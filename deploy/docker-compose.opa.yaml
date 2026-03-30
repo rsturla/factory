@@ -40,8 +40,8 @@ services:
     ports:
       - "8181:8181"
     volumes:
-      - ./policies:/policies:ro
-    command: ["run", "--server", "--addr", ":8181", "/policies/factory.rego"]
+      - ./policies/opa:/policies:ro
+    command: ["run", "--server", "--addr", ":8181", "/policies"]
     healthcheck:
       test: ["CMD", "/opa", "eval", "true"]
       interval: 2s

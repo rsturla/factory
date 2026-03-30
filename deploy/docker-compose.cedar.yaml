@@ -45,11 +45,11 @@ services:
     ports:
       - "18080:8080"
     volumes:
-      - ./policies:/policies:ro
+      - ./policies/cedar:/policies:ro
     environment:
       DATABASE_URL: postgres://factory:factory@postgres:5432/factory?sslmode=disable
       AUTHZ_BACKEND: cedar
-      AUTHZ_POLICY_FILE: /policies/factory.cedar
+      AUTHZ_POLICY_PATH: /policies
     depends_on:
       postgres:
         condition: service_healthy
@@ -63,13 +63,13 @@ services:
     ports:
       - "8081:8081"
     volumes:
-      - ./policies:/policies:ro
+      - ./policies/cedar:/policies:ro
     environment:
       QUEUE_NAME: echo
       DATABASE_URL: postgres://factory:factory@postgres:5432/factory?sslmode=disable
       LISTEN_ADDR: ":8081"
       AUTHZ_BACKEND: cedar
-      AUTHZ_POLICY_FILE: /policies/factory.cedar
+      AUTHZ_POLICY_PATH: /policies
     depends_on:
       postgres:
         condition: service_healthy

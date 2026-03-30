@@ -39,11 +39,15 @@ func CreateFromEnv() (authz.Authorizer, error) {
 		}), nil
 
 	case "cedar":
-		path := os.Getenv("AUTHZ_POLICY_FILE")
+		path := os.Getenv("AUTHZ_POLICY_PATH")
 		if path == "" {
-			return nil, fmt.Errorf("cedar backend requires AUTHZ_POLICY_FILE")
+			// Fall back to AUTHZ_POLICY_FILE for backward compatibility.
+			path = os.Getenv("AUTHZ_POLICY_FILE")
 		}
-		return cedarauthz.NewFromFile(path)
+		if path == "" {
+			return nil, fmt.Errorf("cedar backend requires AUTHZ_POLICY_PATH (file or directory)")
+		}
+		return cedarauthz.NewFromPath(path)
 
 	default:
 		return nil, fmt.Errorf("unsupported authz backend: %q", backend)
