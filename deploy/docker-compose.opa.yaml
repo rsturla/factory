@@ -1,0 +1,120 @@
+services:
+  # OPA authz — policies evaluated by external OPA server.
+  # Spoof identity via X-Forwarded-User and X-Forwarded-Groups headers.
+  #
+  # Test with:
+  #   # SRE (allowed everything):
+  #   curl -H "X-Forwarded-User: alice" -H "X-Forwarded-Groups: sre-team" \
+  #     http://localhost:18080/admin/queues
+  #
+  #   # echo-team (allowed to enqueue to echo queue):
+  #   curl -X POST -H "X-Forwarded-User: bob" -H "X-Forwarded-Groups: echo-team" \
+  #     http://localhost:8081/enqueue -d '{"key":"test","priority":0}'
+  #
+  #   # random user (read-only):
+  #   curl -H "X-Forwarded-User: eve" -H "X-Forwarded-Groups: other" \
+  #     http://localhost:18080/admin/queues
+  #
+  #   # random user (denied write):
+  #   curl -X POST -H "X-Forwarded-User: eve" -H "X-Forwarded-Groups: other" \
+  #     http://localhost:8081/enqueue -d '{"key":"test","priority":0}'
+
+  postgres:
+    image: docker.io/library/postgres:16
+    environment:
+      POSTGRES_DB: factory
+      POSTGRES_USER: factory
+      POSTGRES_PASSWORD: factory
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U factory"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  opa:
+    image: docker.io/openpolicyagent/opa:latest
+    ports:
+      - "8181:8181"
+    volumes:
+      - ./policies:/policies:ro
+    command: ["run", "--server", "--addr", ":8181", "/policies/factory.rego"]
+    healthcheck:
+      test: ["CMD", "/opa", "eval", "true"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  admin:
+    build:
+      context: ..
+      dockerfile: Containerfile
+      args:
+        BINARY: admin
+    ports:
+      - "18080:8080"
+    environment:
+      DATABASE_URL: postgres://factory:factory@postgres:5432/factory?sslmode=disable
+      AUTHZ_BACKEND: opa
+      AUTHZ_OPA_ENDPOINT: http://opa:8181
+    depends_on:
+      postgres:
+        condition: service_healthy
+      opa:
+        condition: service_healthy
+
+  echo-receiver:
+    build:
+      context: ..
+      dockerfile: Containerfile
+      args:
+        BINARY: receiver
+    ports:
+      - "8081:8081"
+    environment:
+      QUEUE_NAME: echo
+      DATABASE_URL: postgres://factory:factory@postgres:5432/factory?sslmode=disable
+      LISTEN_ADDR: ":8081"
+      AUTHZ_BACKEND: opa
+      AUTHZ_OPA_ENDPOINT: http://opa:8181
+    depends_on:
+      postgres:
+        condition: service_healthy
+      opa:
+        condition: service_healthy
+
+  echo-dispatcher:
+    build:
+      context: ..
+      dockerfile: Containerfile
+      args:
+        BINARY: dispatcher
+    environment:
+      QUEUE_NAME: echo
+      DATABASE_URL: postgres://factory:factory@postgres:5432/factory?sslmode=disable
+      RECONCILER_ENDPOINT: http://echo-reconciler:8082
+      STORE_BACKEND: postgres
+      COMPUTE_BACKEND: noop
+      MAX_CONCURRENCY: "5"
+      BATCH_SIZE: "5"
+      DISPATCH_INTERVAL: 2s
+      LEASE_DURATION: 5m
+    depends_on:
+      postgres:
+        condition: service_healthy
+      echo-reconciler:
+        condition: service_started
+
+  echo-reconciler:
+    build:
+      context: ..
+      dockerfile: examples/echo-reconciler/Containerfile
+    environment:
+      LISTEN_ADDR: ":8082"
+      PROCESS_DELAY: 1s
+
+volumes:
+  pgdata:

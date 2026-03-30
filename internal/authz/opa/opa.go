@@ -98,6 +98,10 @@ type opaResponse struct {
 }
 
 func (a *Authorizer) Authorize(ctx context.Context, req authz.Request) authz.Decision {
+	if req.User == "" {
+		return authz.Decision{Allowed: false, Reason: "unauthenticated"}
+	}
+
 	body, err := json.Marshal(opaInput{
 		Input: opaRequest{
 			User:   req.User,
