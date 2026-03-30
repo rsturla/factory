@@ -7,10 +7,10 @@ This document describes how Factory V2 scales from a single-node development set
 Each work type runs as an independent pipeline:
 
 ```
-webhook → receiver → PostgreSQL → dispatcher → reconciler pods
+your service → receiver /enqueue → PostgreSQL → dispatcher → reconciler pods
 ```
 
-- **Receiver**: stateless HTTP server, writes keys to the queue
+- **Receiver**: stateless HTTP server, accepts enqueue requests, writes keys to the queue
 - **Dispatcher**: singleton per queue, claims items via SKIP LOCKED, invokes reconcilers
 - **Reconciler**: stateless HTTP server, does the actual work (builds, tests, etc.)
 - **PostgreSQL**: shared by all queues, handles all durable state

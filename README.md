@@ -11,13 +11,13 @@ Factory is a **platform**, not an application. It provides scheduling, lifecycle
 Each work type runs as an independent pipeline:
 
 ```
-webhook → receiver → database → dispatcher → reconciler
+your service → receiver /enqueue → database → dispatcher → reconciler
 ```
 
 **Pure workqueue**: the queue stores only keys, never payloads. When a reconciler processes a key, it fetches current state from its own source of truth (Git, a registry, an API). This makes deduplication trivial and reconciliation naturally idempotent.
 
 **3-service split**: each pipeline consists of three cooperating services:
-- **Receiver** — accepts webhooks and API calls, writes keys to the queue
+- **Receiver** — accepts enqueue requests via HTTP, writes keys to the queue
 - **Dispatcher** — claims items, manages lifecycle (leases, retries, dead-lettering), invokes the reconciler
 - **Reconciler** — does the actual work, returns a result (completed, converged, requeue, fan-out)
 
@@ -66,7 +66,7 @@ factory-v2/
 │   │   ├── kubernetes/    Scale K8s Deployments
 │   │   └── ec2/           Scale AWS Auto Scaling Groups
 │   ├── admin/             Admin API HTTP handlers
-│   ├── webhook/           GitHub/GitLab webhook handlers
+│   ├── storeutil/         Store creation from env vars
 │   ├── metrics/           Prometheus metric definitions
 │   └── storeutil/         Store creation from env vars
 ├── pkg/
@@ -156,8 +156,6 @@ Available responses:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `QUEUE_NAME` | (required) | Queue to enqueue into |
-| `WEBHOOK_SECRET` | | HMAC-SHA256 secret for webhook verification |
-| `WEBHOOK_SOURCE` | `github` | `github` or `gitlab` |
 | `LISTEN_ADDR` | `:8081` | HTTP listen address |
 
 ### Dispatcher

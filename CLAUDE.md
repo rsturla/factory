@@ -37,7 +37,6 @@ This repo is the **platform**. It must never contain domain-specific logic (RPM,
 - `internal/completion/` — Retry, backoff, dead-letter decisions.
 - `internal/compute/` — Compute provider abstraction (K8s, EC2, extensible).
 - `internal/admin/` — Admin API HTTP handlers.
-- `internal/webhook/` — Webhook handlers and key extractors.
 - `internal/metrics/` — Prometheus metric definitions.
 - `pkg/sdk/` — Public SDK: ProcessRequest, ProcessResponse, ReconcilerHandler, response builders.
 - `pkg/client/` — HTTP clients for inter-service communication.
@@ -60,7 +59,6 @@ Current backends: `postgres` (default), `dynamodb`, `sqlite`, `inmem` (tests onl
 - New store implementations must pass the full conformance suite.
 - PostgreSQL and DynamoDB conformance tests skip gracefully when services are unavailable.
 - Dispatcher tests use inmem store + httptest reconciler server.
-- Webhook tests verify HMAC signature verification and key extraction.
 - SDK tests verify the public API contract for reconciler authors.
 
 ## Building
