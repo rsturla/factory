@@ -257,7 +257,7 @@ func (s *Store) ClaimBatch(ctx context.Context, queue string, batchSize int, wor
 		SELECT `+selectCols+` FROM work_items
 		WHERE queue = ? AND status = 'pending'
 		  AND (not_before IS NULL OR not_before <= ?)
-		ORDER BY priority DESC, created_at ASC
+		ORDER BY priority DESC, created_at ASC, key ASC
 		LIMIT ?
 	`, queue, nowStr, limit)
 	if err != nil {
@@ -595,7 +595,7 @@ func (s *Store) List(ctx context.Context, filter store.ListFilter) ([]store.Work
 		args = append(args, string(*filter.Status))
 	}
 
-	query += " ORDER BY priority DESC, created_at ASC"
+	query += " ORDER BY priority DESC, created_at ASC, key ASC"
 
 	limit := filter.Limit
 	if limit <= 0 {

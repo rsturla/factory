@@ -133,7 +133,10 @@ func (s *Store) ClaimBatch(_ context.Context, queue string, batchSize int, worke
 		if eligible[i].Priority != eligible[j].Priority {
 			return eligible[i].Priority > eligible[j].Priority
 		}
-		return eligible[i].CreatedAt.Before(eligible[j].CreatedAt)
+		if !eligible[i].CreatedAt.Equal(eligible[j].CreatedAt) {
+			return eligible[i].CreatedAt.Before(eligible[j].CreatedAt)
+		}
+		return eligible[i].Key < eligible[j].Key
 	})
 
 	if limit > len(eligible) {
@@ -387,7 +390,10 @@ func (s *Store) List(_ context.Context, filter store.ListFilter) ([]store.WorkIt
 		if items[i].Priority != items[j].Priority {
 			return items[i].Priority > items[j].Priority
 		}
-		return items[i].CreatedAt.Before(items[j].CreatedAt)
+		if !items[i].CreatedAt.Equal(items[j].CreatedAt) {
+			return items[i].CreatedAt.Before(items[j].CreatedAt)
+		}
+		return items[i].Key < items[j].Key
 	})
 
 	limit := filter.Limit

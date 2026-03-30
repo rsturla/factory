@@ -10,6 +10,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -104,7 +105,7 @@ func (s *Store) ClaimBatch(ctx context.Context, queue string, batchSize int, wor
 			WHERE queue = $3
 			  AND status = 'pending'
 			  AND (not_before IS NULL OR not_before <= now())
-			ORDER BY priority DESC, created_at ASC
+			ORDER BY priority DESC, created_at ASC, key ASC
 			FOR UPDATE SKIP LOCKED
 			LIMIT $4
 		)
@@ -131,6 +132,17 @@ func (s *Store) ClaimBatch(ctx context.Context, queue string, batchSize int, wor
 	if len(items) == 0 {
 		return nil, nil
 	}
+
+	// RETURNING doesn't preserve subquery ORDER BY, so sort explicitly.
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Priority != items[j].Priority {
+			return items[i].Priority > items[j].Priority
+		}
+		if !items[i].CreatedAt.Equal(items[j].CreatedAt) {
+			return items[i].CreatedAt.Before(items[j].CreatedAt)
+		}
+		return items[i].Key < items[j].Key
+	})
 
 	_, err = tx.Exec(ctx, `
 		UPDATE queue_state SET in_progress = in_progress + $1 WHERE queue = $2
@@ -470,7 +482,7 @@ func (s *Store) List(ctx context.Context, filter store.ListFilter) ([]store.Work
 		argIdx++
 	}
 
-	query += " ORDER BY priority DESC, created_at ASC"
+	query += " ORDER BY priority DESC, created_at ASC, key ASC"
 
 	limit := filter.Limit
 	if limit <= 0 {
@@ -512,13 +524,7 @@ func (s *Store) GetItem(ctx context.Context, queue, key string) (*store.WorkItem
 	`, queue, key)
 
 	var item store.WorkItem
-	err := row.Scan(
-		&item.Queue, &item.Key, &item.Status, &item.Priority,
-		&item.Attempts, &item.MaxAttempts, &item.NotBefore,
-		&item.LeaseExpires, &item.WorkerID, &item.ErrorMessage,
-		&item.CreatedAt, &item.UpdatedAt, &item.ClaimedAt, &item.CompletedAt,
-	)
-	if err != nil {
+	if err := scanWorkItem(row, &item); err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, store.ErrNotFound
 		}
@@ -701,12 +707,23 @@ type scannable interface {
 }
 
 func scanWorkItem(row scannable, item *store.WorkItem) error {
-	return row.Scan(
+	var workerID, errorMessage *string
+	err := row.Scan(
 		&item.Queue, &item.Key, &item.Status, &item.Priority,
 		&item.Attempts, &item.MaxAttempts, &item.NotBefore,
-		&item.LeaseExpires, &item.WorkerID, &item.ErrorMessage,
+		&item.LeaseExpires, &workerID, &errorMessage,
 		&item.CreatedAt, &item.UpdatedAt, &item.ClaimedAt, &item.CompletedAt,
 	)
+	if err != nil {
+		return err
+	}
+	if workerID != nil {
+		item.WorkerID = *workerID
+	}
+	if errorMessage != nil {
+		item.ErrorMessage = *errorMessage
+	}
+	return nil
 }
 
 // Verify interface compliance.

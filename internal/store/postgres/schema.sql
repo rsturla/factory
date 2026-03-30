@@ -28,8 +28,7 @@ CREATE TABLE IF NOT EXISTS work_items (
 -- Claim query: pending items ordered by priority (per queue)
 CREATE INDEX IF NOT EXISTS idx_work_items_claimable
     ON work_items (queue, priority DESC, created_at ASC)
-    WHERE status = 'pending'
-      AND (not_before IS NULL OR not_before <= now());
+    WHERE status = 'pending';
 
 -- Reaper: expired leases
 CREATE INDEX IF NOT EXISTS idx_work_items_lease_expires
