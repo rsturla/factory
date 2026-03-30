@@ -1,16 +1,12 @@
 // Command dispatcher is the factory's generic dispatch engine.
 //
-// It claims items from a PostgreSQL-backed work queue, invokes reconciler
-// services over HTTP, and manages the full lifecycle of work items. One
-// instance runs per reconciler queue (leader-elected singleton).
-//
 // Environment variables:
 //
 //	QUEUE_NAME            - The queue to dispatch (required)
 //	DATABASE_URL          - PostgreSQL connection string (required)
 //	RECONCILER_ENDPOINT   - Base URL of the reconciler service (required)
 //	WORKER_ID             - Unique identifier for this dispatcher (default: hostname)
-//	COMPUTE_BACKEND       - Compute provider: "noop", "kubernetes", "ec2" (default: "noop")
+//	COMPUTE_BACKEND       - "noop", "kubernetes", "ec2" (default: "noop")
 //	LISTEN_ADDR           - HTTP listen address for health/metrics (default: ":8080")
 //	MAX_CONCURRENCY       - Maximum concurrent items (default: 10)
 //	MAX_RETRY             - Maximum retry attempts (default: 5)
@@ -37,7 +33,7 @@ import (
 	computek8s "github.com/hummingbird-org/factory/internal/compute/kubernetes"
 	"github.com/hummingbird-org/factory/internal/dispatcher"
 	"github.com/hummingbird-org/factory/internal/metrics"
-	"github.com/hummingbird-org/factory/internal/workqueue/postgres"
+	storepostgres "github.com/hummingbird-org/factory/internal/store/postgres"
 	"github.com/hummingbird-org/factory/pkg/client"
 )
 
@@ -66,10 +62,9 @@ func main() {
 	}
 	defer pool.Close()
 
-	wq := postgres.New(pool)
+	s := storepostgres.New(pool)
 
-	// Run migrations on startup.
-	if err := wq.Migrate(ctx); err != nil {
+	if err := s.Migrate(ctx); err != nil {
 		slog.Error("migration failed", "error", err)
 		os.Exit(1)
 	}
@@ -81,7 +76,6 @@ func main() {
 	case "noop":
 		cp = compute.NoopProvider{}
 	case "kubernetes":
-		var err error
 		cp, err = computek8s.New(computek8s.Config{
 			Namespace:        envOr("K8S_NAMESPACE", "factory"),
 			DeploymentPrefix: envOr("K8S_DEPLOYMENT_PREFIX", "factory"),
@@ -92,7 +86,6 @@ func main() {
 			os.Exit(1)
 		}
 	case "ec2":
-		var err error
 		cp, err = computeec2.New(ctx, computeec2.Config{
 			ASGPrefix: envOr("EC2_ASG_PREFIX", "factory"),
 			Region:    os.Getenv("AWS_REGION"),
@@ -108,7 +101,6 @@ func main() {
 
 	metrics.RegisterDefaults()
 
-	// Start health/metrics server in the background.
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		if err := pool.Ping(r.Context()); err != nil {
@@ -131,13 +123,11 @@ func main() {
 		}
 	}()
 
-	// Run the dispatcher (blocks until context is cancelled).
-	d := dispatcher.New(wq, reconciler, cp, cfg)
+	d := dispatcher.New(s, reconciler, cp, cfg)
 	if err := d.Run(ctx); err != nil {
 		slog.Error("dispatcher error", "error", err)
 	}
 
-	// Shutdown health server.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	srv.Shutdown(shutdownCtx)
@@ -166,7 +156,6 @@ func envInt(key string, fallback int) int {
 	}
 	n, err := strconv.Atoi(v)
 	if err != nil {
-		slog.Warn("invalid integer env var, using default", "key", key, "value", v, "default", fallback)
 		return fallback
 	}
 	return n
@@ -179,15 +168,14 @@ func envDuration(key string, fallback time.Duration) time.Duration {
 	}
 	d, err := time.ParseDuration(v)
 	if err != nil {
-		slog.Warn("invalid duration env var, using default", "key", key, "value", v, "default", fallback)
 		return fallback
 	}
 	return d
 }
 
 func hostname() string {
-	h, err := os.Hostname()
-	if err != nil {
+	h, _ := os.Hostname()
+	if h == "" {
 		return "unknown"
 	}
 	return h

@@ -26,20 +26,32 @@ This repo is the **platform**. It must never contain domain-specific logic (RPM,
 
 ## Key packages
 
-- `internal/workqueue/` — Core interface and implementations (postgres, inmem).
-- `internal/workqueue/conformance/` — Shared test suite. Both implementations must pass.
+- `internal/store/` — Unified persistence interface (`store.Interface`). All state flows through this.
+- `internal/store/postgres/` — PostgreSQL implementation (production).
+- `internal/store/inmem/` — In-memory implementation (testing).
+- `internal/store/conformance/` — Shared test suite. All store implementations must pass.
 - `internal/dispatcher/` — Dispatch/sweep/reaper/scale loops.
 - `internal/completion/` — Retry, backoff, dead-letter decisions.
 - `internal/compute/` — Compute provider abstraction (K8s, EC2, extensible).
+- `internal/admin/` — Admin API HTTP handlers.
 - `internal/webhook/` — Webhook handlers and key extractors.
 - `pkg/sdk/` — Public SDK: ProcessRequest, ProcessResponse, ReconcilerHandler, response builders.
 - `pkg/client/` — HTTP clients for inter-service communication.
 
+## Data layer
+
+All persistence is abstracted behind `store.Interface`. To swap the storage backend:
+1. Implement `store.Interface` in a new package (e.g., `internal/store/cockroachdb/`).
+2. Pass the conformance test suite (`internal/store/conformance/`).
+3. Wire it up in the `cmd/` binaries.
+
+No other code needs to change — dispatcher, completion, webhook, admin all accept `store.Interface`.
+
 ## Testing
 
 - `go test ./...` must pass.
-- The conformance suite (`internal/workqueue/conformance/`) is the source of truth for workqueue behavior.
-- New workqueue implementations must pass the full conformance suite.
+- The conformance suite (`internal/store/conformance/`) is the source of truth for store behavior.
+- New store implementations must pass the full conformance suite (21 tests).
 - Integration tests requiring PostgreSQL should use build tags or skip when no database is available.
 
 ## Building

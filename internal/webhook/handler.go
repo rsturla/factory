@@ -14,31 +14,23 @@ import (
 	"strings"
 
 	"github.com/hummingbird-org/factory/internal/metrics"
-	"github.com/hummingbird-org/factory/internal/workqueue"
+	"github.com/hummingbird-org/factory/internal/store"
 )
 
-// KeyExtractor is a function that maps a webhook event to a queue key and priority.
-// Return empty key to skip enqueuing.
+// KeyExtractor maps a webhook event to a queue key and priority.
 type KeyExtractor func(eventType string, payload []byte) (key string, priority int, err error)
 
-// Handler is an HTTP handler that receives webhook events, verifies signatures,
-// extracts keys, and enqueues them.
+// Handler receives webhook events, verifies signatures, extracts keys, and enqueues them.
 type Handler struct {
 	queue     string
-	wq        workqueue.Interface
+	store     store.Interface
 	secret    string
 	extractor KeyExtractor
 }
 
 // NewHandler creates a webhook handler for the given queue.
-// If secret is non-empty, GitHub-style HMAC-SHA256 signature verification is performed.
-func NewHandler(queue string, wq workqueue.Interface, secret string, extractor KeyExtractor) http.Handler {
-	return &Handler{
-		queue:     queue,
-		wq:        wq,
-		secret:    secret,
-		extractor: extractor,
-	}
+func NewHandler(queue string, s store.Interface, secret string, extractor KeyExtractor) http.Handler {
+	return &Handler{queue: queue, store: s, secret: secret, extractor: extractor}
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -47,13 +39,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)) // 1MB limit
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
 		http.Error(w, "failed to read body", http.StatusBadRequest)
 		return
 	}
 
-	// Verify signature if secret is configured.
 	if h.secret != "" {
 		sig := r.Header.Get("X-Hub-Signature-256")
 		if !verifySignature(body, sig, h.secret) {
@@ -62,7 +53,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Determine event type from headers.
 	eventType := r.Header.Get("X-GitHub-Event")
 	if eventType == "" {
 		eventType = r.Header.Get("X-Gitlab-Event")
@@ -76,27 +66,24 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if key == "" {
-		// Extractor chose to skip this event.
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, `{"status":"skipped"}`)
 		return
 	}
 
-	if err := h.wq.Enqueue(r.Context(), h.queue, key, priority); err != nil {
+	if err := h.store.Enqueue(r.Context(), h.queue, key, priority); err != nil {
 		slog.Error("enqueue failed", "queue", h.queue, "key", key, "error", err)
 		http.Error(w, "enqueue failed", http.StatusInternalServerError)
 		return
 	}
 
 	metrics.ItemsEnqueued.WithLabelValues(h.queue).Inc()
-	slog.Info("enqueued from webhook", "queue", h.queue, "key", key, "priority", priority, "event", eventType)
+	slog.Info("enqueued from webhook", "queue", h.queue, "key", key, "priority", priority)
 
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprintf(w, `{"status":"enqueued","key":%q}`, key)
 }
 
-// verifySignature checks the GitHub-style HMAC-SHA256 signature.
-// Expected format: "sha256=<hex>"
 func verifySignature(body []byte, signature, secret string) bool {
 	if !strings.HasPrefix(signature, "sha256=") {
 		return false
@@ -107,19 +94,18 @@ func verifySignature(body []byte, signature, secret string) bool {
 	}
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(body)
-	expected := mac.Sum(nil)
-	return hmac.Equal(sigBytes, expected)
+	return hmac.Equal(sigBytes, mac.Sum(nil))
 }
 
-// EnqueueHandler is a simple HTTP handler for programmatic enqueue requests.
+// EnqueueHandler handles direct enqueue via HTTP POST.
 type EnqueueHandler struct {
 	queue string
-	wq    workqueue.Interface
+	store store.Interface
 }
 
-// NewEnqueueHandler creates a handler for direct enqueue via HTTP POST.
-func NewEnqueueHandler(queue string, wq workqueue.Interface) http.Handler {
-	return &EnqueueHandler{queue: queue, wq: wq}
+// NewEnqueueHandler creates a handler for direct enqueue.
+func NewEnqueueHandler(queue string, s store.Interface) http.Handler {
+	return &EnqueueHandler{queue: queue, store: s}
 }
 
 type enqueueRequest struct {
@@ -143,15 +129,12 @@ func (h *EnqueueHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.wq.Enqueue(r.Context(), h.queue, req.Key, req.Priority); err != nil {
-		slog.Error("enqueue failed", "queue", h.queue, "key", req.Key, "error", err)
+	if err := h.store.Enqueue(r.Context(), h.queue, req.Key, req.Priority); err != nil {
 		http.Error(w, "enqueue failed", http.StatusInternalServerError)
 		return
 	}
 
 	metrics.ItemsEnqueued.WithLabelValues(h.queue).Inc()
-	slog.Info("enqueued via API", "queue", h.queue, "key", req.Key, "priority", req.Priority)
-
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprintf(w, `{"status":"enqueued","key":%q}`, req.Key)
 }

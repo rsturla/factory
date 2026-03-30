@@ -1,9 +1,5 @@
 // Command receiver is the factory's generic webhook/enqueue service.
 //
-// It accepts work requests via webhooks or direct API calls and enqueues
-// keys into a PostgreSQL-backed work queue. One instance is deployed per
-// reconciler queue, configured via environment variables.
-//
 // Environment variables:
 //
 //	QUEUE_NAME        - The queue to enqueue into (required)
@@ -26,8 +22,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/hummingbird-org/factory/internal/metrics"
+	storepostgres "github.com/hummingbird-org/factory/internal/store/postgres"
 	"github.com/hummingbird-org/factory/internal/webhook"
-	"github.com/hummingbird-org/factory/internal/workqueue/postgres"
 )
 
 func main() {
@@ -47,9 +43,8 @@ func main() {
 	}
 	defer pool.Close()
 
-	wq := postgres.New(pool)
+	s := storepostgres.New(pool)
 
-	// Select key extractor based on webhook source.
 	var extractor webhook.KeyExtractor
 	switch webhookSource {
 	case "gitlab":
@@ -61,8 +56,8 @@ func main() {
 	metrics.RegisterDefaults()
 
 	mux := http.NewServeMux()
-	mux.Handle("POST /webhook", webhook.NewHandler(queueName, wq, webhookSecret, extractor))
-	mux.Handle("POST /enqueue", webhook.NewEnqueueHandler(queueName, wq))
+	mux.Handle("POST /webhook", webhook.NewHandler(queueName, s, webhookSecret, extractor))
+	mux.Handle("POST /enqueue", webhook.NewEnqueueHandler(queueName, s))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		if err := pool.Ping(r.Context()); err != nil {
 			http.Error(w, "db unhealthy", http.StatusServiceUnavailable)
@@ -91,7 +86,6 @@ func main() {
 		slog.Error("server error", "error", err)
 		os.Exit(1)
 	}
-	slog.Info("receiver stopped")
 }
 
 func requireEnv(key string) string {

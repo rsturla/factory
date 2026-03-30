@@ -1,9 +1,5 @@
 // Command admin is the factory's cross-queue admin API server.
 //
-// It provides operational visibility across all queues: listing queues,
-// inspecting items with history, retrying/cancelling items, listing workers,
-// and streaming real-time events via SSE.
-//
 // Environment variables:
 //
 //	DATABASE_URL  - PostgreSQL connection string (required)
@@ -24,6 +20,7 @@ import (
 
 	"github.com/hummingbird-org/factory/internal/admin"
 	"github.com/hummingbird-org/factory/internal/metrics"
+	storepostgres "github.com/hummingbird-org/factory/internal/store/postgres"
 )
 
 func main() {
@@ -40,15 +37,12 @@ func main() {
 	}
 	defer pool.Close()
 
+	s := storepostgres.New(pool)
 	metrics.RegisterDefaults()
 
 	mux := http.NewServeMux()
+	admin.NewHandler(s).Register(mux)
 
-	// Admin API routes.
-	adminHandler := admin.NewHandler(pool)
-	adminHandler.Register(mux)
-
-	// Health and metrics.
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		if err := pool.Ping(r.Context()); err != nil {
 			http.Error(w, "db unhealthy", http.StatusServiceUnavailable)
@@ -64,7 +58,6 @@ func main() {
 	mux.Handle("GET /metrics", promhttp.Handler())
 
 	srv := &http.Server{Addr: listenAddr, Handler: mux}
-
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -77,7 +70,6 @@ func main() {
 		slog.Error("server error", "error", err)
 		os.Exit(1)
 	}
-	slog.Info("admin api stopped")
 }
 
 func requireEnv(key string) string {
