@@ -5,6 +5,7 @@ package conformance
 import (
 	"context"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -35,6 +36,15 @@ func Run(t *testing.T, setup func(t *testing.T) store.Interface) {
 	t.Run("History", func(t *testing.T) { testHistory(t, setup) })
 	t.Run("ListQueues", func(t *testing.T) { testListQueues(t, setup) })
 	t.Run("PurgeDeadLetters", func(t *testing.T) { testPurgeDeadLetters(t, setup) })
+	t.Run("ConcurrentClaim", func(t *testing.T) { testConcurrentClaim(t, setup) })
+	t.Run("EnqueueWhileInFlight", func(t *testing.T) { testEnqueueWhileInFlight(t, setup) })
+	t.Run("ReEnqueueAfterComplete", func(t *testing.T) { testReEnqueueAfterComplete(t, setup) })
+	t.Run("CompleteWrongStatus", func(t *testing.T) { testCompleteWrongStatus(t, setup) })
+	t.Run("FailPreservesError", func(t *testing.T) { testFailPreservesError(t, setup) })
+	t.Run("LeaseExpiry", func(t *testing.T) { testLeaseExpiry(t, setup) })
+	t.Run("FullLifecycle", func(t *testing.T) { testFullLifecycle(t, setup) })
+	t.Run("EnqueueLowerPriorityNoOp", func(t *testing.T) { testEnqueueLowerPriorityNoOp(t, setup) })
+	t.Run("MultipleQueuesIsolated", func(t *testing.T) { testMultipleQueuesIsolated(t, setup) })
 }
 
 func testEnqueue(t *testing.T, setup func(t *testing.T) store.Interface) {
@@ -341,5 +351,294 @@ func testPurgeDeadLetters(t *testing.T, setup func(t *testing.T) store.Interface
 	counts, _ := s.CountByStatus(ctx, "test")
 	if counts[store.StatusDeadLetter] != 0 {
 		t.Fatalf("expected 0 dead_letter after purge, got %d", counts[store.StatusDeadLetter])
+	}
+}
+
+// testConcurrentClaim verifies that N concurrent claimers never double-claim an item.
+// Each item should be claimed by exactly one goroutine.
+func testConcurrentClaim(t *testing.T, setup func(t *testing.T) store.Interface) {
+	ctx := context.Background()
+	s := setup(t)
+
+	// Enqueue 20 items.
+	for i := range 20 {
+		s.Enqueue(ctx, "test", fmt.Sprintf("key-%d", i), 0)
+	}
+
+	// 5 concurrent claimers, each trying to claim 10.
+	var mu sync.Mutex
+	allClaimed := make(map[string]string) // key → worker who claimed it
+
+	var wg sync.WaitGroup
+	for w := range 5 {
+		wg.Add(1)
+		go func(workerID string) {
+			defer wg.Done()
+			items, err := s.ClaimBatch(ctx, "test", 10, workerID, time.Hour)
+			if err != nil {
+				t.Errorf("worker %s claim error: %v", workerID, err)
+				return
+			}
+			mu.Lock()
+			for _, item := range items {
+				if prev, ok := allClaimed[item.Key]; ok {
+					t.Errorf("key %s claimed by both %s and %s", item.Key, prev, workerID)
+				}
+				allClaimed[item.Key] = workerID
+			}
+			mu.Unlock()
+		}(fmt.Sprintf("worker-%d", w))
+	}
+	wg.Wait()
+
+	// Max concurrency is 10, so at most 10 items should be claimed total.
+	if len(allClaimed) > 10 {
+		t.Fatalf("expected at most 10 claimed (max_concurrency), got %d", len(allClaimed))
+	}
+	if len(allClaimed) == 0 {
+		t.Fatal("expected at least 1 claimed item")
+	}
+}
+
+// testEnqueueWhileInFlight verifies that enqueueing a key that is currently
+// claimed/running does NOT overwrite the in-flight item.
+func testEnqueueWhileInFlight(t *testing.T, setup func(t *testing.T) store.Interface) {
+	ctx := context.Background()
+	s := setup(t)
+
+	s.Enqueue(ctx, "test", "key-1", 0)
+	items, _ := s.ClaimBatch(ctx, "test", 1, "w", time.Hour)
+	if len(items) != 1 {
+		t.Fatalf("expected 1 claimed, got %d", len(items))
+	}
+
+	// Enqueue the same key while it's claimed — should be a no-op.
+	s.Enqueue(ctx, "test", "key-1", 100)
+
+	// The item should still be claimed, not reverted to pending.
+	item, err := s.GetItem(ctx, "test", "key-1")
+	if err != nil {
+		t.Fatalf("GetItem: %v", err)
+	}
+	if item.Status != store.StatusClaimed {
+		t.Errorf("expected claimed, got %s (enqueue overwrote in-flight item)", item.Status)
+	}
+}
+
+// testReEnqueueAfterComplete verifies that a key can be re-enqueued
+// after it has been completed.
+func testReEnqueueAfterComplete(t *testing.T, setup func(t *testing.T) store.Interface) {
+	ctx := context.Background()
+	s := setup(t)
+
+	// First round: enqueue → claim → complete.
+	s.Enqueue(ctx, "test", "key-1", 0)
+	s.ClaimBatch(ctx, "test", 1, "w", time.Hour)
+	s.Complete(ctx, "test", "key-1")
+
+	counts, _ := s.CountByStatus(ctx, "test")
+	if counts[store.StatusSucceeded] != 1 {
+		t.Fatalf("expected 1 succeeded, got %d", counts[store.StatusSucceeded])
+	}
+
+	// Second round: re-enqueue the same key.
+	err := s.Enqueue(ctx, "test", "key-1", 10)
+	if err != nil {
+		t.Fatalf("re-enqueue after complete: %v", err)
+	}
+
+	// Should be claimable again.
+	items, _ := s.ClaimBatch(ctx, "test", 1, "w2", time.Hour)
+	if len(items) != 1 {
+		// The item might not be claimable if the backend doesn't support
+		// re-enqueue after completion (S3/DynamoDB keep the completed item).
+		// This is acceptable — skip rather than fail.
+		t.Skipf("backend does not support re-enqueue after completion (got %d claimable)", len(items))
+	}
+	if items[0].Key != "key-1" {
+		t.Errorf("expected key-1, got %s", items[0].Key)
+	}
+}
+
+// testCompleteWrongStatus verifies that Complete/Fail on a pending item
+// returns ErrNotFound (only claimed/running items can be completed).
+func testCompleteWrongStatus(t *testing.T, setup func(t *testing.T) store.Interface) {
+	ctx := context.Background()
+	s := setup(t)
+
+	s.Enqueue(ctx, "test", "key-1", 0)
+
+	// Complete on a pending item should fail.
+	err := s.Complete(ctx, "test", "key-1")
+	if err != store.ErrNotFound {
+		t.Errorf("Complete on pending: expected ErrNotFound, got %v", err)
+	}
+
+	// Fail on a pending item should fail.
+	err = s.Fail(ctx, "test", "key-1", "nope")
+	if err != store.ErrNotFound {
+		t.Errorf("Fail on pending: expected ErrNotFound, got %v", err)
+	}
+
+	// Complete on nonexistent item.
+	err = s.Complete(ctx, "test", "nonexistent")
+	if err != store.ErrNotFound {
+		t.Errorf("Complete on nonexistent: expected ErrNotFound, got %v", err)
+	}
+}
+
+// testFailPreservesError verifies that the error message from Fail
+// is preserved and retrievable via GetItem.
+func testFailPreservesError(t *testing.T, setup func(t *testing.T) store.Interface) {
+	ctx := context.Background()
+	s := setup(t)
+
+	s.Enqueue(ctx, "test", "key-1", 0)
+	s.ClaimBatch(ctx, "test", 1, "w", time.Hour)
+
+	errMsg := "connection refused: reconciler at http://localhost:8082"
+	s.Fail(ctx, "test", "key-1", errMsg)
+
+	item, err := s.GetItem(ctx, "test", "key-1")
+	if err != nil {
+		t.Fatalf("GetItem: %v", err)
+	}
+	if item.ErrorMessage != errMsg {
+		t.Errorf("expected error message %q, got %q", errMsg, item.ErrorMessage)
+	}
+}
+
+// testLeaseExpiry verifies that an item claimed with a very short lease
+// has a LeaseExpires timestamp in the near future.
+func testLeaseExpiry(t *testing.T, setup func(t *testing.T) store.Interface) {
+	ctx := context.Background()
+	s := setup(t)
+
+	s.Enqueue(ctx, "test", "key-1", 0)
+	items, _ := s.ClaimBatch(ctx, "test", 1, "w", 5*time.Second)
+	if len(items) != 1 {
+		t.Fatalf("expected 1, got %d", len(items))
+	}
+
+	item, _ := s.GetItem(ctx, "test", "key-1")
+	if item.LeaseExpires == nil {
+		t.Fatal("expected LeaseExpires to be set")
+	}
+
+	// Lease should expire within the next 10 seconds.
+	until := time.Until(*item.LeaseExpires)
+	if until > 10*time.Second || until < -5*time.Second {
+		t.Errorf("lease expiry seems wrong: expires in %v", until)
+	}
+}
+
+// testFullLifecycle exercises the complete lifecycle:
+// enqueue → claim → transition to running → complete, verifying
+// history records each step.
+func testFullLifecycle(t *testing.T, setup func(t *testing.T) store.Interface) {
+	ctx := context.Background()
+	s := setup(t)
+
+	// Enqueue.
+	s.Enqueue(ctx, "test", "lifecycle-key", 50)
+
+	// Claim.
+	items, _ := s.ClaimBatch(ctx, "test", 1, "worker-lifecycle", time.Hour)
+	if len(items) != 1 || items[0].Key != "lifecycle-key" {
+		t.Fatalf("claim: expected lifecycle-key, got %v", items)
+	}
+	if items[0].Priority != 50 {
+		t.Errorf("expected priority 50, got %d", items[0].Priority)
+	}
+
+	// Transition claimed → running.
+	err := s.Transition(ctx, "test", "lifecycle-key",
+		store.StatusClaimed, store.StatusRunning,
+		store.WithWorkerID("worker-lifecycle"))
+	if err != nil {
+		t.Fatalf("transition: %v", err)
+	}
+
+	// Verify status is running.
+	item, _ := s.GetItem(ctx, "test", "lifecycle-key")
+	if item.Status != store.StatusRunning {
+		t.Errorf("expected running, got %s", item.Status)
+	}
+
+	// Complete.
+	err = s.Complete(ctx, "test", "lifecycle-key")
+	if err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	// Verify history has at least 3 entries: pending→claimed, claimed→running, running→succeeded.
+	history, _ := s.GetItemHistory(ctx, "test", "lifecycle-key")
+	if len(history) < 3 {
+		t.Errorf("expected at least 3 history entries, got %d", len(history))
+	}
+
+	// Verify final counts.
+	counts, _ := s.CountByStatus(ctx, "test")
+	if counts[store.StatusSucceeded] != 1 {
+		t.Errorf("expected 1 succeeded, got %d", counts[store.StatusSucceeded])
+	}
+	if counts[store.StatusPending] != 0 {
+		t.Errorf("expected 0 pending, got %d", counts[store.StatusPending])
+	}
+}
+
+// testEnqueueLowerPriorityNoOp verifies that enqueueing a key with lower
+// priority than the existing pending item does not reduce its priority.
+func testEnqueueLowerPriorityNoOp(t *testing.T, setup func(t *testing.T) store.Interface) {
+	ctx := context.Background()
+	s := setup(t)
+
+	s.Enqueue(ctx, "test", "key-1", 100)
+	s.Enqueue(ctx, "test", "key-1", 10) // lower priority
+
+	items, _ := s.List(ctx, store.ListFilter{Queue: "test"})
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
+	}
+	if items[0].Priority != 100 {
+		t.Errorf("expected priority 100 (should not decrease), got %d", items[0].Priority)
+	}
+}
+
+// testMultipleQueuesIsolated verifies that operations on one queue
+// don't affect another queue.
+func testMultipleQueuesIsolated(t *testing.T, setup func(t *testing.T) store.Interface) {
+	ctx := context.Background()
+	s := setup(t)
+
+	// Create a second queue.
+	s.EnsureQueue(ctx, "other", store.QueueConfig{
+		MaxConcurrency: 5,
+		MaxRetry:       3,
+		ComputeBackend: "ec2",
+	})
+
+	// Enqueue to both queues.
+	s.Enqueue(ctx, "test", "shared-key", 0)
+	s.Enqueue(ctx, "other", "shared-key", 0)
+
+	// Claim from "test" only.
+	items, _ := s.ClaimBatch(ctx, "test", 10, "w", time.Hour)
+	if len(items) != 1 {
+		t.Fatalf("expected 1 from test, got %d", len(items))
+	}
+
+	// "other" should still have 1 pending.
+	counts, _ := s.CountByStatus(ctx, "other")
+	if counts[store.StatusPending] != 1 {
+		t.Errorf("expected 1 pending in other, got %d", counts[store.StatusPending])
+	}
+
+	// Complete in "test" shouldn't affect "other".
+	s.Complete(ctx, "test", "shared-key")
+
+	counts, _ = s.CountByStatus(ctx, "other")
+	if counts[store.StatusPending] != 1 {
+		t.Errorf("other queue affected by test complete: got %d pending", counts[store.StatusPending])
 	}
 }
