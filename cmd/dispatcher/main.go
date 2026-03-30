@@ -3,8 +3,11 @@
 // Environment variables:
 //
 //	QUEUE_NAME            - The queue to dispatch (required)
-//	DATABASE_URL          - PostgreSQL connection string (required)
 //	RECONCILER_ENDPOINT   - Base URL of the reconciler service (required)
+//	STORE_BACKEND         - "postgres" or "s3" (default: "postgres")
+//	DATABASE_URL          - PostgreSQL connection string (required for postgres backend)
+//	S3_BUCKET             - S3 bucket name (required for s3 backend)
+//	S3_ENDPOINT           - S3 endpoint URL (optional, for MinIO etc.)
 //	WORKER_ID             - Unique identifier for this dispatcher (default: hostname)
 //	COMPUTE_BACKEND       - "noop", "kubernetes", "ec2" (default: "noop")
 //	LISTEN_ADDR           - HTTP listen address for health/metrics (default: ":8080")
@@ -33,16 +36,18 @@ import (
 	computek8s "github.com/hummingbird-org/factory/internal/compute/kubernetes"
 	"github.com/hummingbird-org/factory/internal/dispatcher"
 	"github.com/hummingbird-org/factory/internal/metrics"
+	"github.com/hummingbird-org/factory/internal/store"
 	storepostgres "github.com/hummingbird-org/factory/internal/store/postgres"
+	stores3 "github.com/hummingbird-org/factory/internal/store/s3"
 	"github.com/hummingbird-org/factory/pkg/client"
 )
 
 func main() {
 	queueName := requireEnv("QUEUE_NAME")
-	databaseURL := requireEnv("DATABASE_URL")
 	reconcilerEndpoint := requireEnv("RECONCILER_ENDPOINT")
 	workerID := envOr("WORKER_ID", hostname())
 	listenAddr := envOr("LISTEN_ADDR", ":8080")
+	storeBackend := envOr("STORE_BACKEND", "postgres")
 
 	cfg := dispatcher.DefaultConfig(queueName)
 	cfg.WorkerID = workerID
@@ -55,17 +60,41 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	pool, err := pgxpool.New(ctx, databaseURL)
-	if err != nil {
-		slog.Error("failed to connect to database", "error", err)
-		os.Exit(1)
-	}
-	defer pool.Close()
+	var s store.Interface
+	var pool *pgxpool.Pool
 
-	s := storepostgres.New(pool)
+	switch storeBackend {
+	case "postgres":
+		databaseURL := requireEnv("DATABASE_URL")
+		var err error
+		pool, err = pgxpool.New(ctx, databaseURL)
+		if err != nil {
+			slog.Error("failed to connect to database", "error", err)
+			os.Exit(1)
+		}
+		defer pool.Close()
+		pgStore := storepostgres.New(pool)
+		if err := pgStore.Migrate(ctx); err != nil {
+			slog.Error("migration failed", "error", err)
+			os.Exit(1)
+		}
+		s = pgStore
 
-	if err := s.Migrate(ctx); err != nil {
-		slog.Error("migration failed", "error", err)
+	case "s3":
+		bucket := requireEnv("S3_BUCKET")
+		s3Store, err := stores3.New(ctx, stores3.Config{
+			Bucket:   bucket,
+			Region:   os.Getenv("AWS_REGION"),
+			Endpoint: os.Getenv("S3_ENDPOINT"),
+		})
+		if err != nil {
+			slog.Error("failed to create s3 store", "error", err)
+			os.Exit(1)
+		}
+		s = s3Store
+
+	default:
+		slog.Error("unsupported store backend", "backend", storeBackend)
 		os.Exit(1)
 	}
 
@@ -76,22 +105,24 @@ func main() {
 	case "noop":
 		cp = compute.NoopProvider{}
 	case "kubernetes":
-		cp, err = computek8s.New(computek8s.Config{
+		var cpErr error
+		cp, cpErr = computek8s.New(computek8s.Config{
 			Namespace:        envOr("K8S_NAMESPACE", "factory"),
 			DeploymentPrefix: envOr("K8S_DEPLOYMENT_PREFIX", "factory"),
 			Kubeconfig:       os.Getenv("KUBECONFIG"),
 		})
-		if err != nil {
-			slog.Error("failed to create kubernetes provider", "error", err)
+		if cpErr != nil {
+			slog.Error("failed to create kubernetes provider", "error", cpErr)
 			os.Exit(1)
 		}
 	case "ec2":
-		cp, err = computeec2.New(ctx, computeec2.Config{
+		var cpErr error
+		cp, cpErr = computeec2.New(ctx, computeec2.Config{
 			ASGPrefix: envOr("EC2_ASG_PREFIX", "factory"),
 			Region:    os.Getenv("AWS_REGION"),
 		})
-		if err != nil {
-			slog.Error("failed to create ec2 provider", "error", err)
+		if cpErr != nil {
+			slog.Error("failed to create ec2 provider", "error", cpErr)
 			os.Exit(1)
 		}
 	default:
@@ -103,9 +134,11 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		if err := pool.Ping(r.Context()); err != nil {
-			http.Error(w, "db unhealthy", http.StatusServiceUnavailable)
-			return
+		if pool != nil {
+			if err := pool.Ping(r.Context()); err != nil {
+				http.Error(w, "db unhealthy", http.StatusServiceUnavailable)
+				return
+			}
 		}
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
