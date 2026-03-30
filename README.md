@@ -66,9 +66,13 @@ factory-v2/
 │   │   ├── kubernetes/    Scale K8s Deployments
 │   │   └── ec2/           Scale AWS Auto Scaling Groups
 │   ├── admin/             Admin API HTTP handlers
+│   ├── authz/             Pluggable authorization interface
+│   │   ├── noop/          Allow everything (default)
+│   │   ├── cedar/         Cedar policies (in-process)
+│   │   └── opa/           Open Policy Agent (external server)
 │   ├── storeutil/         Store creation from env vars
+│   ├── authzutil/         Authorizer creation from env vars
 │   ├── metrics/           Prometheus metric definitions
-│   └── storeutil/         Store creation from env vars
 ├── pkg/
 │   ├── sdk/               Public SDK for reconciler authors
 │   └── client/            HTTP clients for inter-service communication
@@ -78,7 +82,12 @@ factory-v2/
 │   ├── docker-compose.postgres.yaml
 │   ├── docker-compose.sqlite.yaml
 │   ├── docker-compose.dynamodb.yaml
-│   └── docker-compose.stress.yaml
+│   ├── docker-compose.cedar.yaml
+│   ├── docker-compose.opa.yaml
+│   ├── docker-compose.stress.yaml
+│   └── policies/
+│       ├── cedar/          Example Cedar policies
+│       └── opa/            Example OPA/Rego policies
 └── docs/
     ├── SCALING.md          Capacity planning and tuning guide
     └── MONITORING.md       Metrics, alerts, and dashboards
@@ -96,6 +105,16 @@ All persistence flows through `store.Interface`. Swap backends by setting `STORE
 | In-memory | (testing only) | Unit tests | <1us |
 
 All backends pass the same 31-test conformance suite. Adding a new backend means implementing `store.Interface` and passing the suite.
+
+## Authorization
+
+Authorization is pluggable via `AUTHZ_BACKEND` — same pattern as store backends. Authentication is handled externally by an OAuth proxy (e.g., OpenShift OAuth Proxy). See [docs/AUTH.md](docs/AUTH.md) for details.
+
+| Backend | `AUTHZ_BACKEND` | Description |
+|---------|-----------------|-------------|
+| Noop | `noop` (default) | Allow everything |
+| Cedar | `cedar` | In-process policy evaluation (`AUTHZ_CEDAR_POLICY_PATH`) |
+| OPA | `opa` | External OPA server (`AUTHZ_OPA_ENDPOINT`) |
 
 ## Writing a reconciler
 
@@ -150,6 +169,9 @@ Available responses:
 | `DDB_TABLE` | | DynamoDB table name (dynamodb backend) |
 | `S3_BUCKET` | | S3 bucket for history (dynamodb backend) |
 | `SQLITE_PATH` | | SQLite database path (sqlite backend) |
+| `AUTHZ_BACKEND` | `noop` | `noop`, `cedar`, or `opa` |
+| `AUTHZ_CEDAR_POLICY_PATH` | | Cedar policy file or directory (cedar backend) |
+| `AUTHZ_OPA_ENDPOINT` | | OPA server URL (opa backend) |
 
 ### Receiver
 
@@ -230,6 +252,7 @@ cd deploy && docker compose -f docker-compose.stress.yaml up --build -d
 
 - [SCALING.md](docs/SCALING.md) — capacity planning, HPA configuration, PostgreSQL tuning, queue isolation
 - [MONITORING.md](docs/MONITORING.md) — Prometheus metrics, alerting rules, Grafana dashboards, structured logging
+- [AUTH.md](docs/AUTH.md) — authentication, authorization, Cedar/OPA policy examples
 - [CLAUDE.md](CLAUDE.md) — development conventions and project principles
 
 ## Design influences

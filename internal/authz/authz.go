@@ -7,10 +7,10 @@
 //
 // Available backends:
 //   - noop: allow everything (development, testing)
-//   - headergroups: group-based rules from config (simple, no external deps)
-//   - opa: Open Policy Agent (full policy engine)
+//   - cedar: Cedar policies evaluated in-process (no external deps)
+//   - opa: Open Policy Agent (external server)
 //
-// Adding a new backend (e.g., Cedar):
+// Adding a new backend:
 //  1. Implement authz.Authorizer in a new package
 //  2. Register it in internal/authzutil/create.go
 package authz

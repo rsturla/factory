@@ -12,9 +12,9 @@
 //	DDB_TABLE           - DynamoDB table name (dynamodb backend)
 //	S3_BUCKET           - S3 bucket for history (dynamodb backend)
 //	SQLITE_PATH         - SQLite database path (sqlite backend)
-//	AUTHZ_BACKEND       - "noop", "headergroups", or "opa" (default: "noop")
-//	AUTHZ_CONFIG_FILE   - Path to headergroups rules JSON
-//	AUTHZ_OPA_ENDPOINT  - OPA server URL
+//	AUTHZ_BACKEND             - "noop", "cedar", or "opa" (default: "noop")
+//	AUTHZ_CEDAR_POLICY_PATH   - Cedar policy file or directory (cedar backend)
+//	AUTHZ_OPA_ENDPOINT        - OPA server URL (opa backend)
 //	LISTEN_ADDR         - HTTP listen address (default: ":8081")
 package main
 

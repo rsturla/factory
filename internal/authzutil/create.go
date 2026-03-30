@@ -16,7 +16,7 @@ import (
 //
 // Supported backends:
 //   - "noop" (default): allow everything
-//   - "cedar": Cedar policies from AUTHZ_POLICY_FILE (evaluated in-process)
+//   - "cedar": Cedar policies from AUTHZ_CEDAR_POLICY_PATH (evaluated in-process)
 //   - "opa": Open Policy Agent at AUTHZ_OPA_ENDPOINT
 func CreateFromEnv() (authz.Authorizer, error) {
 	backend := os.Getenv("AUTHZ_BACKEND")
@@ -39,13 +39,13 @@ func CreateFromEnv() (authz.Authorizer, error) {
 		}), nil
 
 	case "cedar":
-		path := os.Getenv("AUTHZ_POLICY_PATH")
+		path := os.Getenv("AUTHZ_CEDAR_POLICY_PATH")
 		if path == "" {
-			// Fall back to AUTHZ_POLICY_FILE for backward compatibility.
-			path = os.Getenv("AUTHZ_POLICY_FILE")
+			// Fall back to AUTHZ_CEDAR_POLICY_PATH for backward compatibility.
+			path = os.Getenv("AUTHZ_CEDAR_POLICY_PATH")
 		}
 		if path == "" {
-			return nil, fmt.Errorf("cedar backend requires AUTHZ_POLICY_PATH (file or directory)")
+			return nil, fmt.Errorf("cedar backend requires AUTHZ_CEDAR_POLICY_PATH (file or directory)")
 		}
 		return cedarauthz.NewFromPath(path)
 

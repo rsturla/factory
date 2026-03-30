@@ -37,6 +37,11 @@ This repo is the **platform**. It must never contain domain-specific logic (RPM,
 - `internal/completion/` — Retry, backoff, dead-letter decisions.
 - `internal/compute/` — Compute provider abstraction (K8s, EC2, extensible).
 - `internal/admin/` — Admin API HTTP handlers.
+- `internal/authz/` — Pluggable authorization interface (`authz.Authorizer`).
+- `internal/authz/noop/` — Allow everything (default).
+- `internal/authz/cedar/` — Cedar policies evaluated in-process.
+- `internal/authz/opa/` — Open Policy Agent via REST API.
+- `internal/authzutil/` — Authorizer creation from `AUTHZ_BACKEND` env var.
 - `internal/metrics/` — Prometheus metric definitions.
 - `pkg/sdk/` — Public SDK: ProcessRequest, ProcessResponse, ReconcilerHandler, response builders.
 - `pkg/client/` — HTTP clients for inter-service communication.
@@ -97,3 +102,4 @@ All binaries accept `STORE_BACKEND` (`postgres`, `dynamodb`, `sqlite`) plus back
 - [README.md](README.md) — project overview, quick start, full API reference
 - [docs/SCALING.md](docs/SCALING.md) — capacity planning for 500k+ jobs/day
 - [docs/MONITORING.md](docs/MONITORING.md) — Prometheus metrics, alerting, dashboards
+- [docs/AUTH.md](docs/AUTH.md) — authentication, authorization, Cedar/OPA policies
