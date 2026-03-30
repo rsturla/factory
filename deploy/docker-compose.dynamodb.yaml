@@ -1,0 +1,104 @@
+services:
+  # DynamoDB+S3 backend — uses DynamoDB Local + rustfs for local development.
+
+  dynamodb:
+    image: docker.io/amazon/dynamodb-local:latest
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/shell/ || exit 1"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  rustfs:
+    image: docker.io/rustfs/rustfs:latest
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/ || exit 0"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  # Create the S3 bucket on startup.
+  bucket-init:
+    image: docker.io/amazon/aws-cli:latest
+    entrypoint: >
+      sh -c "
+        aws --endpoint-url http://rustfs:9000 s3 mb s3://factory-history 2>/dev/null || true
+      "
+    environment:
+      AWS_ACCESS_KEY_ID: rustfsadmin
+      AWS_SECRET_ACCESS_KEY: rustfsadmin
+      AWS_DEFAULT_REGION: us-east-1
+    depends_on:
+      rustfs:
+        condition: service_healthy
+
+  echo-dispatcher:
+    build:
+      context: ..
+      dockerfile: Containerfile
+      args:
+        BINARY: dispatcher
+    ports:
+      - "8083:8083"
+    environment:
+      QUEUE_NAME: echo
+      STORE_BACKEND: dynamodb
+      DDB_TABLE: factory-echo
+      DDB_ENDPOINT: http://dynamodb:8000
+      S3_BUCKET: factory-history
+      S3_ENDPOINT: http://rustfs:9000
+      AWS_ACCESS_KEY_ID: rustfsadmin
+      AWS_SECRET_ACCESS_KEY: rustfsadmin
+      AWS_REGION: us-east-1
+      RECONCILER_ENDPOINT: http://echo-reconciler:8082
+      COMPUTE_BACKEND: noop
+      LISTEN_ADDR: ":8083"
+      MAX_CONCURRENCY: "5"
+      BATCH_SIZE: "5"
+      DISPATCH_INTERVAL: 2s
+      LEASE_DURATION: 5m
+    depends_on:
+      dynamodb:
+        condition: service_healthy
+      bucket-init:
+        condition: service_completed_successfully
+      echo-reconciler:
+        condition: service_started
+
+  echo-receiver:
+    build:
+      context: ..
+      dockerfile: Containerfile
+      args:
+        BINARY: receiver
+    ports:
+      - "8081:8081"
+    environment:
+      QUEUE_NAME: echo
+      STORE_BACKEND: dynamodb
+      DDB_TABLE: factory-echo
+      DDB_ENDPOINT: http://dynamodb:8000
+      S3_BUCKET: factory-history
+      S3_ENDPOINT: http://rustfs:9000
+      AWS_ACCESS_KEY_ID: rustfsadmin
+      AWS_SECRET_ACCESS_KEY: rustfsadmin
+      AWS_REGION: us-east-1
+      LISTEN_ADDR: ":8081"
+    depends_on:
+      dynamodb:
+        condition: service_healthy
+      bucket-init:
+        condition: service_completed_successfully
+
+  echo-reconciler:
+    build:
+      context: ..
+      dockerfile: examples/echo-reconciler/Containerfile
+    environment:
+      LISTEN_ADDR: ":8082"
+      PROCESS_DELAY: 2s

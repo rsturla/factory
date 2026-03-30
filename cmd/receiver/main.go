@@ -3,7 +3,11 @@
 // Environment variables:
 //
 //	QUEUE_NAME        - The queue to enqueue into (required)
-//	DATABASE_URL      - PostgreSQL connection string (required)
+//	STORE_BACKEND     - "postgres", "dynamodb", or "sqlite" (default: "postgres")
+//	DATABASE_URL      - PostgreSQL connection string (postgres backend)
+//	DDB_TABLE         - DynamoDB table name (dynamodb backend)
+//	S3_BUCKET         - S3 bucket for history (dynamodb backend)
+//	SQLITE_PATH       - SQLite database path (sqlite backend)
 //	WEBHOOK_SECRET    - HMAC secret for webhook signature verification
 //	WEBHOOK_SOURCE    - "github" or "gitlab" (default: "github")
 //	LISTEN_ADDR       - HTTP listen address (default: ":8081")
@@ -18,17 +22,15 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/hummingbird-org/factory/internal/metrics"
-	storepostgres "github.com/hummingbird-org/factory/internal/store/postgres"
+	"github.com/hummingbird-org/factory/internal/storeutil"
 	"github.com/hummingbird-org/factory/internal/webhook"
 )
 
 func main() {
 	queueName := requireEnv("QUEUE_NAME")
-	databaseURL := requireEnv("DATABASE_URL")
 	webhookSecret := os.Getenv("WEBHOOK_SECRET")
 	webhookSource := envOr("WEBHOOK_SOURCE", "github")
 	listenAddr := envOr("LISTEN_ADDR", ":8081")
@@ -36,14 +38,14 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	pool, err := pgxpool.New(ctx, databaseURL)
+	result, err := storeutil.CreateFromEnv(ctx)
 	if err != nil {
-		slog.Error("failed to connect to database", "error", err)
+		slog.Error("failed to create store", "error", err)
 		os.Exit(1)
 	}
-	defer pool.Close()
-
-	s := storepostgres.New(pool)
+	if result.Pool != nil {
+		defer result.Pool.Close()
+	}
 
 	var extractor webhook.KeyExtractor
 	switch webhookSource {
@@ -56,13 +58,9 @@ func main() {
 	metrics.RegisterDefaults()
 
 	mux := http.NewServeMux()
-	mux.Handle("POST /webhook", webhook.NewHandler(queueName, s, webhookSecret, extractor))
-	mux.Handle("POST /enqueue", webhook.NewEnqueueHandler(queueName, s))
+	mux.Handle("POST /webhook", webhook.NewHandler(queueName, result.Store, webhookSecret, extractor))
+	mux.Handle("POST /enqueue", webhook.NewEnqueueHandler(queueName, result.Store))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		if err := pool.Ping(r.Context()); err != nil {
-			http.Error(w, "db unhealthy", http.StatusServiceUnavailable)
-			return
-		}
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 	})

@@ -5,12 +5,12 @@
 //	QUEUE_NAME            - The queue to dispatch (required)
 //	RECONCILER_ENDPOINT   - Base URL of the reconciler service (required)
 //	STORE_BACKEND         - "postgres", "dynamodb", or "sqlite" (default: "postgres")
-//	DATABASE_URL          - PostgreSQL connection string (required for postgres backend)
-//	DDB_TABLE             - DynamoDB table name (required for dynamodb backend)
-//	S3_BUCKET             - S3 bucket for history (required for dynamodb backend)
+//	DATABASE_URL          - PostgreSQL connection string (postgres backend)
+//	DDB_TABLE             - DynamoDB table name (dynamodb backend)
+//	S3_BUCKET             - S3 bucket for history (dynamodb backend)
 //	DDB_ENDPOINT          - DynamoDB endpoint (optional, for local dev)
 //	S3_ENDPOINT           - S3 endpoint (optional, for MinIO etc.)
-//	SQLITE_PATH           - SQLite database path (required for sqlite backend)
+//	SQLITE_PATH           - SQLite database path (sqlite backend)
 //	WORKER_ID             - Unique identifier for this dispatcher (default: hostname)
 //	COMPUTE_BACKEND       - "noop", "kubernetes", "ec2" (default: "noop")
 //	LISTEN_ADDR           - HTTP listen address for health/metrics (default: ":8080")
@@ -31,7 +31,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/hummingbird-org/factory/internal/compute"
@@ -39,10 +38,7 @@ import (
 	computek8s "github.com/hummingbird-org/factory/internal/compute/kubernetes"
 	"github.com/hummingbird-org/factory/internal/dispatcher"
 	"github.com/hummingbird-org/factory/internal/metrics"
-	"github.com/hummingbird-org/factory/internal/store"
-	storeddb "github.com/hummingbird-org/factory/internal/store/dynamodb"
-	storepostgres "github.com/hummingbird-org/factory/internal/store/postgres"
-	storesqlite "github.com/hummingbird-org/factory/internal/store/sqlite"
+	"github.com/hummingbird-org/factory/internal/storeutil"
 	"github.com/hummingbird-org/factory/pkg/client"
 )
 
@@ -51,7 +47,6 @@ func main() {
 	reconcilerEndpoint := requireEnv("RECONCILER_ENDPOINT")
 	workerID := envOr("WORKER_ID", hostname())
 	listenAddr := envOr("LISTEN_ADDR", ":8080")
-	storeBackend := envOr("STORE_BACKEND", "postgres")
 
 	cfg := dispatcher.DefaultConfig(queueName)
 	cfg.WorkerID = workerID
@@ -64,55 +59,13 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	var s store.Interface
-	var pool *pgxpool.Pool
-
-	switch storeBackend {
-	case "postgres":
-		databaseURL := requireEnv("DATABASE_URL")
-		var err error
-		pool, err = pgxpool.New(ctx, databaseURL)
-		if err != nil {
-			slog.Error("failed to connect to database", "error", err)
-			os.Exit(1)
-		}
-		defer pool.Close()
-		pgStore := storepostgres.New(pool)
-		if err := pgStore.Migrate(ctx); err != nil {
-			slog.Error("migration failed", "error", err)
-			os.Exit(1)
-		}
-		s = pgStore
-
-	case "dynamodb":
-		ddbStore, err := storeddb.New(ctx, storeddb.Config{
-			TableName:     requireEnv("DDB_TABLE"),
-			HistoryBucket: requireEnv("S3_BUCKET"),
-			Region:        os.Getenv("AWS_REGION"),
-			DDBEndpoint:   os.Getenv("DDB_ENDPOINT"),
-			S3Endpoint:    os.Getenv("S3_ENDPOINT"),
-		})
-		if err != nil {
-			slog.Error("failed to create dynamodb store", "error", err)
-			os.Exit(1)
-		}
-		if err := ddbStore.CreateTable(ctx); err != nil {
-			slog.Error("failed to create dynamodb table", "error", err)
-			os.Exit(1)
-		}
-		s = ddbStore
-
-	case "sqlite":
-		sqliteStore, err := storesqlite.New(requireEnv("SQLITE_PATH"))
-		if err != nil {
-			slog.Error("failed to create sqlite store", "error", err)
-			os.Exit(1)
-		}
-		s = sqliteStore
-
-	default:
-		slog.Error("unsupported store backend", "backend", storeBackend)
+	result, err := storeutil.CreateFromEnv(ctx)
+	if err != nil {
+		slog.Error("failed to create store", "error", err)
 		os.Exit(1)
+	}
+	if result.Pool != nil {
+		defer result.Pool.Close()
 	}
 
 	reconciler := client.NewReconcilerClient(reconcilerEndpoint)
@@ -151,12 +104,6 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		if pool != nil {
-			if err := pool.Ping(r.Context()); err != nil {
-				http.Error(w, "db unhealthy", http.StatusServiceUnavailable)
-				return
-			}
-		}
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 	})
@@ -173,7 +120,7 @@ func main() {
 		}
 	}()
 
-	d := dispatcher.New(s, reconciler, cp, cfg)
+	d := dispatcher.New(result.Store, reconciler, cp, cfg)
 	if err := d.Run(ctx); err != nil {
 		slog.Error("dispatcher error", "error", err)
 	}

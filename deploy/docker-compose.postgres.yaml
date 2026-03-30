@@ -19,7 +19,7 @@ services:
 
   admin:
     build:
-      context: .
+      context: ..
       dockerfile: Containerfile
       args:
         BINARY: admin
@@ -33,11 +33,10 @@ services:
         condition: service_healthy
 
   # --- Echo Reconciler Stack (example) ---
-  # Demonstrates the 3-service split: receiver → dispatcher → reconciler
 
   echo-receiver:
     build:
-      context: .
+      context: ..
       dockerfile: Containerfile
       args:
         BINARY: receiver
@@ -53,7 +52,7 @@ services:
 
   echo-dispatcher:
     build:
-      context: .
+      context: ..
       dockerfile: Containerfile
       args:
         BINARY: dispatcher
@@ -63,6 +62,7 @@ services:
       QUEUE_NAME: echo
       DATABASE_URL: postgres://factory:factory@postgres:5432/factory?sslmode=disable
       RECONCILER_ENDPOINT: http://echo-reconciler:8082
+      STORE_BACKEND: postgres
       COMPUTE_BACKEND: noop
       LISTEN_ADDR: ":8083"
       MAX_CONCURRENCY: "5"
@@ -77,7 +77,7 @@ services:
 
   echo-reconciler:
     build:
-      context: .
+      context: ..
       dockerfile: examples/echo-reconciler/Containerfile
     environment:
       LISTEN_ADDR: ":8082"

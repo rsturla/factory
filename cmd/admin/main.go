@@ -2,8 +2,12 @@
 //
 // Environment variables:
 //
-//	DATABASE_URL  - PostgreSQL connection string (required)
-//	LISTEN_ADDR   - HTTP listen address (default: ":8080")
+//	STORE_BACKEND     - "postgres", "dynamodb", or "sqlite" (default: "postgres")
+//	DATABASE_URL      - PostgreSQL connection string (postgres backend)
+//	DDB_TABLE         - DynamoDB table name (dynamodb backend)
+//	S3_BUCKET         - S3 bucket for history (dynamodb backend)
+//	SQLITE_PATH       - SQLite database path (sqlite backend)
+//	LISTEN_ADDR       - HTTP listen address (default: ":8080")
 package main
 
 import (
@@ -15,39 +19,34 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/hummingbird-org/factory/internal/admin"
 	"github.com/hummingbird-org/factory/internal/metrics"
-	storepostgres "github.com/hummingbird-org/factory/internal/store/postgres"
+	"github.com/hummingbird-org/factory/internal/storeutil"
 )
 
 func main() {
-	databaseURL := requireEnv("DATABASE_URL")
 	listenAddr := envOr("LISTEN_ADDR", ":8080")
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	pool, err := pgxpool.New(ctx, databaseURL)
+	result, err := storeutil.CreateFromEnv(ctx)
 	if err != nil {
-		slog.Error("failed to connect to database", "error", err)
+		slog.Error("failed to create store", "error", err)
 		os.Exit(1)
 	}
-	defer pool.Close()
+	if result.Pool != nil {
+		defer result.Pool.Close()
+	}
 
-	s := storepostgres.New(pool)
 	metrics.RegisterDefaults()
 
 	mux := http.NewServeMux()
-	admin.NewHandler(s).Register(mux)
+	admin.NewHandler(result.Store).Register(mux)
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		if err := pool.Ping(r.Context()); err != nil {
-			http.Error(w, "db unhealthy", http.StatusServiceUnavailable)
-			return
-		}
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 	})
@@ -70,15 +69,6 @@ func main() {
 		slog.Error("server error", "error", err)
 		os.Exit(1)
 	}
-}
-
-func requireEnv(key string) string {
-	v := os.Getenv(key)
-	if v == "" {
-		slog.Error("required environment variable not set", "key", key)
-		os.Exit(1)
-	}
-	return v
 }
 
 func envOr(key, fallback string) string {
