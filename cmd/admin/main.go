@@ -2,12 +2,15 @@
 //
 // Environment variables:
 //
-//	STORE_BACKEND     - "postgres", "dynamodb", or "sqlite" (default: "postgres")
-//	DATABASE_URL      - PostgreSQL connection string (postgres backend)
-//	DDB_TABLE         - DynamoDB table name (dynamodb backend)
-//	S3_BUCKET         - S3 bucket for history (dynamodb backend)
-//	SQLITE_PATH       - SQLite database path (sqlite backend)
-//	LISTEN_ADDR       - HTTP listen address (default: ":8080")
+//	STORE_BACKEND       - "postgres", "dynamodb", or "sqlite" (default: "postgres")
+//	DATABASE_URL        - PostgreSQL connection string (postgres backend)
+//	DDB_TABLE           - DynamoDB table name (dynamodb backend)
+//	S3_BUCKET           - S3 bucket for history (dynamodb backend)
+//	SQLITE_PATH         - SQLite database path (sqlite backend)
+//	AUTHZ_BACKEND       - "noop", "headergroups", or "opa" (default: "noop")
+//	AUTHZ_CONFIG_FILE   - Path to headergroups rules JSON
+//	AUTHZ_OPA_ENDPOINT  - OPA server URL (e.g. "http://localhost:8181")
+//	LISTEN_ADDR         - HTTP listen address (default: ":8080")
 package main
 
 import (
@@ -22,6 +25,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/hummingbird-org/factory/internal/admin"
+	"github.com/hummingbird-org/factory/internal/authzutil"
 	"github.com/hummingbird-org/factory/internal/metrics"
 	"github.com/hummingbird-org/factory/internal/storeutil"
 )
@@ -41,10 +45,16 @@ func main() {
 		defer result.Pool.Close()
 	}
 
+	authorizer, err := authzutil.CreateFromEnv()
+	if err != nil {
+		slog.Error("failed to create authorizer", "error", err)
+		os.Exit(1)
+	}
+
 	metrics.RegisterDefaults()
 
 	mux := http.NewServeMux()
-	admin.NewHandler(result.Store).Register(mux)
+	admin.NewHandler(result.Store, authorizer).Register(mux)
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

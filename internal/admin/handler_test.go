@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/hummingbird-org/factory/internal/admin"
+	"github.com/hummingbird-org/factory/internal/authz/noop"
 	"github.com/hummingbird-org/factory/internal/store"
 	"github.com/hummingbird-org/factory/internal/store/inmem"
 )
@@ -25,7 +26,7 @@ func newServer(t *testing.T) (*httptest.Server, store.Interface) {
 	})
 
 	mux := http.NewServeMux()
-	admin.NewHandler(s).Register(mux)
+	admin.NewHandler(s, noop.Authorizer{}).Register(mux)
 	return httptest.NewServer(mux), s
 }
 

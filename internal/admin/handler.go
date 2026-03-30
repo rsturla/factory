@@ -7,30 +7,44 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/hummingbird-org/factory/internal/authz"
 	"github.com/hummingbird-org/factory/internal/store"
 )
 
 // Handler serves the admin API endpoints.
 type Handler struct {
 	store store.Interface
+	authz authz.Authorizer
 }
 
 // NewHandler creates an admin API handler.
-func NewHandler(s store.Interface) *Handler {
-	return &Handler{store: s}
+func NewHandler(s store.Interface, a authz.Authorizer) *Handler {
+	return &Handler{store: s, authz: a}
 }
 
 // Register mounts all admin API routes on the given mux.
 func (h *Handler) Register(mux *http.ServeMux) {
-	mux.HandleFunc("GET /admin/queues", h.listQueues)
-	mux.HandleFunc("GET /admin/queues/{name}", h.getQueue)
-	mux.HandleFunc("GET /admin/queues/{name}/items", h.listItems)
-	mux.HandleFunc("GET /admin/queues/{name}/items/{key}", h.getItem)
-	mux.HandleFunc("POST /admin/queues/{name}/items/{key}/retry", h.retryItem)
-	mux.HandleFunc("POST /admin/queues/{name}/items/{key}/cancel", h.cancelItem)
-	mux.HandleFunc("DELETE /admin/queues/{name}/dead-letters", h.purgeDeadLetters)
-	mux.HandleFunc("GET /admin/workers", h.listWorkers)
-	mux.HandleFunc("GET /admin/queues/{name}/events", h.streamEvents)
+	wrap := func(action authz.Action, handler http.HandlerFunc) http.Handler {
+		return authz.Wrap(h.authz, action, "", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			handler(w, r)
+		}))
+	}
+	wrapQueue := func(action authz.Action, handler http.HandlerFunc) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			queue := r.PathValue("name")
+			authz.Wrap(h.authz, action, queue, http.HandlerFunc(handler)).ServeHTTP(w, r)
+		})
+	}
+
+	mux.Handle("GET /admin/queues", wrap(authz.ActionQueuesRead, h.listQueues))
+	mux.Handle("GET /admin/queues/{name}", wrapQueue(authz.ActionQueuesRead, h.getQueue))
+	mux.Handle("GET /admin/queues/{name}/items", wrapQueue(authz.ActionItemsRead, h.listItems))
+	mux.Handle("GET /admin/queues/{name}/items/{key}", wrapQueue(authz.ActionItemsRead, h.getItem))
+	mux.Handle("POST /admin/queues/{name}/items/{key}/retry", wrapQueue(authz.ActionItemsRetry, h.retryItem))
+	mux.Handle("POST /admin/queues/{name}/items/{key}/cancel", wrapQueue(authz.ActionItemsCancel, h.cancelItem))
+	mux.Handle("DELETE /admin/queues/{name}/dead-letters", wrapQueue(authz.ActionDeadLetterPurge, h.purgeDeadLetters))
+	mux.Handle("GET /admin/workers", wrap(authz.ActionWorkersRead, h.listWorkers))
+	mux.Handle("GET /admin/queues/{name}/events", wrapQueue(authz.ActionEventsStream, h.streamEvents))
 }
 
 func (h *Handler) listQueues(w http.ResponseWriter, r *http.Request) {
