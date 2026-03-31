@@ -1,0 +1,9 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "gomod": {
+    "enabled": true
+  },
+  "labels": ["dependencies"],
+  "schedule": ["before 6am on Monday"]
+}
