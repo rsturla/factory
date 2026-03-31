@@ -7,10 +7,12 @@ package postgres
 
 import (
 	"context"
-	_ "embed"
+	"embed"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -19,8 +21,8 @@ import (
 	"github.com/hummingbird-org/factory/internal/store"
 )
 
-//go:embed schema.sql
-var schemaSQL string
+//go:embed migrations/*.sql
+var migrationsFS embed.FS
 
 // Store implements store.Interface using PostgreSQL.
 type Store struct {
@@ -37,8 +39,9 @@ func (s *Store) Pool() *pgxpool.Pool {
 	return s.pool
 }
 
-// Migrate applies the schema to the database.
-// Uses an advisory lock to prevent concurrent migration races.
+// Migrate runs versioned SQL migrations from the embedded migrations/ directory.
+// Each migration runs exactly once. Uses an advisory lock to prevent concurrent
+// migration races when multiple services start simultaneously.
 func (s *Store) Migrate(ctx context.Context) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -51,11 +54,93 @@ func (s *Store) Migrate(ctx context.Context) error {
 		return fmt.Errorf("advisory lock: %w", err)
 	}
 
-	if _, err := tx.Exec(ctx, schemaSQL); err != nil {
-		return fmt.Errorf("apply schema: %w", err)
+	// Create the migrations tracking table if it doesn't exist.
+	if _, err := tx.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS schema_migrations (
+			version INTEGER PRIMARY KEY,
+			filename TEXT NOT NULL,
+			applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)
+	`); err != nil {
+		return fmt.Errorf("create schema_migrations: %w", err)
+	}
+
+	// Read all migration files, sorted by name.
+	entries, err := migrationsFS.ReadDir("migrations")
+	if err != nil {
+		return fmt.Errorf("read migrations dir: %w", err)
+	}
+
+	var files []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".sql") {
+			files = append(files, e.Name())
+		}
+	}
+	sort.Strings(files) // 001_initial.sql, 002_add_index.sql, ...
+
+	// Determine which migrations have already been applied.
+	applied := make(map[int]bool)
+	rows, err := tx.Query(ctx, "SELECT version FROM schema_migrations")
+	if err != nil {
+		return fmt.Errorf("query applied migrations: %w", err)
+	}
+	for rows.Next() {
+		var v int
+		if err := rows.Scan(&v); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan migration version: %w", err)
+		}
+		applied[v] = true
+	}
+	rows.Close()
+
+	// Apply new migrations in order.
+	for _, filename := range files {
+		version, err := parseMigrationVersion(filename)
+		if err != nil {
+			return fmt.Errorf("parse migration filename %q: %w", filename, err)
+		}
+
+		if applied[version] {
+			continue
+		}
+
+		sql, err := migrationsFS.ReadFile("migrations/" + filename)
+		if err != nil {
+			return fmt.Errorf("read migration %s: %w", filename, err)
+		}
+
+		slog.Info("applying migration", "version", version, "filename", filename)
+
+		if _, err := tx.Exec(ctx, string(sql)); err != nil {
+			return fmt.Errorf("apply migration %s: %w", filename, err)
+		}
+
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO schema_migrations (version, filename) VALUES ($1, $2)
+		`, version, filename); err != nil {
+			return fmt.Errorf("record migration %s: %w", filename, err)
+		}
 	}
 
 	return tx.Commit(ctx)
+}
+
+// parseMigrationVersion extracts the version number from a filename like "001_initial.sql".
+func parseMigrationVersion(filename string) (int, error) {
+	parts := strings.SplitN(filename, "_", 2)
+	if len(parts) < 2 {
+		return 0, fmt.Errorf("expected format NNN_name.sql, got %q", filename)
+	}
+	var version int
+	for _, c := range parts[0] {
+		if c < '0' || c > '9' {
+			return 0, fmt.Errorf("non-numeric version in %q", filename)
+		}
+		version = version*10 + int(c-'0')
+	}
+	return version, nil
 }
 
 // --- Work Queue Operations ---
