@@ -147,8 +147,25 @@ func (s *Store) CreateTable(ctx context.Context) error {
 		}
 		return fmt.Errorf("create table: %w", err)
 	}
+
+	// Write a schema version marker so operators can tell which version
+	// of the table schema is deployed.
+	s.ddb.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: &s.table,
+		Item: map[string]dyntypes.AttributeValue{
+			"PK":             &dyntypes.AttributeValueMemberS{Value: "_schema"},
+			"SK":             &dyntypes.AttributeValueMemberS{Value: "VERSION"},
+			"schema_version": &dyntypes.AttributeValueMemberN{Value: strconv.Itoa(SchemaVersion)},
+			"created_at":     &dyntypes.AttributeValueMemberS{Value: time.Now().Format(time.RFC3339Nano)},
+		},
+	})
+
 	return nil
 }
+
+// SchemaVersion is the current DynamoDB table schema version.
+// Increment this when the table structure changes (new GSI, TTL config, etc.).
+const SchemaVersion = 1
 
 // --- Key helpers ---
 
