@@ -158,21 +158,6 @@ Each queue type is a completely independent pipeline. A burst of RPM rebuilds do
 
 To add a new work type, deploy a new 3-service stack (receiver + dispatcher + reconciler). No changes to existing queues.
 
-## Comparison with driftlessaf
-
-Factory V2's scaling model matches driftlessaf (Chainguard's production workqueue):
-
-| Aspect | driftlessaf | Factory V2 |
-|--------|-------------|------------|
-| Dispatcher | Singleton per queue | Singleton per queue |
-| Concurrency cap | `concurrency` param | `MAX_CONCURRENCY` env var |
-| Reconciler scaling | Cloud Run auto-scale | Kubernetes HPA |
-| Queue sharding | Hyperqueue (hash-based, for GCS) | Not needed (SKIP LOCKED is O(batch_size)) |
-| Dispatch trigger | Event-driven (Pub/Sub) | Poll loop (200ms interval) |
-| Storage | GCS (object store) | PostgreSQL (SKIP LOCKED) |
-
-The key difference: driftlessaf needs hyperqueue sharding because GCS listing is O(queue depth). Our PostgreSQL SKIP LOCKED is O(batch_size) regardless of queue depth, so sharding is unnecessary.
-
 ## When you've outgrown this architecture
 
 Signs that you need to evolve:

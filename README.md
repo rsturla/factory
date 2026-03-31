@@ -255,9 +255,8 @@ cd deploy && docker compose -f docker-compose.stress.yaml up --build -d
 - [AUTH.md](docs/AUTH.md) — authentication, authorization, Cedar/OPA policy examples
 - [CLAUDE.md](CLAUDE.md) — development conventions and project principles
 
-## Design influences
+## Design principles
 
-Architecture inspired by [driftlessaf](https://github.com/driftlessaf) (Chainguard's production workqueue framework). Key patterns adopted:
 - Pure workqueue (keys only, no payloads)
 - Single queue per reconciler
 - 3-service split (receiver/dispatcher/reconciler)
