@@ -21,9 +21,19 @@ jobs:
             | while IFS=: read -r file line func_line; do
                 dir=$(dirname "$file")/
                 target=$(echo "$func_line" | sed 's/func \(Fuzz[A-Za-z0-9_]*\).*/\1/')
-                printf '%s\t%s\n' "./$dir" "$target"
+                # Determine Go module root for sub-modules (e.g., pkg/sdk)
+                workdir="."
+                case "$dir" in
+                  pkg/sdk/*|pkg/sdk/) workdir="pkg/sdk" ;;
+                esac
+                if [ "$workdir" = "." ]; then
+                  pkg="./$dir"
+                else
+                  pkg="./"
+                fi
+                printf '%s\t%s\t%s\n' "$pkg" "$target" "$workdir"
               done \
-            | jq -Rnc '{include: [inputs | split("\t") | {pkg: .[0], target: .[1]}]}')
+            | jq -Rnc '{include: [inputs | split("\t") | {pkg: .[0], target: .[1], workdir: .[2]}]}')
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
   fuzz:
@@ -49,6 +59,7 @@ jobs:
             fuzz-corpus-${{ matrix.target }}-
 
       - name: Fuzz ${{ matrix.target }}
+        working-directory: ${{ matrix.workdir }}
         run: go test ${{ matrix.pkg }} -fuzz=${{ matrix.target }} -fuzztime=60s -v
 
       - name: Upload crash artifacts

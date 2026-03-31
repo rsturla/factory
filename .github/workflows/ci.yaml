@@ -46,6 +46,9 @@ jobs:
         name: Check formatting
       - run: go vet ./...
         name: Vet
+      - run: go vet ./...
+        name: Vet SDK module
+        working-directory: pkg/sdk
       - run: go test -v -count=1 -timeout 120s ./...
         name: Test
         env:
@@ -56,3 +59,6 @@ jobs:
           AWS_ACCESS_KEY_ID: test
           AWS_SECRET_ACCESS_KEY: test
           AWS_REGION: us-east-1
+      - run: go test -v -count=1 -timeout 30s ./...
+        name: Test SDK module
+        working-directory: pkg/sdk

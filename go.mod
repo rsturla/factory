@@ -2,6 +2,8 @@ module github.com/hummingbird-org/factory-workqueue
 
 go 1.26.1
 
+require github.com/hummingbird-org/factory-workqueue/pkg/sdk v0.0.0
+
 require (
 	github.com/aws/aws-sdk-go-v2 v1.41.5
 	github.com/aws/aws-sdk-go-v2/config v1.32.13
@@ -105,3 +107,5 @@ require (
 	sigs.k8s.io/structured-merge-diff/v6 v6.3.0 // indirect
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
+
+replace github.com/hummingbird-org/factory-workqueue/pkg/sdk => ./pkg/sdk
