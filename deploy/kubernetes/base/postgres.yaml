@@ -1,0 +1,29 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: factory-db
+  namespace: factory
+spec:
+  instances: 3
+  postgresql:
+    parameters:
+      max_connections: "200"
+      shared_buffers: "1GB"
+      work_mem: "64MB"
+      maintenance_work_mem: "256MB"
+      effective_cache_size: "3GB"
+  storage:
+    size: 50Gi
+  resources:
+    requests:
+      cpu: "1"
+      memory: 2Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+  monitoring:
+    enablePodMonitor: true
+  bootstrap:
+    initdb:
+      database: factory
+      owner: factory
