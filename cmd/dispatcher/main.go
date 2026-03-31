@@ -57,6 +57,7 @@ func main() {
 	cfg.MaxRetry = envInt("MAX_RETRY", cfg.MaxRetry)
 	cfg.BatchSize = envInt("BATCH_SIZE", cfg.BatchSize)
 	cfg.DispatchInterval = envDuration("DISPATCH_INTERVAL", cfg.DispatchInterval)
+	cfg.SweepInterval = envDuration("SWEEP_INTERVAL", cfg.SweepInterval)
 	cfg.LeaseDuration = envDuration("LEASE_DURATION", cfg.LeaseDuration)
 
 	// RECONCILER_ENDPOINT is only required in push mode.

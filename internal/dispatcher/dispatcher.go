@@ -327,11 +327,29 @@ func (d *Dispatcher) sweepTick(ctx context.Context) {
 		slog.Error("count by status failed", "queue", d.cfg.QueueName, "error", err)
 		return
 	}
+	// Reset all statuses to 0 first — statuses with no items won't
+	// appear in the counts map, so we need to explicitly zero them.
+	for _, status := range []store.Status{
+		store.StatusPending, store.StatusClaimed, store.StatusRunning,
+		store.StatusSucceeded, store.StatusFailed, store.StatusDeadLetter,
+	} {
+		metrics.QueueDepth.WithLabelValues(d.cfg.QueueName, string(status)).Set(0)
+	}
 	for status, count := range counts {
 		metrics.QueueDepth.WithLabelValues(d.cfg.QueueName, string(status)).Set(float64(count))
 	}
 	inProg := counts[store.StatusClaimed] + counts[store.StatusRunning]
 	metrics.InProgress.WithLabelValues(d.cfg.QueueName).Set(float64(inProg))
+	metrics.MaxConcurrency.WithLabelValues(d.cfg.QueueName).Set(float64(d.cfg.MaxConcurrency))
+
+	// Oldest pending item age.
+	pending := store.StatusPending
+	oldest, err := d.store.List(ctx, store.ListFilter{Queue: d.cfg.QueueName, Status: &pending, Limit: 1})
+	if err == nil && len(oldest) > 0 {
+		metrics.OldestPendingAge.WithLabelValues(d.cfg.QueueName).Set(time.Since(oldest[0].CreatedAt).Seconds())
+	} else {
+		metrics.OldestPendingAge.WithLabelValues(d.cfg.QueueName).Set(0)
+	}
 }
 
 func (d *Dispatcher) reaperTick(ctx context.Context) {

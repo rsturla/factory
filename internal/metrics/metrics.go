@@ -56,6 +56,18 @@ var (
 		Help:      "Number of items currently being processed.",
 	}, []string{"queue"})
 
+	MaxConcurrency = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "factory",
+		Name:      "max_concurrency",
+		Help:      "Maximum concurrent items allowed for a queue.",
+	}, []string{"queue"})
+
+	OldestPendingAge = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "factory",
+		Name:      "oldest_pending_age_seconds",
+		Help:      "Age in seconds of the oldest pending item. 0 if queue is empty.",
+	}, []string{"queue"})
+
 	// Histograms
 
 	ClaimDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
@@ -105,6 +117,8 @@ func Register(reg prometheus.Registerer) {
 		QueueDepth,
 		WorkerCount,
 		InProgress,
+		MaxConcurrency,
+		OldestPendingAge,
 		ClaimDuration,
 		ReconcileDuration,
 		WaitLatency,
