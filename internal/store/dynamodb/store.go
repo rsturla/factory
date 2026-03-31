@@ -406,14 +406,8 @@ func (s *Store) ClaimBatch(ctx context.Context, queue string, batchSize int, wor
 		return nil, fmt.Errorf("query claim index: %w", err)
 	}
 
-	// Check concurrency limit using strongly consistent scan on main table.
 	cfg := s.getQueueConfig(ctx, queue)
-	inProgress, _ := s.countInProgressConsistent(ctx, queue)
-	remaining := cfg.MaxConcurrency - int(inProgress)
-	if remaining <= 0 {
-		return nil, nil
-	}
-	limit := min(batchSize, remaining)
+	limit := min(batchSize, cfg.MaxConcurrency)
 
 	now := time.Now()
 	leaseExp := now.Add(leaseDuration)
@@ -422,15 +416,6 @@ func (s *Store) ClaimBatch(ctx context.Context, queue string, batchSize int, wor
 	for _, rawItem := range result.Items {
 		if len(claimed) >= limit {
 			break
-		}
-
-		// Re-check concurrency after each claim to prevent over-claiming
-		// when multiple workers are claiming concurrently.
-		if len(claimed) > 0 {
-			currentInProgress, _ := s.countInProgressConsistent(ctx, queue)
-			if int(currentInProgress) >= cfg.MaxConcurrency {
-				break
-			}
 		}
 
 		var item ddbItem
@@ -444,6 +429,11 @@ func (s *Store) ClaimBatch(ctx context.Context, queue string, batchSize int, wor
 			if now.Before(nb) {
 				continue
 			}
+		}
+
+		// Atomically increment in_progress counter. If at capacity, stop.
+		if !s.tryIncrementInProgress(ctx, queue, cfg.MaxConcurrency) {
+			break
 		}
 
 		// Atomic claim via conditional update.
@@ -482,7 +472,8 @@ func (s *Store) ClaimBatch(ctx context.Context, queue string, batchSize int, wor
 			ReturnValues: dyntypes.ReturnValueAllNew,
 		})
 		if err != nil {
-			// Condition failed — another dispatcher claimed it. Skip.
+			// Condition failed — another dispatcher claimed it. Release the slot.
+			s.decrementInProgress(ctx, queue)
 			continue
 		}
 
@@ -560,6 +551,7 @@ func (s *Store) setTerminalStatus(ctx context.Context, queue, key string, status
 		return fmt.Errorf("set terminal status: %w", err)
 	}
 
+	s.decrementInProgress(ctx, queue)
 	s.writeHistory(ctx, queue, key, store.HistoryEntry{
 		Queue: queue, Key: key, FromStatus: "running", ToStatus: string(status),
 		ErrorMessage: errMsg, CreatedAt: now,
@@ -627,6 +619,7 @@ func (s *Store) Requeue(ctx context.Context, queue, key string, opts ...store.Re
 		return fmt.Errorf("requeue: %w", err)
 	}
 
+	s.decrementInProgress(ctx, queue)
 	s.writeHistory(ctx, queue, key, store.HistoryEntry{
 		Queue: queue, Key: key, FromStatus: "running", ToStatus: "pending", CreatedAt: now,
 	})
@@ -684,6 +677,7 @@ func (s *Store) RequeueUndoAttempt(ctx context.Context, queue, key string, notBe
 		return fmt.Errorf("requeue undo: %w", err)
 	}
 
+	s.decrementInProgress(ctx, queue)
 	s.writeHistory(ctx, queue, key, store.HistoryEntry{
 		Queue: queue, Key: key, FromStatus: "claimed", ToStatus: "pending", CreatedAt: now,
 	})
@@ -732,6 +726,7 @@ func (s *Store) Deadletter(ctx context.Context, queue, key string) error {
 		return fmt.Errorf("deadletter: %w", err)
 	}
 
+	s.decrementInProgress(ctx, queue)
 	s.writeHistory(ctx, queue, key, store.HistoryEntry{
 		Queue: queue, Key: key, FromStatus: "failed", ToStatus: "dead_letter", CreatedAt: now,
 	})
@@ -898,8 +893,43 @@ func (s *Store) CountByStatus(ctx context.Context, queue string) (map[store.Stat
 	return counts, nil
 }
 
+// tryIncrementInProgress atomically increments the in_progress counter on the
+// queue config item. Returns false if the counter is already at maxConcurrency.
+func (s *Store) tryIncrementInProgress(ctx context.Context, queue string, maxConcurrency int) bool {
+	pk := "_queue#" + queue
+	_, err := s.ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: &s.table,
+		Key: map[string]dyntypes.AttributeValue{
+			"PK": &dyntypes.AttributeValueMemberS{Value: pk},
+			"SK": &dyntypes.AttributeValueMemberS{Value: cfgSK},
+		},
+		ConditionExpression: aws.String("attribute_not_exists(in_progress) OR in_progress < :max"),
+		UpdateExpression:    aws.String("ADD in_progress :one"),
+		ExpressionAttributeValues: map[string]dyntypes.AttributeValue{
+			":max": &dyntypes.AttributeValueMemberN{Value: strconv.Itoa(maxConcurrency)},
+			":one": &dyntypes.AttributeValueMemberN{Value: "1"},
+		},
+	})
+	return err == nil
+}
+
+// decrementInProgress atomically decrements the in_progress counter.
+func (s *Store) decrementInProgress(ctx context.Context, queue string) {
+	pk := "_queue#" + queue
+	s.ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: &s.table,
+		Key: map[string]dyntypes.AttributeValue{
+			"PK": &dyntypes.AttributeValueMemberS{Value: pk},
+			"SK": &dyntypes.AttributeValueMemberS{Value: cfgSK},
+		},
+		UpdateExpression: aws.String("ADD in_progress :neg"),
+		ExpressionAttributeValues: map[string]dyntypes.AttributeValue{
+			":neg": &dyntypes.AttributeValueMemberN{Value: "-1"},
+		},
+	})
+}
+
 // countInProgressConsistent uses a strongly consistent Scan to count claimed+running items.
-// This avoids GSI eventual consistency issues that can cause over-claiming.
 func (s *Store) countInProgressConsistent(ctx context.Context, queue string) (int64, error) {
 	result, err := s.ddb.Scan(ctx, &dynamodb.ScanInput{
 		TableName:        &s.table,
