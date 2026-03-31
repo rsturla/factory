@@ -144,7 +144,9 @@ func (c *WorkqueueClient) IsQueuePaused(ctx context.Context, queue string) (bool
 	if err != nil {
 		return false, err
 	}
-	var result struct{ Paused bool `json:"paused"` }
+	var result struct {
+		Paused bool `json:"paused"`
+	}
 	json.Unmarshal(body, &result)
 	return result.Paused, nil
 }
