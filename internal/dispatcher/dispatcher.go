@@ -3,16 +3,21 @@ package dispatcher
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/hummingbird-org/factory/internal/completion"
 	"github.com/hummingbird-org/factory/internal/compute"
 	"github.com/hummingbird-org/factory/internal/metrics"
 	"github.com/hummingbird-org/factory/internal/store"
+	"github.com/hummingbird-org/factory/internal/tracing"
 	"github.com/hummingbird-org/factory/pkg/client"
 	"github.com/hummingbird-org/factory/pkg/sdk"
 )
@@ -113,8 +118,23 @@ func (d *Dispatcher) dispatchTick(ctx context.Context) {
 func (d *Dispatcher) processItem(ctx context.Context, item store.WorkItem) {
 	defer d.inFlight.Done()
 
+	tracer := tracing.Tracer("factory.dispatcher")
+	ctx, span := tracer.Start(ctx, "processItem",
+		trace.WithAttributes(
+			attribute.String("queue", item.Queue),
+			attribute.String("key", item.Key),
+			attribute.Int("priority", item.Priority),
+			attribute.Int("attempt", item.Attempts),
+		),
+	)
+	defer span.End()
+
+	traceID := span.SpanContext().TraceID().String()
+
 	if err := d.store.Transition(ctx, item.Queue, item.Key, store.StatusClaimed, store.StatusRunning,
 		store.WithWorkerID(d.cfg.WorkerID)); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "transition failed")
 		slog.Error("transition to running failed", "queue", item.Queue, "key", item.Key, "error", err)
 		return
 	}
@@ -123,16 +143,27 @@ func (d *Dispatcher) processItem(ctx context.Context, item store.WorkItem) {
 		metrics.WaitLatency.WithLabelValues(item.Queue).Observe(item.ClaimedAt.Sub(item.CreatedAt).Seconds())
 	}
 
+	// Record history with trace ID for correlation.
+	d.store.RecordHistory(ctx, store.HistoryEntry{
+		Queue: item.Queue, Key: item.Key,
+		FromStatus: "claimed", ToStatus: "running",
+		WorkerID: d.cfg.WorkerID, TraceID: traceID,
+	})
+
 	start := time.Now()
 	resp, err := d.reconciler.Process(ctx, sdk.ProcessRequest{
 		Key:      item.Key,
 		Attempt:  item.Attempts,
 		Priority: item.Priority,
+		TraceID:  traceID,
 	})
 	reconcileDur := time.Since(start).Seconds()
+	span.SetAttributes(attribute.Float64("reconcile_duration_s", reconcileDur))
 
 	if err != nil {
-		slog.Error("reconciler call failed", "queue", item.Queue, "key", item.Key, "error", err)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "reconciler unreachable")
+		slog.Error("reconciler call failed", "queue", item.Queue, "key", item.Key, "error", err, "trace_id", traceID)
 		metrics.ReconcileDuration.WithLabelValues(item.Queue, "infra_error").Observe(reconcileDur)
 		if infraErr := d.completion.HandleInfraFailure(ctx, item.Queue, item.Key); infraErr != nil {
 			slog.Error("handle infra failure failed", "queue", item.Queue, "key", item.Key, "error", infraErr)
@@ -140,14 +171,17 @@ func (d *Dispatcher) processItem(ctx context.Context, item store.WorkItem) {
 		return
 	}
 
-	d.handleResponse(ctx, item, resp, reconcileDur)
+	d.handleResponse(ctx, item, resp, reconcileDur, span, traceID)
 }
 
-func (d *Dispatcher) handleResponse(ctx context.Context, item store.WorkItem, resp sdk.ProcessResponse, durSec float64) {
+func (d *Dispatcher) handleResponse(ctx context.Context, item store.WorkItem, resp sdk.ProcessResponse, durSec float64, span trace.Span, traceID string) {
 	queue, key := item.Queue, item.Key
 
 	if resp.Error != "" {
-		slog.Warn("reconciler reported error", "queue", queue, "key", key, "error", resp.Error)
+		span.RecordError(fmt.Errorf("%s", resp.Error))
+		span.SetStatus(codes.Error, "reconciler error")
+		span.SetAttributes(attribute.String("outcome", "failed"))
+		slog.Warn("reconciler reported error", "queue", queue, "key", key, "error", resp.Error, "trace_id", traceID)
 		metrics.ReconcileDuration.WithLabelValues(queue, "failed").Observe(durSec)
 		metrics.ItemsCompleted.WithLabelValues(queue, "failed").Inc()
 		d.completion.HandleFailure(ctx, queue, key, item.Attempts, resp.Error)
@@ -156,6 +190,7 @@ func (d *Dispatcher) handleResponse(ctx context.Context, item store.WorkItem, re
 
 	switch resp.Action {
 	case sdk.ActionCompleted:
+		span.SetAttributes(attribute.String("outcome", "completed"))
 		metrics.ReconcileDuration.WithLabelValues(queue, "completed").Observe(durSec)
 		metrics.ItemsCompleted.WithLabelValues(queue, "succeeded").Inc()
 		metrics.AttemptsAtCompletion.WithLabelValues(queue).Observe(float64(item.Attempts))
@@ -163,6 +198,7 @@ func (d *Dispatcher) handleResponse(ctx context.Context, item store.WorkItem, re
 		d.completion.HandleSuccess(ctx, queue, key)
 
 	case sdk.ActionConverged:
+		span.SetAttributes(attribute.String("outcome", "converged"))
 		metrics.ReconcileDuration.WithLabelValues(queue, "converged").Observe(durSec)
 		metrics.ItemsCompleted.WithLabelValues(queue, "converged").Inc()
 		metrics.AttemptsAtCompletion.WithLabelValues(queue).Observe(float64(item.Attempts))
@@ -170,6 +206,7 @@ func (d *Dispatcher) handleResponse(ctx context.Context, item store.WorkItem, re
 		d.completion.HandleSuccess(ctx, queue, key)
 
 	case sdk.ActionRequeue:
+		span.SetAttributes(attribute.String("outcome", "requeue"))
 		metrics.ReconcileDuration.WithLabelValues(queue, "requeue").Observe(durSec)
 		delay, err := time.ParseDuration(resp.RequeueAfter)
 		if err != nil {
@@ -178,6 +215,7 @@ func (d *Dispatcher) handleResponse(ctx context.Context, item store.WorkItem, re
 		d.completion.HandleRequeueAfter(ctx, queue, key, delay)
 
 	case sdk.ActionFanOut:
+		span.SetAttributes(attribute.String("outcome", "fan_out"), attribute.Int("fan_out_count", len(resp.FanOutKeys)))
 		metrics.ReconcileDuration.WithLabelValues(queue, "fan_out").Observe(durSec)
 		metrics.ItemsCompleted.WithLabelValues(queue, "succeeded").Inc()
 		for _, fanKey := range resp.FanOutKeys {
@@ -188,6 +226,7 @@ func (d *Dispatcher) handleResponse(ctx context.Context, item store.WorkItem, re
 		d.completion.HandleSuccess(ctx, queue, key)
 
 	default:
+		span.SetStatus(codes.Error, "unknown action")
 		slog.Error("unknown reconciler action", "queue", queue, "key", key, "action", resp.Action)
 		d.completion.HandleFailure(ctx, queue, key, item.Attempts, "unknown action: "+resp.Action)
 	}

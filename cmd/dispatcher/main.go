@@ -39,6 +39,7 @@ import (
 	"github.com/hummingbird-org/factory/internal/dispatcher"
 	"github.com/hummingbird-org/factory/internal/metrics"
 	"github.com/hummingbird-org/factory/internal/storeutil"
+	"github.com/hummingbird-org/factory/internal/tracing"
 	"github.com/hummingbird-org/factory/pkg/client"
 )
 
@@ -58,6 +59,9 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
+
+	shutdown := tracing.Init(ctx, "factory-dispatcher")
+	defer shutdown(context.Background())
 
 	result, err := storeutil.CreateFromEnv(ctx)
 	if err != nil {

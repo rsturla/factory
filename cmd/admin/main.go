@@ -28,6 +28,7 @@ import (
 	"github.com/hummingbird-org/factory/internal/authzutil"
 	"github.com/hummingbird-org/factory/internal/metrics"
 	"github.com/hummingbird-org/factory/internal/storeutil"
+	"github.com/hummingbird-org/factory/internal/tracing"
 )
 
 func main() {
@@ -35,6 +36,9 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
+
+	shutdown := tracing.Init(ctx, "factory-admin")
+	defer shutdown(context.Background())
 
 	result, err := storeutil.CreateFromEnv(ctx)
 	if err != nil {

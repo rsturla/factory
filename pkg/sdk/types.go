@@ -17,6 +17,7 @@ type ProcessRequest struct {
 	Key      string `json:"key"`
 	Attempt  int    `json:"attempt"`
 	Priority int    `json:"priority"`
+	TraceID  string `json:"trace_id,omitempty"`
 }
 
 // ProcessResponse is returned by the reconciler to the dispatcher.

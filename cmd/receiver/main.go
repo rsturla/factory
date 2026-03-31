@@ -29,6 +29,8 @@ import (
 	"syscall"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/hummingbird-org/factory/internal/authz"
@@ -36,6 +38,7 @@ import (
 	"github.com/hummingbird-org/factory/internal/metrics"
 	"github.com/hummingbird-org/factory/internal/store"
 	"github.com/hummingbird-org/factory/internal/storeutil"
+	"github.com/hummingbird-org/factory/internal/tracing"
 )
 
 func main() {
@@ -53,6 +56,9 @@ func main() {
 	if result.Pool != nil {
 		defer result.Pool.Close()
 	}
+
+	shutdown := tracing.Init(ctx, "factory-receiver")
+	defer shutdown(context.Background())
 
 	authorizer, err := authzutil.CreateFromEnv()
 	if err != nil {
@@ -102,6 +108,11 @@ type enqueueRequest struct {
 }
 
 func (h *enqueueHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	ctx, span := tracing.Tracer("factory.receiver").Start(r.Context(), "enqueue",
+		trace.WithAttributes(attribute.String("queue", h.queue)),
+	)
+	defer span.End()
+
 	var req enqueueRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request: "+err.Error(), http.StatusBadRequest)
@@ -112,14 +123,18 @@ func (h *enqueueHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.store.Enqueue(r.Context(), h.queue, req.Key, req.Priority); err != nil {
+	span.SetAttributes(attribute.String("key", req.Key), attribute.Int("priority", req.Priority))
+
+	if err := h.store.Enqueue(ctx, h.queue, req.Key, req.Priority); err != nil {
+		span.RecordError(err)
 		slog.Error("enqueue failed", "queue", h.queue, "key", req.Key, "error", err)
 		http.Error(w, "enqueue failed", http.StatusInternalServerError)
 		return
 	}
 
 	metrics.ItemsEnqueued.WithLabelValues(h.queue).Inc()
-	slog.Info("enqueued", "queue", h.queue, "key", req.Key, "priority", req.Priority)
+	traceID := span.SpanContext().TraceID().String()
+	slog.Info("enqueued", "queue", h.queue, "key", req.Key, "priority", req.Priority, "trace_id", traceID)
 
 	w.Header().Set("Content-Type", "application/json")
 	fmt.Fprintf(w, `{"status":"enqueued","key":%q}`, req.Key)
