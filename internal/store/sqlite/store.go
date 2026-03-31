@@ -12,7 +12,11 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"embed"
 	"fmt"
+	"log/slog"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,6 +24,9 @@ import (
 
 	"github.com/hummingbird-org/factory/internal/store"
 )
+
+//go:embed migrations/*.sql
+var migrationsFS embed.FS
 
 // Store implements store.Interface using SQLite.
 type Store struct {
@@ -65,68 +72,93 @@ func (s *Store) Close() error {
 }
 
 func (s *Store) migrate() error {
-	_, err := s.db.Exec(`
-		CREATE TABLE IF NOT EXISTS work_items (
-			queue           TEXT NOT NULL,
-			key             TEXT NOT NULL,
-			status          TEXT NOT NULL DEFAULT 'pending',
-			priority        INTEGER NOT NULL DEFAULT 0,
-			attempts        INTEGER NOT NULL DEFAULT 0,
-			max_attempts    INTEGER NOT NULL DEFAULT 5,
-			not_before      TEXT,
-			lease_expires   TEXT,
-			worker_id       TEXT,
-			error_message   TEXT,
-			created_at      TEXT NOT NULL,
-			updated_at      TEXT NOT NULL,
-			claimed_at      TEXT,
-			completed_at    TEXT,
-			PRIMARY KEY (queue, key)
-		);
+	// Create the migrations tracking table.
+	if _, err := s.db.Exec(`
+		CREATE TABLE IF NOT EXISTS schema_migrations (
+			version INTEGER PRIMARY KEY,
+			filename TEXT NOT NULL,
+			applied_at TEXT NOT NULL
+		)
+	`); err != nil {
+		return fmt.Errorf("create schema_migrations: %w", err)
+	}
 
-		CREATE INDEX IF NOT EXISTS idx_work_items_claimable
-			ON work_items (queue, priority DESC, created_at ASC)
-			WHERE status = 'pending';
+	// Read all migration files, sorted by name.
+	entries, err := migrationsFS.ReadDir("migrations")
+	if err != nil {
+		return fmt.Errorf("read migrations dir: %w", err)
+	}
 
-		CREATE INDEX IF NOT EXISTS idx_work_items_queue_status
-			ON work_items (queue, status);
+	var files []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".sql") {
+			files = append(files, e.Name())
+		}
+	}
+	sort.Strings(files)
 
-		CREATE TABLE IF NOT EXISTS work_item_history (
-			id              INTEGER PRIMARY KEY AUTOINCREMENT,
-			queue           TEXT NOT NULL,
-			key             TEXT NOT NULL,
-			from_status     TEXT,
-			to_status       TEXT NOT NULL,
-			worker_id       TEXT,
-			error_message   TEXT,
-			attempt         INTEGER,
-			trace_id        TEXT,
-			created_at      TEXT NOT NULL
-		);
+	// Determine which migrations have already been applied.
+	applied := make(map[int]bool)
+	rows, err := s.db.Query("SELECT version FROM schema_migrations")
+	if err != nil {
+		return fmt.Errorf("query applied migrations: %w", err)
+	}
+	for rows.Next() {
+		var v int
+		if err := rows.Scan(&v); err != nil {
+			rows.Close()
+			return err
+		}
+		applied[v] = true
+	}
+	rows.Close()
 
-		CREATE INDEX IF NOT EXISTS idx_history_queue_key
-			ON work_item_history (queue, key, created_at DESC);
+	// Apply new migrations in order.
+	for _, filename := range files {
+		version, err := parseMigrationVersion(filename)
+		if err != nil {
+			return fmt.Errorf("parse migration filename %q: %w", filename, err)
+		}
 
-		CREATE TABLE IF NOT EXISTS worker_leases (
-			worker_id       TEXT PRIMARY KEY,
-			queue           TEXT NOT NULL,
-			compute_backend TEXT NOT NULL,
-			hostname        TEXT,
-			started_at      TEXT NOT NULL,
-			last_heartbeat  TEXT NOT NULL,
-			items_processed INTEGER NOT NULL DEFAULT 0,
-			status          TEXT NOT NULL DEFAULT 'active'
-		);
+		if applied[version] {
+			continue
+		}
 
-		CREATE TABLE IF NOT EXISTS queue_state (
-			queue           TEXT PRIMARY KEY,
-			max_concurrency INTEGER NOT NULL DEFAULT 10,
-			max_retry       INTEGER NOT NULL DEFAULT 5,
-			compute_backend TEXT NOT NULL DEFAULT 'kubernetes',
-			in_progress     INTEGER NOT NULL DEFAULT 0
-		);
-	`)
-	return err
+		data, err := migrationsFS.ReadFile("migrations/" + filename)
+		if err != nil {
+			return fmt.Errorf("read migration %s: %w", filename, err)
+		}
+
+		slog.Info("applying migration", "version", version, "filename", filename)
+
+		if _, err := s.db.Exec(string(data)); err != nil {
+			return fmt.Errorf("apply migration %s: %w", filename, err)
+		}
+
+		if _, err := s.db.Exec(
+			"INSERT INTO schema_migrations (version, filename, applied_at) VALUES (?, ?, ?)",
+			version, filename, time.Now().Format(time.RFC3339Nano),
+		); err != nil {
+			return fmt.Errorf("record migration %s: %w", filename, err)
+		}
+	}
+
+	return nil
+}
+
+func parseMigrationVersion(filename string) (int, error) {
+	parts := strings.SplitN(filename, "_", 2)
+	if len(parts) < 2 {
+		return 0, fmt.Errorf("expected format NNN_name.sql, got %q", filename)
+	}
+	var version int
+	for _, c := range parts[0] {
+		if c < '0' || c > '9' {
+			return 0, fmt.Errorf("non-numeric version in %q", filename)
+		}
+		version = version*10 + int(c-'0')
+	}
+	return version, nil
 }
 
 // --- Time helpers (SQLite stores as TEXT in RFC3339Nano) ---
