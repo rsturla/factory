@@ -45,6 +45,7 @@ func Run(t *testing.T, setup func(t *testing.T) store.Interface) {
 	t.Run("FullLifecycle", func(t *testing.T) { testFullLifecycle(t, setup) })
 	t.Run("EnqueueLowerPriorityNoOp", func(t *testing.T) { testEnqueueLowerPriorityNoOp(t, setup) })
 	t.Run("MultipleQueuesIsolated", func(t *testing.T) { testMultipleQueuesIsolated(t, setup) })
+	t.Run("EnsureQueueUpdatesConfig", func(t *testing.T) { testEnsureQueueUpdatesConfig(t, setup) })
 }
 
 func testEnqueue(t *testing.T, setup func(t *testing.T) store.Interface) {
@@ -637,5 +638,55 @@ func testMultipleQueuesIsolated(t *testing.T, setup func(t *testing.T) store.Int
 	counts, _ = s.CountByStatus(ctx, "other")
 	if counts[store.StatusPending] != 1 {
 		t.Errorf("other queue affected by test complete: got %d pending", counts[store.StatusPending])
+	}
+}
+
+// testEnsureQueueUpdatesConfig verifies that calling EnsureQueue on an
+// existing queue updates its configuration without losing state.
+func testEnsureQueueUpdatesConfig(t *testing.T, setup func(t *testing.T) store.Interface) {
+	ctx := context.Background()
+	s := setup(t)
+
+	// Queue "test" was created by setup with max_concurrency=10.
+	// Enqueue and claim an item to create in-progress state.
+	s.Enqueue(ctx, "test", "config-test", 0)
+	s.ClaimBatch(ctx, "test", 1, "w", time.Hour)
+
+	// Update the config.
+	s.EnsureQueue(ctx, "test", store.QueueConfig{
+		MaxConcurrency: 50,
+		MaxRetry:       10,
+		ComputeBackend: "ec2",
+	})
+
+	// Verify config was updated via ListQueues.
+	queues, err := s.ListQueues(ctx)
+	if err != nil {
+		t.Fatalf("ListQueues: %v", err)
+	}
+	var found *store.QueueInfo
+	for i := range queues {
+		if queues[i].Name == "test" {
+			found = &queues[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("queue 'test' not found")
+	}
+	if found.MaxConcurrency != 50 {
+		t.Errorf("expected max_concurrency=50 after update, got %d", found.MaxConcurrency)
+	}
+	if found.MaxRetry != 10 {
+		t.Errorf("expected max_retry=10 after update, got %d", found.MaxRetry)
+	}
+	if found.ComputeBackend != "ec2" {
+		t.Errorf("expected compute_backend=ec2 after update, got %s", found.ComputeBackend)
+	}
+
+	// Verify in-progress item was not lost.
+	counts, _ := s.CountByStatus(ctx, "test")
+	if counts[store.StatusClaimed] != 1 {
+		t.Errorf("expected 1 claimed item preserved after config update, got %v", counts)
 	}
 }
