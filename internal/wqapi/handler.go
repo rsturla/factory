@@ -59,6 +59,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("POST /wq/ensure-queue", h.withAuthz(authz.ActionEnqueue, h.ensureQueue))
 	mux.Handle("POST /wq/repair", h.withAuthz(authz.ActionEnqueue, h.repair))
 	mux.Handle("POST /wq/record-history", h.withAuthz(authz.ActionEnqueue, h.recordHistory))
+	mux.Handle("POST /wq/set-paused", h.withAuthz(authz.ActionItemsCancel, h.setPaused))
+	mux.Handle("POST /wq/is-paused", h.withAuthz(authz.ActionQueuesRead, h.isPaused))
 }
 
 func (h *Handler) withAuthz(action authz.Action, handler http.HandlerFunc) http.Handler {
@@ -387,6 +389,34 @@ func (h *Handler) recordHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]string{"status": "ok"})
+}
+
+func (h *Handler) setPaused(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Queue  string `json:"queue"`
+		Paused bool   `json:"paused"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := h.store.SetQueuePaused(r.Context(), req.Queue, req.Paused); err != nil {
+		serverError(w, err)
+		return
+	}
+	writeJSON(w, map[string]string{"status": "ok"})
+}
+
+func (h *Handler) isPaused(w http.ResponseWriter, r *http.Request) {
+	var req queueReq
+	if !decode(w, r, &req) {
+		return
+	}
+	paused, err := h.store.IsQueuePaused(r.Context(), req.Queue)
+	if err != nil {
+		serverError(w, err)
+		return
+	}
+	writeJSON(w, map[string]any{"paused": paused})
 }
 
 // --- Helpers ---

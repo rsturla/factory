@@ -28,6 +28,7 @@ type itemKey struct {
 type queueMeta struct {
 	config     store.QueueConfig
 	inProgress int
+	paused     bool
 }
 
 // New creates a new in-memory store.
@@ -358,6 +359,24 @@ func (s *Store) RepairCounter(_ context.Context, queue string) error {
 	return nil
 }
 
+func (s *Store) SetQueuePaused(_ context.Context, queue string, paused bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if q, ok := s.queues[queue]; ok {
+		q.paused = paused
+	}
+	return nil
+}
+
+func (s *Store) IsQueuePaused(_ context.Context, queue string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if q, ok := s.queues[queue]; ok {
+		return q.paused, nil
+	}
+	return false, nil
+}
+
 // --- Query Operations ---
 
 func (s *Store) CountByStatus(_ context.Context, queue string) (map[store.Status]int64, error) {
@@ -439,6 +458,7 @@ func (s *Store) ListQueues(_ context.Context) ([]store.QueueInfo, error) {
 			MaxConcurrency: q.config.MaxConcurrency,
 			MaxRetry:       q.config.MaxRetry,
 			ComputeBackend: q.config.ComputeBackend,
+			Paused:         q.paused,
 			InProgress:     q.inProgress,
 			Counts:         make(map[string]int),
 		}

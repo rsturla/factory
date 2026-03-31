@@ -531,6 +531,24 @@ func (s *Store) EnsureQueue(ctx context.Context, queue string, cfg store.QueueCo
 	return err
 }
 
+func (s *Store) SetQueuePaused(ctx context.Context, queue string, paused bool) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE queue_state SET paused = $2 WHERE queue = $1
+	`, queue, paused)
+	return err
+}
+
+func (s *Store) IsQueuePaused(ctx context.Context, queue string) (bool, error) {
+	var paused bool
+	err := s.pool.QueryRow(ctx, `
+		SELECT COALESCE(paused, false) FROM queue_state WHERE queue = $1
+	`, queue).Scan(&paused)
+	if err != nil {
+		return false, nil // queue doesn't exist yet, not paused
+	}
+	return paused, nil
+}
+
 func (s *Store) RepairCounter(ctx context.Context, queue string) error {
 	_, err := s.pool.Exec(ctx, `
 		UPDATE queue_state
@@ -640,7 +658,7 @@ func (s *Store) GetItem(ctx context.Context, queue, key string) (*store.WorkItem
 
 func (s *Store) ListQueues(ctx context.Context) ([]store.QueueInfo, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT queue, max_concurrency, max_retry, compute_backend, in_progress
+		SELECT queue, max_concurrency, max_retry, compute_backend, COALESCE(paused, false), in_progress
 		FROM queue_state ORDER BY queue
 	`)
 	if err != nil {
@@ -651,7 +669,7 @@ func (s *Store) ListQueues(ctx context.Context) ([]store.QueueInfo, error) {
 	var queues []store.QueueInfo
 	for rows.Next() {
 		var qi store.QueueInfo
-		if err := rows.Scan(&qi.Name, &qi.MaxConcurrency, &qi.MaxRetry, &qi.ComputeBackend, &qi.InProgress); err != nil {
+		if err := rows.Scan(&qi.Name, &qi.MaxConcurrency, &qi.MaxRetry, &qi.ComputeBackend, &qi.Paused, &qi.InProgress); err != nil {
 			return nil, fmt.Errorf("scan queue: %w", err)
 		}
 		qi.Counts = make(map[string]int)

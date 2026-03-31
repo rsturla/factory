@@ -43,6 +43,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("POST /admin/queues/{name}/items/{key}/retry", wrapQueue(authz.ActionItemsRetry, h.retryItem))
 	mux.Handle("POST /admin/queues/{name}/items/{key}/cancel", wrapQueue(authz.ActionItemsCancel, h.cancelItem))
 	mux.Handle("DELETE /admin/queues/{name}/dead-letters", wrapQueue(authz.ActionDeadLetterPurge, h.purgeDeadLetters))
+	mux.Handle("POST /admin/queues/{name}/pause", wrapQueue(authz.ActionItemsCancel, h.pauseQueue))
+	mux.Handle("POST /admin/queues/{name}/resume", wrapQueue(authz.ActionItemsCancel, h.resumeQueue))
 	mux.Handle("GET /admin/workers", wrap(authz.ActionWorkersRead, h.listWorkers))
 	mux.Handle("GET /admin/queues/{name}/events", wrapQueue(authz.ActionEventsStream, h.streamEvents))
 }
@@ -138,6 +140,26 @@ func (h *Handler) cancelItem(w http.ResponseWriter, r *http.Request) {
 	}
 	slog.Info("item cancelled via admin", "queue", name, "key", key)
 	writeJSON(w, map[string]string{"status": "cancelled"})
+}
+
+func (h *Handler) pauseQueue(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if err := h.store.SetQueuePaused(r.Context(), name, true); err != nil {
+		serverError(w, "pause queue", err)
+		return
+	}
+	slog.Info("queue paused via admin", "queue", name)
+	writeJSON(w, map[string]string{"status": "paused"})
+}
+
+func (h *Handler) resumeQueue(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if err := h.store.SetQueuePaused(r.Context(), name, false); err != nil {
+		serverError(w, "resume queue", err)
+		return
+	}
+	slog.Info("queue resumed via admin", "queue", name)
+	writeJSON(w, map[string]string{"status": "resumed"})
 }
 
 func (h *Handler) purgeDeadLetters(w http.ResponseWriter, r *http.Request) {

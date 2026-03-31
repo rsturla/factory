@@ -74,6 +74,13 @@ type Interface interface {
 	// RepairCounter reconciles the in_progress counter against actual rows.
 	RepairCounter(ctx context.Context, queue string) error
 
+	// SetQueuePaused pauses or resumes a queue. When paused, items can be
+	// enqueued but the dispatcher will not claim them.
+	SetQueuePaused(ctx context.Context, queue string, paused bool) error
+
+	// IsQueuePaused returns whether a queue is paused.
+	IsQueuePaused(ctx context.Context, queue string) (bool, error)
+
 	// --- Query Operations ---
 
 	// CountByStatus returns item counts grouped by status for a queue.
@@ -145,6 +152,7 @@ type QueueInfo struct {
 	MaxConcurrency int            `json:"max_concurrency"`
 	MaxRetry       int            `json:"max_retry"`
 	ComputeBackend string         `json:"compute_backend"`
+	Paused         bool           `json:"paused"`
 	InProgress     int            `json:"in_progress"`
 	Counts         map[string]int `json:"counts"`
 }

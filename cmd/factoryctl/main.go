@@ -60,6 +60,10 @@ func main() {
 		err = cmdWorkers(os.Args[2:])
 	case "events":
 		err = cmdEvents(os.Args[2:])
+	case "pause":
+		err = cmdPause(os.Args[2:])
+	case "resume":
+		err = cmdResume(os.Args[2:])
 	case "help", "-h", "--help":
 		usage()
 		return
@@ -254,6 +258,40 @@ func cmdEvents(args []string) error {
 	return scanner.Err()
 }
 
+func cmdPause(args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: factoryctl pause <queue>")
+	}
+	resp, err := http.Post(apiEndpoint+"/admin/queues/"+args[0]+"/pause", "application/json", nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("http %d: %s", resp.StatusCode, body)
+	}
+	fmt.Printf("queue %s paused\n", args[0])
+	return nil
+}
+
+func cmdResume(args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: factoryctl resume <queue>")
+	}
+	resp, err := http.Post(apiEndpoint+"/admin/queues/"+args[0]+"/resume", "application/json", nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("http %d: %s", resp.StatusCode, body)
+	}
+	fmt.Printf("queue %s resumed\n", args[0])
+	return nil
+}
+
 func getJSON(path string, handler func([]byte) error) error {
 	resp, err := http.Get(apiEndpoint + path)
 	if err != nil {
@@ -322,6 +360,8 @@ Usage:
   factoryctl purge <queue>                 Purge dead-lettered items
   factoryctl workers                       List all workers
   factoryctl workers -q <queue>            List workers for a queue
+  factoryctl pause <queue>                 Pause a queue (items enqueue but don't dispatch)
+  factoryctl resume <queue>                Resume a paused queue
   factoryctl events <queue>                Stream real-time events
 
 Environment:

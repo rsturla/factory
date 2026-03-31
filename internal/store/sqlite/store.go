@@ -604,6 +604,26 @@ func (s *Store) RepairCounter(ctx context.Context, queue string) error {
 	return err
 }
 
+func (s *Store) SetQueuePaused(ctx context.Context, queue string, paused bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v := 0
+	if paused {
+		v = 1
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE queue_state SET paused = ? WHERE queue = ?`, v, queue)
+	return err
+}
+
+func (s *Store) IsQueuePaused(ctx context.Context, queue string) (bool, error) {
+	var paused int
+	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(paused, 0) FROM queue_state WHERE queue = ?`, queue).Scan(&paused)
+	if err != nil {
+		return false, nil
+	}
+	return paused != 0, nil
+}
+
 // --- Query Operations ---
 
 func (s *Store) CountByStatus(ctx context.Context, queue string) (map[store.Status]int64, error) {
@@ -683,7 +703,7 @@ func (s *Store) GetItem(ctx context.Context, queue, key string) (*store.WorkItem
 
 func (s *Store) ListQueues(ctx context.Context) ([]store.QueueInfo, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT queue, max_concurrency, max_retry, compute_backend, in_progress
+		SELECT queue, max_concurrency, max_retry, compute_backend, COALESCE(paused, 0), in_progress
 		FROM queue_state ORDER BY queue
 	`)
 	if err != nil {
@@ -694,9 +714,11 @@ func (s *Store) ListQueues(ctx context.Context) ([]store.QueueInfo, error) {
 	var queues []store.QueueInfo
 	for rows.Next() {
 		var qi store.QueueInfo
-		if err := rows.Scan(&qi.Name, &qi.MaxConcurrency, &qi.MaxRetry, &qi.ComputeBackend, &qi.InProgress); err != nil {
+		var paused int
+		if err := rows.Scan(&qi.Name, &qi.MaxConcurrency, &qi.MaxRetry, &qi.ComputeBackend, &paused, &qi.InProgress); err != nil {
 			return nil, err
 		}
+		qi.Paused = paused != 0
 		qi.Counts = make(map[string]int)
 		queues = append(queues, qi)
 	}

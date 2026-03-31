@@ -46,6 +46,7 @@ func Run(t *testing.T, setup func(t *testing.T) store.Interface) {
 	t.Run("EnqueueLowerPriorityNoOp", func(t *testing.T) { testEnqueueLowerPriorityNoOp(t, setup) })
 	t.Run("MultipleQueuesIsolated", func(t *testing.T) { testMultipleQueuesIsolated(t, setup) })
 	t.Run("EnsureQueueUpdatesConfig", func(t *testing.T) { testEnsureQueueUpdatesConfig(t, setup) })
+	t.Run("PauseAndResumeQueue", func(t *testing.T) { testPauseAndResumeQueue(t, setup) })
 }
 
 func testEnqueue(t *testing.T, setup func(t *testing.T) store.Interface) {
@@ -688,5 +689,56 @@ func testEnsureQueueUpdatesConfig(t *testing.T, setup func(t *testing.T) store.I
 	counts, _ := s.CountByStatus(ctx, "test")
 	if counts[store.StatusClaimed] != 1 {
 		t.Errorf("expected 1 claimed item preserved after config update, got %v", counts)
+	}
+}
+
+func testPauseAndResumeQueue(t *testing.T, setup func(t *testing.T) store.Interface) {
+	ctx := context.Background()
+	s := setup(t)
+
+	// Initially not paused.
+	paused, err := s.IsQueuePaused(ctx, "test")
+	if err != nil {
+		t.Fatalf("IsQueuePaused: %v", err)
+	}
+	if paused {
+		t.Error("expected queue not paused initially")
+	}
+
+	// Pause.
+	if err := s.SetQueuePaused(ctx, "test", true); err != nil {
+		t.Fatalf("SetQueuePaused(true): %v", err)
+	}
+	paused, _ = s.IsQueuePaused(ctx, "test")
+	if !paused {
+		t.Error("expected queue paused after SetQueuePaused(true)")
+	}
+
+	// Paused state visible in ListQueues.
+	queues, _ := s.ListQueues(ctx)
+	for _, q := range queues {
+		if q.Name == "test" {
+			if !q.Paused {
+				t.Error("expected Paused=true in ListQueues")
+			}
+		}
+	}
+
+	// Resume.
+	if err := s.SetQueuePaused(ctx, "test", false); err != nil {
+		t.Fatalf("SetQueuePaused(false): %v", err)
+	}
+	paused, _ = s.IsQueuePaused(ctx, "test")
+	if paused {
+		t.Error("expected queue not paused after resume")
+	}
+
+	// Items can still be enqueued and claimed while paused (pause only
+	// affects the dispatcher, not the store).
+	s.SetQueuePaused(ctx, "test", true)
+	s.Enqueue(ctx, "test", "paused-item", 0)
+	items, _ := s.ClaimBatch(ctx, "test", 1, "w", time.Hour)
+	if len(items) != 1 {
+		t.Errorf("expected 1 claimed (store doesn't enforce pause), got %d", len(items))
 	}
 }

@@ -852,6 +852,40 @@ func (s *Store) RepairCounter(_ context.Context, _ string) error {
 	return nil // no counter to repair — counts are derived from GSI queries
 }
 
+func (s *Store) SetQueuePaused(ctx context.Context, queue string, paused bool) error {
+	pk := "_queue#" + queue
+	_, err := s.ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: &s.table,
+		Key: map[string]dyntypes.AttributeValue{
+			"PK": &dyntypes.AttributeValueMemberS{Value: pk},
+			"SK": &dyntypes.AttributeValueMemberS{Value: cfgSK},
+		},
+		UpdateExpression: aws.String("SET paused = :p"),
+		ExpressionAttributeValues: map[string]dyntypes.AttributeValue{
+			":p": &dyntypes.AttributeValueMemberBOOL{Value: paused},
+		},
+	})
+	return err
+}
+
+func (s *Store) IsQueuePaused(ctx context.Context, queue string) (bool, error) {
+	pk := "_queue#" + queue
+	result, err := s.ddb.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: &s.table,
+		Key: map[string]dyntypes.AttributeValue{
+			"PK": &dyntypes.AttributeValueMemberS{Value: pk},
+			"SK": &dyntypes.AttributeValueMemberS{Value: cfgSK},
+		},
+	})
+	if err != nil || result.Item == nil {
+		return false, nil
+	}
+	if v, ok := result.Item["paused"].(*dyntypes.AttributeValueMemberBOOL); ok {
+		return v.Value, nil
+	}
+	return false, nil
+}
+
 func (s *Store) getQueueConfig(ctx context.Context, queue string) store.QueueConfig {
 	pk := "_queue#" + queue
 	result, err := s.ddb.GetItem(ctx, &dynamodb.GetItemInput{
@@ -1081,12 +1115,14 @@ func (s *Store) ListQueues(ctx context.Context) ([]store.QueueInfo, error) {
 		queueName := strings.TrimPrefix(pkAttr.Value, "_queue#")
 		cfg := s.getQueueConfig(ctx, queueName)
 
+		paused, _ := s.IsQueuePaused(ctx, queueName)
 		counts, _ := s.CountByStatus(ctx, queueName)
 		qi := store.QueueInfo{
 			Name:           queueName,
 			MaxConcurrency: cfg.MaxConcurrency,
 			MaxRetry:       cfg.MaxRetry,
 			ComputeBackend: cfg.ComputeBackend,
+			Paused:         paused,
 			InProgress:     int(counts[store.StatusClaimed] + counts[store.StatusRunning]),
 			Counts:         make(map[string]int),
 		}

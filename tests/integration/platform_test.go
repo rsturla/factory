@@ -45,6 +45,9 @@ func newPlatform(t *testing.T, reconcilerFn func(sdk.ProcessRequest) sdk.Process
 	t.Helper()
 
 	s := inmem.New()
+	s.EnsureQueue(context.Background(), "test", store.QueueConfig{
+		MaxConcurrency: 10, MaxRetry: 3, ComputeBackend: "kubernetes",
+	})
 
 	// Receiver with workqueue API.
 	mux := http.NewServeMux()
@@ -774,5 +777,48 @@ func TestEndToEnd_ReconciliationPollingPattern(t *testing.T) {
 	counts, _ := p.store.CountByStatus(context.Background(), "test")
 	if counts[store.StatusSucceeded] != 1 {
 		t.Errorf("expected 1 succeeded, got %v", counts)
+	}
+}
+
+func TestEndToEnd_PausedQueueDoesNotDispatch(t *testing.T) {
+	var processed atomic.Int32
+	p := newPlatform(t, func(req sdk.ProcessRequest) sdk.ProcessResponse {
+		processed.Add(1)
+		return sdk.Completed()
+	})
+
+	// Enqueue an item first, then pause.
+	p.enqueue(t, "paused-item", 0)
+
+	// Pause the queue.
+	if err := p.store.SetQueuePaused(context.Background(), "test", true); err != nil {
+		t.Fatalf("SetQueuePaused: %v", err)
+	}
+
+	// Verify pause is set.
+	paused, _ := p.store.IsQueuePaused(context.Background(), "test")
+	if !paused {
+		t.Fatal("queue should be paused")
+	}
+
+	// Run dispatcher — should not dispatch while paused.
+	p.runFor(t, 500*time.Millisecond)
+
+	if processed.Load() != 0 {
+		t.Errorf("expected 0 processed while paused, got %d", processed.Load())
+	}
+
+	// Item should still be pending.
+	pendingCounts, _ := p.store.CountByStatus(context.Background(), "test")
+	if pendingCounts[store.StatusPending] != 1 {
+		t.Errorf("expected 1 pending while paused, got %v", pendingCounts)
+	}
+
+	// Resume and run again.
+	p.store.SetQueuePaused(context.Background(), "test", false)
+	p.runFor(t, 500*time.Millisecond)
+
+	if processed.Load() != 1 {
+		t.Errorf("expected 1 processed after resume, got %d", processed.Load())
 	}
 }

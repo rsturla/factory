@@ -243,6 +243,8 @@ Available responses:
 | POST | `/admin/queues/{name}/items/{key}/retry` | Retry a failed/dead-lettered item |
 | POST | `/admin/queues/{name}/items/{key}/cancel` | Cancel an item |
 | DELETE | `/admin/queues/{name}/dead-letters` | Purge dead-lettered items |
+| POST | `/admin/queues/{name}/pause` | Pause a queue (items enqueue but don't dispatch) |
+| POST | `/admin/queues/{name}/resume` | Resume a paused queue |
 | GET | `/admin/workers` | List workers (filter: `?queue=name`) |
 | GET | `/admin/queues/{name}/events` | SSE real-time event stream |
 
@@ -257,6 +259,8 @@ factoryctl items <queue> -s pending      Filter by status
 factoryctl retry <queue> <key>           Retry a failed item
 factoryctl cancel <queue> <key>          Cancel an item
 factoryctl purge <queue>                 Purge dead letters
+factoryctl pause <queue>                 Pause a queue
+factoryctl resume <queue>                Resume a paused queue
 factoryctl workers                       List all workers
 factoryctl events <queue>                Stream real-time events
 ```

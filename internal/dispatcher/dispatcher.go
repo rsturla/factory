@@ -105,6 +105,10 @@ func (d *Dispatcher) loop(ctx context.Context, name string, interval time.Durati
 }
 
 func (d *Dispatcher) dispatchTick(ctx context.Context) {
+	if paused, _ := d.store.IsQueuePaused(ctx, d.cfg.QueueName); paused {
+		return
+	}
+
 	start := time.Now()
 	items, err := d.store.ClaimBatch(ctx, d.cfg.QueueName, d.cfg.BatchSize, d.cfg.WorkerID, d.cfg.LeaseDuration)
 	if err != nil {

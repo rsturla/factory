@@ -48,7 +48,7 @@ func TestMigration_AppliesAll(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query schema_migrations: %v", err)
 	}
-	if count != 2 {
+	if count != 3 {
 		t.Errorf("expected 2 migrations applied, got %d", count)
 	}
 }
@@ -68,7 +68,7 @@ func TestMigration_Idempotent(t *testing.T) {
 
 	var count int
 	pool.QueryRow(ctx, "SELECT COUNT(*) FROM schema_migrations").Scan(&count)
-	if count != 2 {
+	if count != 3 {
 		t.Errorf("expected 2 migrations after double run, got %d", count)
 	}
 }
@@ -94,6 +94,7 @@ func TestMigration_TracksVersionsInOrder(t *testing.T) {
 	}{
 		{1, "001_initial.sql"},
 		{2, "002_add_completed_index.sql"},
+		{3, "003_add_queue_paused.sql"},
 	}
 
 	i := 0

@@ -135,6 +135,20 @@ func (c *WorkqueueClient) ListQueues(ctx context.Context) ([]store.QueueInfo, er
 	return queues, nil
 }
 
+func (c *WorkqueueClient) SetQueuePaused(ctx context.Context, queue string, paused bool) error {
+	return c.post(ctx, "/wq/set-paused", map[string]any{"queue": queue, "paused": paused})
+}
+
+func (c *WorkqueueClient) IsQueuePaused(ctx context.Context, queue string) (bool, error) {
+	body, err := c.postJSON(ctx, "/wq/is-paused", map[string]any{"queue": queue})
+	if err != nil {
+		return false, err
+	}
+	var result struct{ Paused bool `json:"paused"` }
+	json.Unmarshal(body, &result)
+	return result.Paused, nil
+}
+
 func (c *WorkqueueClient) ListWorkers(ctx context.Context, queue string) ([]store.WorkerLease, error) {
 	body, err := c.postJSON(ctx, "/wq/list-workers", map[string]any{"queue": queue})
 	if err != nil {
