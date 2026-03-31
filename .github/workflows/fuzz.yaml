@@ -1,0 +1,79 @@
+name: Fuzz
+
+on:
+  schedule:
+    - cron: "0 4 * * *" # nightly at 04:00 UTC
+  workflow_dispatch: {}
+
+jobs:
+  fuzz:
+    name: Fuzz
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - pkg: ./internal/wqapi/
+            target: FuzzWqapiEnqueue
+          - pkg: ./internal/wqapi/
+            target: FuzzWqapiClaim
+          - pkg: ./internal/wqapi/
+            target: FuzzWqapiComplete
+          - pkg: ./internal/wqapi/
+            target: FuzzWqapiFail
+          - pkg: ./internal/wqapi/
+            target: FuzzWqapiHeartbeat
+          - pkg: ./internal/wqapi/
+            target: FuzzWqapiTransition
+          - pkg: ./internal/wqapi/
+            target: FuzzWqapiRequeueUndo
+          - pkg: ./internal/wqapi/
+            target: FuzzWqapiEnsureQueue
+          - pkg: ./internal/wqapi/
+            target: FuzzWqapiList
+          - pkg: ./internal/wqapi/
+            target: FuzzWqapiRecordHistory
+          - pkg: ./internal/admin/
+            target: FuzzAdminListItems
+          - pkg: ./internal/admin/
+            target: FuzzAdminGetItem
+          - pkg: ./internal/admin/
+            target: FuzzAdminRetryItem
+          - pkg: ./internal/completion/
+            target: FuzzBackoffHandleFailure
+          - pkg: ./internal/authz/cedar/
+            target: FuzzCedarAuthorize
+          - pkg: ./internal/authz/cedar/
+            target: FuzzCedarPolicyParse
+          - pkg: ./internal/store/inmem/
+            target: FuzzStoreLifecycle
+          - pkg: ./pkg/client/
+            target: FuzzReconcilerClientProcess
+          - pkg: ./pkg/sdk/
+            target: FuzzReconcilerHandler
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Restore fuzz corpus
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ~/.cache/go-build/fuzz
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.sha }}
+          restore-keys: |
+            fuzz-corpus-${{ matrix.target }}-
+
+      - name: Fuzz ${{ matrix.target }}
+        run: go test ${{ matrix.pkg }} -fuzz=${{ matrix.target }} -fuzztime=60s -v
+
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: crash-${{ matrix.target }}
+          path: |
+            **/testdata/fuzz/${{ matrix.target }}/
+          retention-days: 30
