@@ -1,6 +1,6 @@
 # Scaling Guide
 
-This document describes how Factory V2 scales from a single-node development setup to a production deployment handling 500,000+ jobs per day.
+This document describes how Factory Workqueue scales from a single-node development setup to a production deployment handling 500,000+ jobs per day.
 
 ## Architecture recap
 

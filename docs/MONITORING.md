@@ -1,6 +1,6 @@
 # Monitoring Guide
 
-Factory V2 exposes Prometheus metrics, structured JSON logs, and a real-time event stream for operational visibility across all queues.
+Factory Workqueue exposes Prometheus metrics, structured JSON logs, and a real-time event stream for operational visibility across all queues.
 
 ## Prometheus Metrics
 

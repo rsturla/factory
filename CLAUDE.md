@@ -1,4 +1,4 @@
-# Factory V2
+# Factory Workqueue
 
 A pure workqueue platform for orchestrating software factory operations (RPM builds, container images, AI code generation, tests, MR reviews). Written in Go, deployed on OpenShift.
 

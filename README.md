@@ -1,4 +1,4 @@
-# Factory V2
+# Factory Workqueue
 
 A pure workqueue platform for orchestrating software factory operations at scale. Designed for Linux distribution teams managing RPM builds, container images, AI code generation, test invocation, and merge request reviews.
 
