@@ -77,7 +77,8 @@ factory-v2/
 │   ├── sdk/               Public SDK for reconciler authors
 │   └── client/            HTTP clients for inter-service communication
 ├── examples/
-│   └── echo-reconciler/   Minimal test reconciler
+│   ├── echo-reconciler/   HTTP server reconciler (K8s, push model)
+│   └── standalone-worker/ Self-dispatching worker (EC2, pull model)
 ├── deploy/
 │   ├── docker-compose.postgres.yaml
 │   ├── docker-compose.sqlite.yaml
@@ -118,16 +119,14 @@ Authorization is pluggable via `AUTHZ_BACKEND` — same pattern as store backend
 
 ## Writing a reconciler
 
-Reconcilers are separate Go projects that import `factory-workqueue/pkg/sdk`:
+Two patterns depending on where the reconciler runs:
+
+### HTTP reconciler (Kubernetes)
+
+The dispatcher calls your `/process` endpoint. Use for lightweight or fast work, or for work that delegates to external systems (Koji, Tekton) and polls via `RequeueAfter`. See `examples/echo-reconciler/`.
 
 ```go
-package main
-
-import (
-    "context"
-    "net/http"
-    "github.com/hummingbird-org/factory-workqueue/pkg/sdk"
-)
+import "github.com/hummingbird-org/factory-workqueue/pkg/sdk"
 
 func main() {
     mux := http.NewServeMux()
@@ -136,20 +135,44 @@ func main() {
 }
 
 func reconcile(ctx context.Context, req sdk.ProcessRequest) (sdk.ProcessResponse, error) {
-    // req.Key is the work item key (e.g., "curl-1.0-1.fc43")
-    // Check if work is needed, do the work, return the result.
-
     if alreadyDone(ctx, req.Key) {
         return sdk.Converged(), nil
     }
-
     if err := doWork(ctx, req.Key); err != nil {
-        return sdk.ProcessResponse{}, err // retriable error
+        return sdk.ProcessResponse{}, err
     }
-
     return sdk.Completed(), nil
 }
 ```
+
+### Standalone worker (EC2, bare metal)
+
+The worker claims items directly from the store, processes them locally, and reports back. Use for heavy local work (rpmbuild, container builds, AI inference) where holding an HTTP connection open for the duration is impractical. See `examples/standalone-worker/`.
+
+```go
+import "github.com/hummingbird-org/factory-workqueue/internal/store"
+
+for {
+    items, _ := s.ClaimBatch(ctx, "rpm-update", 1, workerID, 2*time.Hour)
+    if len(items) == 0 {
+        time.Sleep(5 * time.Second)
+        continue
+    }
+    s.Transition(ctx, item.Queue, item.Key, store.StatusClaimed, store.StatusRunning)
+
+    // Heartbeat in background to keep lease alive
+    go heartbeat(ctx, s, item)
+
+    // Do heavy local work (minutes/hours)
+    if err := rpmbuild(item.Key); err != nil {
+        s.Fail(ctx, item.Queue, item.Key, err.Error())
+    } else {
+        s.Complete(ctx, item.Queue, item.Key)
+    }
+}
+```
+
+Both patterns use the same store, same state machine, same retry/dead-letter logic. If the worker dies mid-work, the lease expires and the reaper reclaims the item.
 
 Available responses:
 - `sdk.Completed()` — work done successfully
