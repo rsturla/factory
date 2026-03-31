@@ -28,8 +28,7 @@
 // Environment variables:
 //
 //	QUEUE_NAME        - Queue to process (required)
-//	STORE_BACKEND     - "postgres", "dynamodb", or "sqlite" (default: "postgres")
-//	DATABASE_URL      - PostgreSQL connection string (postgres backend)
+//	WORKQUEUE_API     - Receiver/workqueue API endpoint (required, e.g. "http://factory-receiver:8081")
 //	WORKER_ID         - Unique worker identifier (default: hostname)
 //	BATCH_SIZE        - Items to claim per cycle (default: 1)
 //	LEASE_DURATION    - Lease duration (default: 2h)
@@ -47,11 +46,12 @@ import (
 	"time"
 
 	"github.com/hummingbird-org/factory-workqueue/internal/store"
-	"github.com/hummingbird-org/factory-workqueue/internal/storeutil"
+	"github.com/hummingbird-org/factory-workqueue/pkg/client"
 )
 
 func main() {
 	queueName := requireEnv("QUEUE_NAME")
+	apiEndpoint := requireEnv("WORKQUEUE_API")
 	workerID := envOr("WORKER_ID", hostname())
 	batchSize := envInt("BATCH_SIZE", 1)
 	leaseDuration := envDuration("LEASE_DURATION", 2*time.Hour)
@@ -60,17 +60,12 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	result, err := storeutil.CreateFromEnv(ctx)
-	if err != nil {
-		slog.Error("failed to create store", "error", err)
-		os.Exit(1)
-	}
-	if result.Pool != nil {
-		defer result.Pool.Close()
-	}
+	// Connect to the workqueue via HTTP — no direct database access.
+	wq := client.NewWorkqueueClient(apiEndpoint)
 
 	slog.Info("standalone worker starting",
 		"queue", queueName,
+		"api", apiEndpoint,
 		"worker_id", workerID,
 		"batch_size", batchSize,
 		"lease_duration", leaseDuration,
@@ -85,7 +80,7 @@ func main() {
 		default:
 		}
 
-		items, err := result.Store.ClaimBatch(ctx, queueName, batchSize, workerID, leaseDuration)
+		items, err := wq.ClaimBatch(ctx, queueName, batchSize, workerID, leaseDuration)
 		if err != nil {
 			slog.Error("claim failed", "error", err)
 			time.Sleep(pollInterval)
@@ -105,14 +100,14 @@ func main() {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				processItem(ctx, result.Store, item, leaseDuration)
+				processItem(ctx, wq, item, leaseDuration)
 			}()
 		}
 		wg.Wait()
 	}
 }
 
-func processItem(ctx context.Context, s store.Interface, item store.WorkItem, leaseDuration time.Duration) {
+func processItem(ctx context.Context, s *client.WorkqueueClient, item store.WorkItem, leaseDuration time.Duration) {
 	slog.Info("processing", "key", item.Key, "attempt", item.Attempts, "priority", item.Priority)
 
 	// Transition to running.

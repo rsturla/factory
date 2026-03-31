@@ -39,6 +39,7 @@ import (
 	"github.com/hummingbird-org/factory-workqueue/internal/store"
 	"github.com/hummingbird-org/factory-workqueue/internal/storeutil"
 	"github.com/hummingbird-org/factory-workqueue/internal/tracing"
+	"github.com/hummingbird-org/factory-workqueue/internal/wqapi"
 )
 
 func main() {
@@ -71,6 +72,9 @@ func main() {
 	mux := http.NewServeMux()
 	mux.Handle("POST /enqueue", authz.Wrap(authorizer, authz.ActionEnqueue, queueName,
 		&enqueueHandler{queue: queueName, store: result.Store}))
+
+	// Workqueue API — exposes store operations over HTTP for standalone workers.
+	wqapi.NewHandler(result.Store, authorizer).Register(mux)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
