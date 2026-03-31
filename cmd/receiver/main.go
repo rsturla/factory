@@ -125,24 +125,36 @@ func (h *enqueueHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	span.SetAttributes(attribute.String("key", req.Key), attribute.Int("priority", req.Priority))
 
-	if err := h.store.Enqueue(ctx, h.queue, req.Key, req.Priority); err != nil {
-		span.RecordError(err)
-		slog.Error("enqueue failed", "queue", h.queue, "key", req.Key, "error", err)
-		http.Error(w, "enqueue failed", http.StatusInternalServerError)
-		return
-	}
+	tracer := tracing.Tracer("factory.receiver")
+
+	// Write to the store.
+	func() {
+		_, storeSpan := tracer.Start(ctx, "store.Enqueue")
+		defer storeSpan.End()
+		if err := h.store.Enqueue(ctx, h.queue, req.Key, req.Priority); err != nil {
+			storeSpan.RecordError(err)
+			span.RecordError(err)
+			slog.Error("enqueue failed", "queue", h.queue, "key", req.Key, "error", err)
+			http.Error(w, "enqueue failed", http.StatusInternalServerError)
+			return
+		}
+	}()
 
 	// Store W3C traceparent so the dispatcher can link its trace back
 	// to this enqueue trace via a span link.
 	sc := span.SpanContext()
 	traceparent := fmt.Sprintf("00-%s-%s-01", sc.TraceID().String(), sc.SpanID().String())
 
-	h.store.RecordHistory(ctx, store.HistoryEntry{
-		Queue:    h.queue,
-		Key:      req.Key,
-		ToStatus: "pending",
-		TraceID:  traceparent,
-	})
+	func() {
+		_, histSpan := tracer.Start(ctx, "recordHistory")
+		defer histSpan.End()
+		h.store.RecordHistory(ctx, store.HistoryEntry{
+			Queue:    h.queue,
+			Key:      req.Key,
+			ToStatus: "pending",
+			TraceID:  traceparent,
+		})
+	}()
 
 	metrics.ItemsEnqueued.WithLabelValues(h.queue).Inc()
 	slog.Info("enqueued", "queue", h.queue, "key", req.Key, "priority", req.Priority, "trace_id", traceparent)
