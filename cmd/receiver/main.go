@@ -132,8 +132,8 @@ func (h *enqueueHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Store full traceparent (W3C format) so the dispatcher can create
-	// a child span under this trace, giving end-to-end visibility.
+	// Store W3C traceparent so the dispatcher can link its trace back
+	// to this enqueue trace via a span link.
 	sc := span.SpanContext()
 	traceparent := fmt.Sprintf("00-%s-%s-01", sc.TraceID().String(), sc.SpanID().String())
 

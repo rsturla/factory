@@ -305,7 +305,7 @@ func (d *Dispatcher) scaleTick(ctx context.Context) {
 }
 
 // parseTraceparent parses a W3C traceparent string ("00-{traceID}-{spanID}-{flags}")
-// into a SpanContext for creating child spans across the async queue boundary.
+// into a SpanContext for creating span links across the async queue boundary.
 func parseTraceparent(tp string) (trace.SpanContext, bool) {
 	parts := strings.Split(tp, "-")
 	if len(parts) != 4 {
