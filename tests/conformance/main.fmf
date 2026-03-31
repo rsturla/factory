@@ -1,8 +1,8 @@
-summary: Store conformance tests (PostgreSQL + DynamoDB)
+summary: PostgreSQL conformance tests
 description: |
-    Runs the 31-test conformance suite against PostgreSQL and DynamoDB+S3
-    (via DynamoDB Local + rustfs containers). SQLite and inmem conformance
-    run as part of the unit tests.
+    Runs the 31-test conformance suite and 6 migration tests against
+    PostgreSQL. DynamoDB conformance runs in GitHub Actions CI. SQLite
+    and inmem conformance run as part of unit tests.
 test: bash tests/conformance/run.sh
 duration: 10m
 require:

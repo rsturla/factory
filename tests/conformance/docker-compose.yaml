@@ -12,36 +12,3 @@ services:
       interval: 2s
       timeout: 5s
       retries: 10
-
-  dynamodb:
-    image: docker.io/amazon/dynamodb-local:latest
-    ports:
-      - "8000:8000"
-    healthcheck:
-      test: ["CMD-SHELL", "java -version 2>&1 || exit 1"]
-      interval: 2s
-      timeout: 5s
-      retries: 10
-      start_period: 3s
-
-  rustfs:
-    image: docker.io/rustfs/rustfs:latest
-    ports:
-      - "9000:9000"
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:9000/ || exit 0"]
-      interval: 2s
-      timeout: 5s
-      retries: 10
-
-  bucket-init:
-    image: docker.io/amazon/aws-cli:latest
-    entrypoint: >
-      sh -c "aws --endpoint-url http://rustfs:9000 s3 mb s3://factory-test 2>/dev/null || true"
-    environment:
-      AWS_ACCESS_KEY_ID: rustfsadmin
-      AWS_SECRET_ACCESS_KEY: rustfsadmin
-      AWS_DEFAULT_REGION: us-east-1
-    depends_on:
-      rustfs:
-        condition: service_healthy
