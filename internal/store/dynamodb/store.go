@@ -140,16 +140,15 @@ func (s *Store) CreateTable(ctx context.Context) error {
 		BillingMode: dyntypes.BillingModePayPerRequest,
 	})
 	if err != nil {
-		// Ignore if table already exists.
+		// Table already exists — check schema version.
 		var resourceInUse *dyntypes.ResourceInUseException
 		if ok := errors.As(err, &resourceInUse); ok {
-			return nil
+			return s.checkSchemaVersion(ctx)
 		}
 		return fmt.Errorf("create table: %w", err)
 	}
 
-	// Write a schema version marker so operators can tell which version
-	// of the table schema is deployed.
+	// New table — write schema version marker.
 	s.ddb.PutItem(ctx, &dynamodb.PutItemInput{
 		TableName: &s.table,
 		Item: map[string]dyntypes.AttributeValue{
@@ -166,6 +165,41 @@ func (s *Store) CreateTable(ctx context.Context) error {
 // SchemaVersion is the current DynamoDB table schema version.
 // Increment this when the table structure changes (new GSI, TTL config, etc.).
 const SchemaVersion = 1
+
+func (s *Store) checkSchemaVersion(ctx context.Context) error {
+	result, err := s.ddb.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: &s.table,
+		Key: map[string]dyntypes.AttributeValue{
+			"PK": &dyntypes.AttributeValueMemberS{Value: "_schema"},
+			"SK": &dyntypes.AttributeValueMemberS{Value: "VERSION"},
+		},
+	})
+	if err != nil {
+		return nil // can't check — table might be pre-versioning, allow startup
+	}
+
+	if result.Item == nil {
+		return nil // no version marker — table predates versioning, allow startup
+	}
+
+	vAttr, ok := result.Item["schema_version"].(*dyntypes.AttributeValueMemberN)
+	if !ok {
+		return nil
+	}
+
+	tableVersion, err := strconv.Atoi(vAttr.Value)
+	if err != nil {
+		return nil
+	}
+
+	if tableVersion != SchemaVersion {
+		return fmt.Errorf(
+			"DynamoDB table schema version mismatch: table has version %d, code expects version %d. "+
+				"Manual table migration required", tableVersion, SchemaVersion)
+	}
+
+	return nil
+}
 
 // --- Key helpers ---
 
