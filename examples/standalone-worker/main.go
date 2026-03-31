@@ -33,6 +33,7 @@
 //	BATCH_SIZE        - Items to claim per cycle (default: 1)
 //	LEASE_DURATION    - Lease duration (default: 2h)
 //	POLL_INTERVAL     - How often to check for work when idle (default: 5s)
+//	MAX_IDLE          - Exit after this duration with no work (default: 10m, 0 = never)
 package main
 
 import (
@@ -56,6 +57,7 @@ func main() {
 	batchSize := envInt("BATCH_SIZE", 1)
 	leaseDuration := envDuration("LEASE_DURATION", 2*time.Hour)
 	pollInterval := envDuration("POLL_INTERVAL", 5*time.Second)
+	maxIdle := envDuration("MAX_IDLE", 10*time.Minute)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
@@ -70,7 +72,10 @@ func main() {
 		"batch_size", batchSize,
 		"lease_duration", leaseDuration,
 		"poll_interval", pollInterval,
+		"max_idle", maxIdle,
 	)
+
+	idleSince := time.Now()
 
 	for {
 		select {
@@ -88,9 +93,18 @@ func main() {
 		}
 
 		if len(items) == 0 {
+			if maxIdle > 0 && time.Since(idleSince) > maxIdle {
+				slog.Info("idle timeout exceeded, exiting",
+					"idle_for", time.Since(idleSince).Round(time.Second),
+					"max_idle", maxIdle,
+				)
+				return
+			}
 			time.Sleep(pollInterval)
 			continue
 		}
+
+		idleSince = time.Now() // reset idle timer on work
 
 		slog.Info("claimed items", "count", len(items))
 
