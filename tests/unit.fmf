@@ -1,0 +1,9 @@
+summary: Unit and conformance tests
+description: |
+    Runs all unit tests including store conformance suite (inmem, sqlite),
+    completion handler, admin API, dispatcher, SDK, and Cedar authz.
+test: go test -v -count=1 -timeout 120s ./...
+duration: 5m
+require:
+    - golang
+framework: shell

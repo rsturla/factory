@@ -1,0 +1,60 @@
+services:
+  postgres:
+    image: docker.io/library/postgres:16
+    environment:
+      POSTGRES_DB: factory
+      POSTGRES_USER: factory
+      POSTGRES_PASSWORD: factory
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U factory"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  admin:
+    image: ${ADMIN_IMAGE}
+    ports:
+      - "18080:8080"
+    environment:
+      DATABASE_URL: postgres://factory:factory@postgres:5432/factory?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  echo-receiver:
+    image: ${RECEIVER_IMAGE}
+    ports:
+      - "8081:8081"
+    environment:
+      QUEUE_NAME: echo
+      DATABASE_URL: postgres://factory:factory@postgres:5432/factory?sslmode=disable
+      LISTEN_ADDR: ":8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  echo-dispatcher:
+    image: ${DISPATCHER_IMAGE}
+    environment:
+      QUEUE_NAME: echo
+      DATABASE_URL: postgres://factory:factory@postgres:5432/factory?sslmode=disable
+      RECONCILER_ENDPOINT: http://echo-reconciler:8082
+      STORE_BACKEND: postgres
+      COMPUTE_BACKEND: noop
+      MAX_CONCURRENCY: "5"
+      BATCH_SIZE: "5"
+      DISPATCH_INTERVAL: 2s
+      LEASE_DURATION: 5m
+    depends_on:
+      postgres:
+        condition: service_healthy
+      echo-reconciler:
+        condition: service_started
+
+  echo-reconciler:
+    image: ${RECONCILER_IMAGE}
+    environment:
+      LISTEN_ADDR: ":8082"
+      PROCESS_DELAY: 1s

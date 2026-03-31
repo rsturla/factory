@@ -1,0 +1,68 @@
+services:
+  postgres:
+    image: docker.io/library/postgres:16
+    environment:
+      POSTGRES_DB: factory
+      POSTGRES_USER: factory
+      POSTGRES_PASSWORD: factory
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U factory"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  # Receiver exposes /wq/* API for the standalone worker.
+  echo-receiver:
+    image: ${RECEIVER_IMAGE}
+    ports:
+      - "8081:8081"
+    environment:
+      QUEUE_NAME: echo
+      DATABASE_URL: postgres://factory:factory@postgres:5432/factory?sslmode=disable
+      LISTEN_ADDR: ":8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Admin API for verification.
+  admin:
+    image: ${ADMIN_IMAGE}
+    ports:
+      - "18080:8080"
+    environment:
+      DATABASE_URL: postgres://factory:factory@postgres:5432/factory?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Dispatcher in scale-only mode — does NOT dispatch work.
+  # Only runs sweep/reaper/scale loops.
+  echo-dispatcher:
+    image: ${DISPATCHER_IMAGE}
+    environment:
+      QUEUE_NAME: echo
+      DATABASE_URL: postgres://factory:factory@postgres:5432/factory?sslmode=disable
+      DISPATCH_MODE: scale-only
+      COMPUTE_BACKEND: noop
+      STORE_BACKEND: postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Standalone worker claims via HTTP API, not via dispatcher push.
+  echo-worker:
+    image: ${STANDALONE_WORKER_IMAGE}
+    environment:
+      QUEUE_NAME: echo
+      WORKQUEUE_API: http://echo-receiver:8081
+      WORKER_ID: standalone-test-worker
+      BATCH_SIZE: "1"
+      LEASE_DURATION: 5m
+      POLL_INTERVAL: 1s
+      MAX_IDLE: 30s
+      WORK_DURATION: 1s
+    depends_on:
+      echo-receiver:
+        condition: service_started

@@ -1,0 +1,10 @@
+summary: End-to-end platform integration tests
+description: |
+    Tests the full factory workqueue stack in-process: store, receiver,
+    dispatcher, reconciler, and standalone worker API. No external
+    dependencies — uses the in-memory store.
+test: go test -v -count=1 -timeout 60s ./tests/integration/
+duration: 5m
+require:
+    - golang
+framework: shell
