@@ -74,7 +74,7 @@ factory-v2/
 │   ├── authzutil/         Authorizer creation from env vars
 │   ├── metrics/           Prometheus metric definitions
 ├── pkg/
-│   ├── sdk/               Public SDK for reconciler authors
+│   ├── sdk/               Public SDK for reconciler authors (separate Go module)
 │   └── client/            HTTP clients for inter-service communication
 ├── examples/
 │   ├── echo-reconciler/   HTTP server reconciler (K8s, push model)
@@ -90,6 +90,7 @@ factory-v2/
 │       ├── cedar/          Example Cedar policies
 │       └── opa/            Example OPA/Rego policies
 └── docs/
+    ├── SDK.md              Reconciler SDK guide and wire protocol
     ├── SCALING.md          Capacity planning and tuning guide
     └── MONITORING.md       Metrics, alerts, and dashboards
 ```
@@ -119,76 +120,22 @@ Authorization is pluggable via `AUTHZ_BACKEND` — same pattern as store backend
 
 ## Writing a reconciler
 
-Two patterns depending on how long the work takes and where it runs:
+See [docs/SDK.md](docs/SDK.md) for the full guide, including the wire protocol, Go SDK, non-Go examples, and lifecycle details.
 
-| Duration | Pattern | Dispatcher mode | Example |
-|----------|---------|----------------|---------|
-| Under 2 minutes | HTTP reconciler | `push` | MR review, test runner, API calls |
-| 2-60 minutes | Either | Depends | Container build (K8s → push, EC2 → standalone) |
-| Over 60 minutes | Standalone worker | `scale-only` | RPM build, AI inference |
+Quick start with the Go SDK (zero external dependencies):
 
-For work that delegates to external systems (Koji, Tekton, CI) and polls for completion, use an HTTP reconciler with `RequeueAfter` regardless of how long the external work takes — each invocation is a quick status check.
-
-### HTTP reconciler (push model)
-
-The dispatcher calls your `/process` endpoint. The reconciler does the work inline and returns. Set `DISPATCH_MODE=push` (default). See `examples/echo-reconciler/`.
+```bash
+go get github.com/hummingbird-org/factory-workqueue/pkg/sdk
+```
 
 ```go
-import "github.com/hummingbird-org/factory-workqueue/pkg/sdk"
-
-func main() {
-    mux := http.NewServeMux()
-    mux.Handle("POST /process", sdk.ReconcilerHandler(reconcile))
-    http.ListenAndServe(":8082", mux)
-}
-
-func reconcile(ctx context.Context, req sdk.ProcessRequest) (sdk.ProcessResponse, error) {
-    if alreadyDone(ctx, req.Key) {
-        return sdk.Converged(), nil
-    }
+mux.Handle("POST /process", sdk.ReconcilerHandler(func(ctx context.Context, req sdk.ProcessRequest) (sdk.ProcessResponse, error) {
     if err := doWork(ctx, req.Key); err != nil {
-        return sdk.ProcessResponse{}, err
+        return sdk.ProcessResponse{}, err // retriable failure
     }
     return sdk.Completed(), nil
-}
+}))
 ```
-
-### Standalone worker (pull model)
-
-The worker claims items via the workqueue HTTP API, processes them locally, and reports back. Set `DISPATCH_MODE=scale-only` on the dispatcher. See `examples/standalone-worker/`.
-
-```go
-import "github.com/hummingbird-org/factory-workqueue/pkg/client"
-
-wq := client.NewWorkqueueClient("http://factory-receiver:8081")
-
-for {
-    items, _ := wq.ClaimBatch(ctx, "rpm-update", 1, workerID, 2*time.Hour)
-    if len(items) == 0 {
-        time.Sleep(5 * time.Second)
-        continue
-    }
-
-    // Heartbeat in background to keep lease alive
-    go heartbeat(ctx, wq, item)
-
-    // Do heavy local work (minutes/hours)
-    if err := rpmbuild(item.Key); err != nil {
-        wq.Fail(ctx, item.Queue, item.Key, err.Error())
-    } else {
-        wq.Complete(ctx, item.Queue, item.Key)
-    }
-}
-```
-
-Both patterns use the same store, same state machine, same retry/dead-letter logic. If a worker dies mid-work, the lease expires and the reaper reclaims the item. Workers exit after `MAX_IDLE` (default 10m) with no work, and the dispatcher scales compute back down.
-
-Available responses:
-- `sdk.Completed()` — work done successfully
-- `sdk.Converged()` — desired state already met, nothing to do
-- `sdk.RequeueAfter(duration)` — check back later (doesn't consume retry budget)
-- `sdk.FanOut(keys...)` — complete this item and enqueue dependent items
-- Return an `error` — retriable failure, requeued with exponential backoff
 
 ## Environment variables
 
@@ -286,6 +233,7 @@ cd deploy && docker compose -f docker-compose.stress.yaml up --build -d
 
 ## Documentation
 
+- [SDK.md](docs/SDK.md) — reconciler SDK guide, wire protocol, Go and non-Go examples
 - [SCALING.md](docs/SCALING.md) — capacity planning, HPA configuration, PostgreSQL tuning, queue isolation
 - [MONITORING.md](docs/MONITORING.md) — Prometheus metrics, alerting rules, Grafana dashboards, structured logging
 - [AUTH.md](docs/AUTH.md) — authentication, authorization, Cedar/OPA policy examples

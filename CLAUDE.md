@@ -100,6 +100,7 @@ All binaries accept `STORE_BACKEND` (`postgres`, `dynamodb`, `sqlite`) plus back
 ## Documentation
 
 - [README.md](README.md) — project overview, quick start, full API reference
+- [docs/SDK.md](docs/SDK.md) — reconciler SDK guide, wire protocol, non-Go examples
 - [docs/SCALING.md](docs/SCALING.md) — capacity planning for 500k+ jobs/day
 - [docs/MONITORING.md](docs/MONITORING.md) — Prometheus metrics, alerting, dashboards
 - [docs/AUTH.md](docs/AUTH.md) — authentication, authorization, Cedar/OPA policies
