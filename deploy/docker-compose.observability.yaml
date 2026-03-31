@@ -57,6 +57,8 @@ services:
       dockerfile: Containerfile
       args:
         BINARY: admin
+    labels:
+      factory.component: admin
     ports:
       - "18080:8080"
     environment:
@@ -73,6 +75,9 @@ services:
       dockerfile: Containerfile
       args:
         BINARY: receiver
+    labels:
+      factory.queue: echo
+      factory.component: receiver
     ports:
       - "8081:8081"
     environment:
@@ -91,6 +96,9 @@ services:
       dockerfile: Containerfile
       args:
         BINARY: dispatcher
+    labels:
+      factory.queue: echo
+      factory.component: dispatcher
     environment:
       QUEUE_NAME: echo
       DATABASE_URL: postgres://factory:factory@postgres:5432/factory?sslmode=disable
@@ -115,6 +123,9 @@ services:
     build:
       context: ..
       dockerfile: examples/echo-reconciler/Containerfile
+    labels:
+      factory.queue: echo
+      factory.component: reconciler
     environment:
       LISTEN_ADDR: ":8082"
       PROCESS_DELAY: 500ms

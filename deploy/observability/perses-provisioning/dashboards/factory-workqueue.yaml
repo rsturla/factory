@@ -302,7 +302,7 @@ spec:
                   datasource:
                     kind: LokiDatasource
                     name: loki
-                  query: '{service=~".*dispatcher.*"} |~ "claimed|error|ERROR|reaping|draining|starting"'
+                  query: '{component="dispatcher", queue=~"$queue"}'
     reconciler_logs:
       kind: Panel
       spec:
@@ -322,7 +322,7 @@ spec:
                   datasource:
                     kind: LokiDatasource
                     name: loki
-                  query: '{service=~".*reconciler.*"} |~ "processing|completed|error"'
+                  query: '{component="reconciler", queue=~"$queue"}'
   layouts:
     - kind: Grid
       spec:
