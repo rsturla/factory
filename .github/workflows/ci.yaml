@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16
+        image: postgres:17
         env:
           POSTGRES_DB: factory
           POSTGRES_USER: factory
@@ -40,7 +40,6 @@ jobs:
           cache: true
       - name: Create S3 test bucket
         run: |
-          pip install awscli
           AWS_ACCESS_KEY_ID=rustfsadmin AWS_SECRET_ACCESS_KEY=rustfsadmin \
             aws --endpoint-url http://localhost:9000 s3 mb s3://factory-test
       - run: gofmt -l . | tee /dev/stderr | (! read)
