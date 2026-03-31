@@ -13,12 +13,12 @@ import (
 
 // Store implements store.Interface using in-memory data structures.
 type Store struct {
-	mu       sync.Mutex
-	items    map[itemKey]*store.WorkItem
-	queues   map[string]*queueMeta
-	history  []store.HistoryEntry
+	mu        sync.Mutex
+	items     map[itemKey]*store.WorkItem
+	queues    map[string]*queueMeta
+	history   []store.HistoryEntry
 	historyID int64
-	subs     map[string][]chan store.Event
+	subs      map[string][]chan store.Event
 }
 
 type itemKey struct {

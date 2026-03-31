@@ -34,10 +34,10 @@ import (
 
 // platform holds all the components for an integration test.
 type platform struct {
-	store      store.Interface
-	receiver   *httptest.Server
-	reconciler *httptest.Server
-	dispatcher *dispatcher.Dispatcher
+	store       store.Interface
+	receiver    *httptest.Server
+	reconciler  *httptest.Server
+	dispatcher  *dispatcher.Dispatcher
 	dispatchCfg dispatcher.Config
 }
 

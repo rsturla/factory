@@ -23,8 +23,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/rand/v2"
 	"io"
+	"math/rand/v2"
 	"sort"
 	"strconv"
 	"strings"
@@ -57,9 +57,9 @@ type Config struct {
 
 // Store implements store.Interface using DynamoDB + S3.
 type Store struct {
-	ddb       *dynamodb.Client
-	s3client  *s3.Client
-	table     string
+	ddb        *dynamodb.Client
+	s3client   *s3.Client
+	table      string
 	histBucket string
 }
 
@@ -203,7 +203,7 @@ func (s *Store) checkSchemaVersion(ctx context.Context) error {
 
 // --- Key helpers ---
 
-func itemPK(queue, key string) string     { return queue + "#" + key }
+func itemPK(queue, key string) string                 { return queue + "#" + key }
 func gsi1PK(queue string, status store.Status) string { return queue + "#" + string(status) }
 
 // gsi1SK encodes priority (descending) and created_at (ascending) for server-side ordering.
@@ -804,7 +804,7 @@ func (s *Store) Transition(ctx context.Context, queue, key string, from, to stor
 	}
 
 	_, err = s.ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
-		TableName:                 &s.table,
+		TableName: &s.table,
 		Key: map[string]dyntypes.AttributeValue{
 			"PK": &dyntypes.AttributeValueMemberS{Value: pk},
 			"SK": &dyntypes.AttributeValueMemberS{Value: itemSK},

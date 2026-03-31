@@ -152,7 +152,9 @@ func (c *WorkqueueClient) PurgeDeadLetters(ctx context.Context, queue string) (i
 	if err != nil {
 		return 0, err
 	}
-	var result struct{ Count int64 `json:"count"` }
+	var result struct {
+		Count int64 `json:"count"`
+	}
 	json.Unmarshal(body, &result)
 	return result.Count, nil
 }

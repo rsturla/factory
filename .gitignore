@@ -1,0 +1,16 @@
+# Go binaries
+/receiver
+/dispatcher
+/admin
+/factoryctl
+/echo-reconciler
+/standalone-worker
+
+# Build output
+/bin/
+*.exe
+
+# IDE
+.idea/
+.vscode/
+*.swp

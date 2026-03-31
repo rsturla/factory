@@ -34,8 +34,8 @@ type WorkerInfo struct {
 // Used when compute scaling is handled externally (e.g., by HPA).
 type NoopProvider struct{}
 
-func (NoopProvider) Name() string                                              { return "noop" }
-func (NoopProvider) EnsureWorkers(context.Context, string, int) error          { return nil }
-func (NoopProvider) ScaleToZero(context.Context, string) error                 { return nil }
+func (NoopProvider) Name() string                                               { return "noop" }
+func (NoopProvider) EnsureWorkers(context.Context, string, int) error           { return nil }
+func (NoopProvider) ScaleToZero(context.Context, string) error                  { return nil }
 func (NoopProvider) WorkerStatus(context.Context, string) ([]WorkerInfo, error) { return nil, nil }
-func (NoopProvider) Cleanup(context.Context, string) error                     { return nil }
+func (NoopProvider) Cleanup(context.Context, string) error                      { return nil }

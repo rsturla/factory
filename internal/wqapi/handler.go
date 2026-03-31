@@ -126,7 +126,7 @@ type enqueueReq struct {
 }
 
 type ensureQueueReq struct {
-	Queue  string           `json:"queue"`
+	Queue  string            `json:"queue"`
 	Config store.QueueConfig `json:"config"`
 }
 

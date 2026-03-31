@@ -29,9 +29,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/hummingbird-org/factory-workqueue/internal/authz"
 	"github.com/hummingbird-org/factory-workqueue/internal/authzutil"
