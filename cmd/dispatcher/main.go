@@ -3,7 +3,8 @@
 // Environment variables:
 //
 //	QUEUE_NAME            - The queue to dispatch (required)
-//	RECONCILER_ENDPOINT   - Base URL of the reconciler service (required)
+//	DISPATCH_MODE         - "push" (default) or "scale-only"
+//	RECONCILER_ENDPOINT   - Base URL of the reconciler service (required in push mode)
 //	STORE_BACKEND         - "postgres", "dynamodb", or "sqlite" (default: "postgres")
 //	DATABASE_URL          - PostgreSQL connection string (postgres backend)
 //	DDB_TABLE             - DynamoDB table name (dynamodb backend)
@@ -45,17 +46,25 @@ import (
 
 func main() {
 	queueName := requireEnv("QUEUE_NAME")
-	reconcilerEndpoint := requireEnv("RECONCILER_ENDPOINT")
 	workerID := envOr("WORKER_ID", hostname())
 	listenAddr := envOr("LISTEN_ADDR", ":8080")
+	dispatchMode := dispatcher.Mode(envOr("DISPATCH_MODE", "push"))
 
 	cfg := dispatcher.DefaultConfig(queueName)
 	cfg.WorkerID = workerID
+	cfg.Mode = dispatchMode
 	cfg.MaxConcurrency = envInt("MAX_CONCURRENCY", cfg.MaxConcurrency)
 	cfg.MaxRetry = envInt("MAX_RETRY", cfg.MaxRetry)
 	cfg.BatchSize = envInt("BATCH_SIZE", cfg.BatchSize)
 	cfg.DispatchInterval = envDuration("DISPATCH_INTERVAL", cfg.DispatchInterval)
 	cfg.LeaseDuration = envDuration("LEASE_DURATION", cfg.LeaseDuration)
+
+	// RECONCILER_ENDPOINT is only required in push mode.
+	reconcilerEndpoint := os.Getenv("RECONCILER_ENDPOINT")
+	if dispatchMode == dispatcher.ModePush && reconcilerEndpoint == "" {
+		slog.Error("RECONCILER_ENDPOINT required in push mode")
+		os.Exit(1)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()

@@ -2,6 +2,20 @@ package dispatcher
 
 import "time"
 
+// Mode controls what the dispatcher does.
+type Mode string
+
+const (
+	// ModePush is the default — the dispatcher claims items and calls
+	// the reconciler via HTTP. Used for Kubernetes reconcilers.
+	ModePush Mode = "push"
+
+	// ModeScaleOnly runs the sweep, reaper, and scale loops but does
+	// not claim or dispatch items. Standalone workers claim items
+	// themselves. Used for EC2/bare metal workers.
+	ModeScaleOnly Mode = "scale-only"
+)
+
 // Config controls the dispatcher's behavior.
 type Config struct {
 	// QueueName is the queue this dispatcher manages.
@@ -9,6 +23,10 @@ type Config struct {
 
 	// WorkerID identifies this dispatcher instance.
 	WorkerID string
+
+	// Mode controls whether the dispatcher claims and dispatches items
+	// (push) or only manages scaling and reaping (scale-only).
+	Mode Mode
 
 	// DispatchInterval is how often the dispatch loop runs.
 	DispatchInterval time.Duration

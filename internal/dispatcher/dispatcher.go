@@ -60,14 +60,25 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 		return err
 	}
 
+	mode := d.cfg.Mode
+	if mode == "" {
+		mode = ModePush
+	}
+
 	slog.Info("dispatcher starting",
 		"queue", d.cfg.QueueName,
 		"worker_id", d.cfg.WorkerID,
+		"mode", mode,
 		"max_concurrency", d.cfg.MaxConcurrency,
 	)
 
 	g, gctx := errgroup.WithContext(ctx)
-	g.Go(func() error { return d.loop(gctx, "dispatch", d.cfg.DispatchInterval, d.dispatchTick) })
+
+	if mode == ModePush {
+		g.Go(func() error { return d.loop(gctx, "dispatch", d.cfg.DispatchInterval, d.dispatchTick) })
+	}
+
+	// Sweep, reaper, and scale run in all modes.
 	g.Go(func() error { return d.loop(gctx, "sweep", d.cfg.SweepInterval, d.sweepTick) })
 	g.Go(func() error { return d.loop(gctx, "reaper", d.cfg.ReaperInterval, d.reaperTick) })
 	g.Go(func() error { return d.loop(gctx, "scale", d.cfg.ScaleInterval, d.scaleTick) })
