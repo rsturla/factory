@@ -18,7 +18,7 @@ func FuzzBackoffHandleFailure(f *testing.F) {
 	f.Add(5)
 	f.Add(-1)
 	f.Add(-100)
-	f.Add(63)  // 2^62 overflows int64 nanoseconds
+	f.Add(63) // 2^62 overflows int64 nanoseconds
 	f.Add(64)
 	f.Add(100)
 	f.Add(1000)
