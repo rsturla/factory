@@ -121,27 +121,30 @@ func (d *Dispatcher) processItem(ctx context.Context, item store.WorkItem) {
 
 	tracer := tracing.Tracer("factory.dispatcher")
 
-	// Recover the enqueue trace context from history so the dispatcher's
-	// span appears as a child of the receiver's span in Jaeger/Tempo.
+	// Link to the enqueue trace so operators can navigate from the
+	// dispatch trace to the enqueue trace and vice versa.
+	var spanOpts []trace.SpanStartOption
 	if history, err := d.store.GetItemHistory(ctx, item.Queue, item.Key); err == nil {
 		for _, h := range history {
 			if h.TraceID != "" && h.ToStatus == "pending" {
 				if remoteCtx, ok := parseTraceparent(h.TraceID); ok {
-					ctx = trace.ContextWithRemoteSpanContext(ctx, remoteCtx)
+					spanOpts = append(spanOpts, trace.WithLinks(trace.Link{
+						SpanContext: remoteCtx,
+					}))
 				}
 				break
 			}
 		}
 	}
 
-	ctx, span := tracer.Start(ctx, "processItem",
-		trace.WithAttributes(
-			attribute.String("queue", item.Queue),
-			attribute.String("key", item.Key),
-			attribute.Int("priority", item.Priority),
-			attribute.Int("attempt", item.Attempts),
-		),
-	)
+	spanOpts = append(spanOpts, trace.WithAttributes(
+		attribute.String("queue", item.Queue),
+		attribute.String("key", item.Key),
+		attribute.Int("priority", item.Priority),
+		attribute.Int("attempt", item.Attempts),
+	))
+
+	ctx, span := tracer.Start(ctx, "processItem", spanOpts...)
 	defer span.End()
 
 	traceID := span.SpanContext().TraceID().String()
