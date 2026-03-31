@@ -1,0 +1,433 @@
+kind: Dashboard
+metadata:
+  name: factory-workqueue
+  project: factory
+spec:
+  display:
+    name: Factory Workqueue
+  duration: 1h
+  refreshInterval: 5s
+  variables:
+    - kind: ListVariable
+      spec:
+        name: queue
+        display:
+          name: Queue
+        allowMultiple: true
+        allowAllValue: true
+        plugin:
+          kind: PrometheusLabelValuesVariable
+          spec:
+            datasource:
+              kind: PrometheusDatasource
+              name: prometheus
+            labelName: queue
+            matchers:
+              - factory_queue_depth
+  panels:
+    queue_depth:
+      kind: Panel
+      spec:
+        display:
+          name: Queue Depth by Status
+        plugin:
+          kind: TimeSeriesChart
+          spec:
+            legend:
+              position: bottom
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              plugin:
+                kind: PrometheusTimeSeriesQuery
+                spec:
+                  datasource:
+                    kind: PrometheusDatasource
+                    name: prometheus
+                  query: factory_queue_depth{queue=~"$queue"}
+                  seriesNameFormat: "{{queue}} / {{status}}"
+    in_progress:
+      kind: Panel
+      spec:
+        display:
+          name: In Progress vs Max Concurrency
+        plugin:
+          kind: TimeSeriesChart
+          spec:
+            legend:
+              position: bottom
+            yAxis:
+              label: items
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              plugin:
+                kind: PrometheusTimeSeriesQuery
+                spec:
+                  datasource:
+                    kind: PrometheusDatasource
+                    name: prometheus
+                  query: factory_in_progress{queue=~"$queue"}
+                  seriesNameFormat: "{{queue}} in progress"
+          - kind: TimeSeriesQuery
+            spec:
+              plugin:
+                kind: PrometheusTimeSeriesQuery
+                spec:
+                  datasource:
+                    kind: PrometheusDatasource
+                    name: prometheus
+                  query: factory_max_concurrency{queue=~"$queue"}
+                  seriesNameFormat: "{{queue}} max concurrency"
+    pending_items:
+      kind: Panel
+      spec:
+        display:
+          name: Pending Items
+        plugin:
+          kind: StatChart
+          spec:
+            calculation: last
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              plugin:
+                kind: PrometheusTimeSeriesQuery
+                spec:
+                  datasource:
+                    kind: PrometheusDatasource
+                    name: prometheus
+                  query: factory_queue_depth{queue=~"$queue",status="pending"}
+                  seriesNameFormat: "{{queue}}"
+    enqueue_rate:
+      kind: Panel
+      spec:
+        display:
+          name: Enqueue vs Dispatch Rate
+        plugin:
+          kind: TimeSeriesChart
+          spec:
+            legend:
+              position: bottom
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              plugin:
+                kind: PrometheusTimeSeriesQuery
+                spec:
+                  datasource:
+                    kind: PrometheusDatasource
+                    name: prometheus
+                  query: rate(factory_items_enqueued_total{queue=~"$queue"}[5m])
+                  seriesNameFormat: "{{queue}} enqueued/s"
+          - kind: TimeSeriesQuery
+            spec:
+              plugin:
+                kind: PrometheusTimeSeriesQuery
+                spec:
+                  datasource:
+                    kind: PrometheusDatasource
+                    name: prometheus
+                  query: rate(factory_items_dispatched_total{queue=~"$queue"}[5m])
+                  seriesNameFormat: "{{queue}} dispatched/s"
+    completed_by_outcome:
+      kind: Panel
+      spec:
+        display:
+          name: Completed by Outcome
+        plugin:
+          kind: TimeSeriesChart
+          spec:
+            legend:
+              position: bottom
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              plugin:
+                kind: PrometheusTimeSeriesQuery
+                spec:
+                  datasource:
+                    kind: PrometheusDatasource
+                    name: prometheus
+                  query: rate(factory_items_completed_total{queue=~"$queue"}[5m])
+                  seriesNameFormat: "{{queue}} {{outcome}}/s"
+    e2e_latency:
+      kind: Panel
+      spec:
+        display:
+          name: E2E Latency
+        plugin:
+          kind: TimeSeriesChart
+          spec:
+            legend:
+              position: bottom
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              plugin:
+                kind: PrometheusTimeSeriesQuery
+                spec:
+                  datasource:
+                    kind: PrometheusDatasource
+                    name: prometheus
+                  query: histogram_quantile(0.50, rate(factory_e2e_latency_seconds_bucket{queue=~"$queue"}[5m]))
+                  seriesNameFormat: "{{queue}} P50"
+          - kind: TimeSeriesQuery
+            spec:
+              plugin:
+                kind: PrometheusTimeSeriesQuery
+                spec:
+                  datasource:
+                    kind: PrometheusDatasource
+                    name: prometheus
+                  query: histogram_quantile(0.95, rate(factory_e2e_latency_seconds_bucket{queue=~"$queue"}[5m]))
+                  seriesNameFormat: "{{queue}} P95"
+    reconcile_duration:
+      kind: Panel
+      spec:
+        display:
+          name: Reconcile Duration P95
+        plugin:
+          kind: TimeSeriesChart
+          spec:
+            legend:
+              position: bottom
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              plugin:
+                kind: PrometheusTimeSeriesQuery
+                spec:
+                  datasource:
+                    kind: PrometheusDatasource
+                    name: prometheus
+                  query: histogram_quantile(0.95, rate(factory_reconcile_duration_seconds_bucket{queue=~"$queue"}[5m]))
+                  seriesNameFormat: "{{queue}} {{outcome}} P95"
+    oldest_pending:
+      kind: Panel
+      spec:
+        display:
+          name: Oldest Pending Item Age
+          description: How long the oldest pending item has been waiting. High values mean the queue is falling behind.
+        plugin:
+          kind: TimeSeriesChart
+          spec:
+            yAxis:
+              label: seconds
+            thresholds:
+              steps:
+                - value: 0
+                  color: green
+                - value: 60
+                  color: orange
+                - value: 300
+                  color: red
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              plugin:
+                kind: PrometheusTimeSeriesQuery
+                spec:
+                  datasource:
+                    kind: PrometheusDatasource
+                    name: prometheus
+                  query: factory_oldest_pending_age_seconds{queue=~"$queue"}
+                  seriesNameFormat: "{{queue}}"
+    dead_letter_rate:
+      kind: Panel
+      spec:
+        display:
+          name: Dead Letter Rate
+        plugin:
+          kind: TimeSeriesChart
+          spec:
+            thresholds:
+              steps:
+                - value: 0
+                  color: green
+                - value: 0.01
+                  color: red
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              plugin:
+                kind: PrometheusTimeSeriesQuery
+                spec:
+                  datasource:
+                    kind: PrometheusDatasource
+                    name: prometheus
+                  query: rate(factory_items_completed_total{queue=~"$queue",outcome="dead_letter"}[5m])
+                  seriesNameFormat: "{{queue}}"
+    reaper_activity:
+      kind: Panel
+      spec:
+        display:
+          name: Reaper Activity
+        plugin:
+          kind: TimeSeriesChart
+          spec:
+            thresholds:
+              steps:
+                - value: 0
+                  color: green
+                - value: 0.01
+                  color: orange
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              plugin:
+                kind: PrometheusTimeSeriesQuery
+                spec:
+                  datasource:
+                    kind: PrometheusDatasource
+                    name: prometheus
+                  query: rate(factory_items_reaped_total{queue=~"$queue"}[5m])
+                  seriesNameFormat: "{{queue}}"
+    dispatcher_logs:
+      kind: Panel
+      spec:
+        display:
+          name: Dispatcher Logs
+        plugin:
+          kind: LogsTable
+          spec:
+            showTime: true
+            enableDetails: true
+        queries:
+          - kind: LogQuery
+            spec:
+              plugin:
+                kind: LokiLogQuery
+                spec:
+                  datasource:
+                    kind: LokiDatasource
+                    name: loki
+                  query: '{service=~".*dispatcher.*"} |~ "claimed|error|ERROR|reaping|draining|starting"'
+    reconciler_logs:
+      kind: Panel
+      spec:
+        display:
+          name: Reconciler Logs
+        plugin:
+          kind: LogsTable
+          spec:
+            showTime: true
+            enableDetails: true
+        queries:
+          - kind: LogQuery
+            spec:
+              plugin:
+                kind: LokiLogQuery
+                spec:
+                  datasource:
+                    kind: LokiDatasource
+                    name: loki
+                  query: '{service=~".*reconciler.*"} |~ "processing|completed|error"'
+  layouts:
+    - kind: Grid
+      spec:
+        display:
+          title: Queue Health
+          collapse:
+            open: true
+        items:
+          - x: 0
+            y: 0
+            width: 8
+            height: 8
+            content:
+              $ref: "#/spec/panels/queue_depth"
+          - x: 8
+            y: 0
+            width: 8
+            height: 8
+            content:
+              $ref: "#/spec/panels/in_progress"
+          - x: 16
+            y: 0
+            width: 8
+            height: 8
+            content:
+              $ref: "#/spec/panels/pending_items"
+    - kind: Grid
+      spec:
+        display:
+          title: Throughput
+          collapse:
+            open: true
+        items:
+          - x: 0
+            y: 0
+            width: 12
+            height: 8
+            content:
+              $ref: "#/spec/panels/enqueue_rate"
+          - x: 12
+            y: 0
+            width: 12
+            height: 8
+            content:
+              $ref: "#/spec/panels/completed_by_outcome"
+    - kind: Grid
+      spec:
+        display:
+          title: Latency
+          collapse:
+            open: true
+        items:
+          - x: 0
+            y: 0
+            width: 12
+            height: 8
+            content:
+              $ref: "#/spec/panels/e2e_latency"
+          - x: 12
+            y: 0
+            width: 12
+            height: 8
+            content:
+              $ref: "#/spec/panels/reconcile_duration"
+    - kind: Grid
+      spec:
+        display:
+          title: Reliability
+          collapse:
+            open: true
+        items:
+          - x: 0
+            y: 0
+            width: 8
+            height: 8
+            content:
+              $ref: "#/spec/panels/oldest_pending"
+          - x: 8
+            y: 0
+            width: 8
+            height: 8
+            content:
+              $ref: "#/spec/panels/dead_letter_rate"
+          - x: 16
+            y: 0
+            width: 8
+            height: 8
+            content:
+              $ref: "#/spec/panels/reaper_activity"
+    - kind: Grid
+      spec:
+        display:
+          title: Logs
+          collapse:
+            open: true
+        items:
+          - x: 0
+            y: 0
+            width: 12
+            height: 10
+            content:
+              $ref: "#/spec/panels/dispatcher_logs"
+          - x: 12
+            y: 0
+            width: 12
+            height: 10
+            content:
+              $ref: "#/spec/panels/reconciler_logs"

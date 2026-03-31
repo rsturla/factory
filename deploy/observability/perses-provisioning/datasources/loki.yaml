@@ -1,0 +1,13 @@
+kind: Datasource
+metadata:
+  name: loki
+  project: factory
+spec:
+  default: false
+  plugin:
+    kind: LokiDatasource
+    spec:
+      proxy:
+        kind: HTTPProxy
+        spec:
+          url: http://loki:3100

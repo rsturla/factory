@@ -1,0 +1,6 @@
+kind: Project
+metadata:
+  name: factory
+spec:
+  display:
+    name: Factory Workqueue

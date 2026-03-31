@@ -1,0 +1,13 @@
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: factory-receiver
+    static_configs:
+      - targets: ["echo-receiver:8081"]
+  - job_name: factory-dispatcher
+    static_configs:
+      - targets: ["echo-dispatcher:8083"]
+  - job_name: factory-admin
+    static_configs:
+      - targets: ["admin:8080"]
