@@ -71,6 +71,11 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
+// DB returns the underlying *sql.DB for use in tests and migrations.
+func (s *Store) DB() *sql.DB {
+	return s.db
+}
+
 func (s *Store) migrate() error {
 	// Create the migrations tracking table.
 	if _, err := s.db.Exec(`
