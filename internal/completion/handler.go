@@ -71,11 +71,15 @@ func (h *Handler) HandleRequeueAfter(ctx context.Context, queue, key string, del
 }
 
 func (h *Handler) backoff(attempt int) time.Duration {
-	exp := math.Pow(2, float64(attempt-1))
-	base := time.Duration(float64(h.cfg.BackoffBase) * exp)
-	if base > h.cfg.BackoffMax {
-		base = h.cfg.BackoffMax
+	if attempt < 1 {
+		attempt = 1
 	}
+	exp := math.Pow(2, float64(attempt-1))
+	raw := float64(h.cfg.BackoffBase) * exp
+	if raw > float64(h.cfg.BackoffMax) || math.IsInf(raw, 0) || math.IsNaN(raw) {
+		raw = float64(h.cfg.BackoffMax)
+	}
+	base := time.Duration(raw)
 	jitter := time.Duration(float64(base) * h.cfg.JitterFraction * rand.Float64())
 	return base + jitter
 }

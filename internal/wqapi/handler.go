@@ -159,6 +159,9 @@ func (h *Handler) claim(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		lease = 1 * time.Hour
 	}
+	if req.BatchSize < 1 {
+		req.BatchSize = 1
+	}
 	items, err := h.store.ClaimBatch(r.Context(), req.Queue, req.BatchSize, req.WorkerID, lease)
 	if err != nil {
 		serverError(w, err)

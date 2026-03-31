@@ -142,6 +142,9 @@ func (s *Store) ClaimBatch(_ context.Context, queue string, batchSize int, worke
 		return eligible[i].Key < eligible[j].Key
 	})
 
+	if limit < 0 {
+		limit = 0
+	}
 	if limit > len(eligible) {
 		limit = len(eligible)
 	}
@@ -422,6 +425,9 @@ func (s *Store) List(_ context.Context, filter store.ListFilter) ([]store.WorkIt
 		limit = 100
 	}
 	start := filter.Offset
+	if start < 0 {
+		start = 0
+	}
 	if start > len(items) {
 		return nil, nil
 	}

@@ -400,7 +400,7 @@ func (s *Store) ClaimBatch(ctx context.Context, queue string, batchSize int, wor
 		ExpressionAttributeValues: map[string]dyntypes.AttributeValue{
 			":pk": &dyntypes.AttributeValueMemberS{Value: gsiPK},
 		},
-		Limit: aws.Int32(int32(batchSize * 2)), // over-fetch to handle not-before filtering and races
+		Limit: aws.Int32(int32(min(batchSize*2, 1000))), // over-fetch; cap to avoid int32 overflow
 	})
 	if err != nil {
 		return nil, fmt.Errorf("query claim index: %w", err)
