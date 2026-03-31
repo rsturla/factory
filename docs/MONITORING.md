@@ -151,17 +151,69 @@ spec:
 }
 ```
 
+## Distributed Tracing (OpenTelemetry)
+
+All services emit OpenTelemetry traces when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. Traces follow work items from enqueue through completion:
+
+```
+Trace (receiver):
+└─ enqueue {queue: "echo", key: "curl.fc43", priority: 10}
+
+Trace (dispatcher) ── linked to enqueue trace ──
+└─ processItem {queue: "echo", key: "curl.fc43", attempt: 1}
+   ├─ store.Transition (claimed → running)
+   ├─ reconciler.Process (HTTP call, 30.2s)
+   └─ outcome: completed, reconcile_duration_s: 30.2
+```
+
+The dispatcher's trace is **linked** to the receiver's trace via OTEL span links, enabling end-to-end visibility across the async queue boundary.
+
+### Setup
+
+Set on all services:
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+OTEL_SERVICE_NAME=factory-dispatcher  # unique per service
+```
+
+When unset, tracing is noop — zero overhead.
+
+### Trace ID correlation
+
+- Trace IDs are stored in `work_item_history.trace_id` for post-hoc queries
+- Trace IDs are included in structured log messages (`trace_id` field)
+- The dispatcher passes `trace_id` in `ProcessRequest` to the reconciler, enabling reconciler authors to create child spans
+- Click a log line in Grafana → jump to the trace in Jaeger/Tempo
+
+### Local development
+
+Use the tracing docker-compose with Jaeger:
+
+```bash
+cd deploy && docker compose -f docker-compose.tracing.yaml up --build -d
+
+# Enqueue work
+curl -X POST http://localhost:8081/enqueue -d '{"key":"test","priority":0}'
+
+# View traces
+open http://localhost:16686
+# Search for service: factory-dispatcher
+```
+
 ## Structured Logging
 
-All services use Go's `log/slog` with JSON output. Every log line includes contextual fields:
+All services use Go's `log/slog` with JSON output. Log lines include trace IDs when tracing is enabled:
 
 ```json
 {
   "time": "2026-03-30T22:51:30Z",
   "level": "INFO",
-  "msg": "claimed items",
-  "queue": "rpm-update",
-  "count": 5
+  "msg": "enqueued",
+  "queue": "echo",
+  "key": "curl.fc43",
+  "priority": 10,
+  "trace_id": "abc123def456..."
 }
 ```
 

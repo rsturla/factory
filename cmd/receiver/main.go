@@ -132,8 +132,17 @@ func (h *enqueueHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	metrics.ItemsEnqueued.WithLabelValues(h.queue).Inc()
 	traceID := span.SpanContext().TraceID().String()
+
+	// Record enqueue in history with trace ID for end-to-end correlation.
+	h.store.RecordHistory(ctx, store.HistoryEntry{
+		Queue:    h.queue,
+		Key:      req.Key,
+		ToStatus: "pending",
+		TraceID:  traceID,
+	})
+
+	metrics.ItemsEnqueued.WithLabelValues(h.queue).Inc()
 	slog.Info("enqueued", "queue", h.queue, "key", req.Key, "priority", req.Priority, "trace_id", traceID)
 
 	w.Header().Set("Content-Type", "application/json")

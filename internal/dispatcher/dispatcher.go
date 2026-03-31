@@ -119,13 +119,31 @@ func (d *Dispatcher) processItem(ctx context.Context, item store.WorkItem) {
 	defer d.inFlight.Done()
 
 	tracer := tracing.Tracer("factory.dispatcher")
+
+	// Link to the enqueue trace if available in history.
+	var linkOpts []trace.SpanStartOption
+	if history, err := d.store.GetItemHistory(ctx, item.Queue, item.Key); err == nil {
+		for _, h := range history {
+			if h.TraceID != "" && h.ToStatus == "pending" {
+				if enqueueTraceID, err := trace.TraceIDFromHex(h.TraceID); err == nil {
+					linkOpts = append(linkOpts, trace.WithLinks(trace.Link{
+						SpanContext: trace.NewSpanContext(trace.SpanContextConfig{
+							TraceID: enqueueTraceID,
+						}),
+					}))
+				}
+				break
+			}
+		}
+	}
+
 	ctx, span := tracer.Start(ctx, "processItem",
-		trace.WithAttributes(
+		append(linkOpts, trace.WithAttributes(
 			attribute.String("queue", item.Queue),
 			attribute.String("key", item.Key),
 			attribute.Int("priority", item.Priority),
 			attribute.Int("attempt", item.Attempts),
-		),
+		))...,
 	)
 	defer span.End()
 
