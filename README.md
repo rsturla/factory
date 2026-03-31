@@ -119,11 +119,19 @@ Authorization is pluggable via `AUTHZ_BACKEND` — same pattern as store backend
 
 ## Writing a reconciler
 
-Two patterns depending on where the reconciler runs:
+Two patterns depending on how long the work takes and where it runs:
 
-### HTTP reconciler (Kubernetes)
+| Duration | Pattern | Dispatcher mode | Example |
+|----------|---------|----------------|---------|
+| Under 2 minutes | HTTP reconciler | `push` | MR review, test runner, API calls |
+| 2-60 minutes | Either | Depends | Container build (K8s → push, EC2 → standalone) |
+| Over 60 minutes | Standalone worker | `scale-only` | RPM build, AI inference |
 
-The dispatcher calls your `/process` endpoint. Use for lightweight or fast work, or for work that delegates to external systems (Koji, Tekton) and polls via `RequeueAfter`. See `examples/echo-reconciler/`.
+For work that delegates to external systems (Koji, Tekton, CI) and polls for completion, use an HTTP reconciler with `RequeueAfter` regardless of how long the external work takes — each invocation is a quick status check.
+
+### HTTP reconciler (push model)
+
+The dispatcher calls your `/process` endpoint. The reconciler does the work inline and returns. Set `DISPATCH_MODE=push` (default). See `examples/echo-reconciler/`.
 
 ```go
 import "github.com/hummingbird-org/factory-workqueue/pkg/sdk"
@@ -145,34 +153,35 @@ func reconcile(ctx context.Context, req sdk.ProcessRequest) (sdk.ProcessResponse
 }
 ```
 
-### Standalone worker (EC2, bare metal)
+### Standalone worker (pull model)
 
-The worker claims items directly from the store, processes them locally, and reports back. Use for heavy local work (rpmbuild, container builds, AI inference) where holding an HTTP connection open for the duration is impractical. See `examples/standalone-worker/`.
+The worker claims items via the workqueue HTTP API, processes them locally, and reports back. Set `DISPATCH_MODE=scale-only` on the dispatcher. See `examples/standalone-worker/`.
 
 ```go
-import "github.com/hummingbird-org/factory-workqueue/internal/store"
+import "github.com/hummingbird-org/factory-workqueue/pkg/client"
+
+wq := client.NewWorkqueueClient("http://factory-receiver:8081")
 
 for {
-    items, _ := s.ClaimBatch(ctx, "rpm-update", 1, workerID, 2*time.Hour)
+    items, _ := wq.ClaimBatch(ctx, "rpm-update", 1, workerID, 2*time.Hour)
     if len(items) == 0 {
         time.Sleep(5 * time.Second)
         continue
     }
-    s.Transition(ctx, item.Queue, item.Key, store.StatusClaimed, store.StatusRunning)
 
     // Heartbeat in background to keep lease alive
-    go heartbeat(ctx, s, item)
+    go heartbeat(ctx, wq, item)
 
     // Do heavy local work (minutes/hours)
     if err := rpmbuild(item.Key); err != nil {
-        s.Fail(ctx, item.Queue, item.Key, err.Error())
+        wq.Fail(ctx, item.Queue, item.Key, err.Error())
     } else {
-        s.Complete(ctx, item.Queue, item.Key)
+        wq.Complete(ctx, item.Queue, item.Key)
     }
 }
 ```
 
-Both patterns use the same store, same state machine, same retry/dead-letter logic. If the worker dies mid-work, the lease expires and the reaper reclaims the item.
+Both patterns use the same store, same state machine, same retry/dead-letter logic. If a worker dies mid-work, the lease expires and the reaper reclaims the item. Workers exit after `MAX_IDLE` (default 10m) with no work, and the dispatcher scales compute back down.
 
 Available responses:
 - `sdk.Completed()` — work done successfully
