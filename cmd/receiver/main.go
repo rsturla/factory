@@ -132,18 +132,20 @@ func (h *enqueueHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	traceID := span.SpanContext().TraceID().String()
+	// Store full traceparent (W3C format) so the dispatcher can create
+	// a child span under this trace, giving end-to-end visibility.
+	sc := span.SpanContext()
+	traceparent := fmt.Sprintf("00-%s-%s-01", sc.TraceID().String(), sc.SpanID().String())
 
-	// Record enqueue in history with trace ID for end-to-end correlation.
 	h.store.RecordHistory(ctx, store.HistoryEntry{
 		Queue:    h.queue,
 		Key:      req.Key,
 		ToStatus: "pending",
-		TraceID:  traceID,
+		TraceID:  traceparent,
 	})
 
 	metrics.ItemsEnqueued.WithLabelValues(h.queue).Inc()
-	slog.Info("enqueued", "queue", h.queue, "key", req.Key, "priority", req.Priority, "trace_id", traceID)
+	slog.Info("enqueued", "queue", h.queue, "key", req.Key, "priority", req.Priority, "trace_id", traceparent)
 
 	w.Header().Set("Content-Type", "application/json")
 	fmt.Fprintf(w, `{"status":"enqueued","key":%q}`, req.Key)

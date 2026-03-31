@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -120,17 +121,13 @@ func (d *Dispatcher) processItem(ctx context.Context, item store.WorkItem) {
 
 	tracer := tracing.Tracer("factory.dispatcher")
 
-	// Link to the enqueue trace if available in history.
-	var linkOpts []trace.SpanStartOption
+	// Recover the enqueue trace context from history so the dispatcher's
+	// span appears as a child of the receiver's span in Jaeger/Tempo.
 	if history, err := d.store.GetItemHistory(ctx, item.Queue, item.Key); err == nil {
 		for _, h := range history {
 			if h.TraceID != "" && h.ToStatus == "pending" {
-				if enqueueTraceID, err := trace.TraceIDFromHex(h.TraceID); err == nil {
-					linkOpts = append(linkOpts, trace.WithLinks(trace.Link{
-						SpanContext: trace.NewSpanContext(trace.SpanContextConfig{
-							TraceID: enqueueTraceID,
-						}),
-					}))
+				if remoteCtx, ok := parseTraceparent(h.TraceID); ok {
+					ctx = trace.ContextWithRemoteSpanContext(ctx, remoteCtx)
 				}
 				break
 			}
@@ -138,12 +135,12 @@ func (d *Dispatcher) processItem(ctx context.Context, item store.WorkItem) {
 	}
 
 	ctx, span := tracer.Start(ctx, "processItem",
-		append(linkOpts, trace.WithAttributes(
+		trace.WithAttributes(
 			attribute.String("queue", item.Queue),
 			attribute.String("key", item.Key),
 			attribute.Int("priority", item.Priority),
 			attribute.Int("attempt", item.Attempts),
-		))...,
+		),
 	)
 	defer span.End()
 
@@ -302,4 +299,30 @@ func (d *Dispatcher) scaleTick(ctx context.Context) {
 		desired = 1
 	}
 	d.compute.EnsureWorkers(ctx, d.cfg.QueueName, desired)
+}
+
+// parseTraceparent parses a W3C traceparent string ("00-{traceID}-{spanID}-{flags}")
+// into a SpanContext for creating child spans across the async queue boundary.
+func parseTraceparent(tp string) (trace.SpanContext, bool) {
+	parts := strings.Split(tp, "-")
+	if len(parts) != 4 {
+		return trace.SpanContext{}, false
+	}
+
+	traceID, err := trace.TraceIDFromHex(parts[1])
+	if err != nil {
+		return trace.SpanContext{}, false
+	}
+
+	spanID, err := trace.SpanIDFromHex(parts[2])
+	if err != nil {
+		return trace.SpanContext{}, false
+	}
+
+	return trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    traceID,
+		SpanID:     spanID,
+		TraceFlags: trace.FlagsSampled,
+		Remote:     true,
+	}), true
 }
