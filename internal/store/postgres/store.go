@@ -523,7 +523,10 @@ func (s *Store) EnsureQueue(ctx context.Context, queue string, cfg store.QueueCo
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO queue_state (queue, max_concurrency, max_retry, compute_backend)
 		VALUES ($1, $2, $3, $4)
-		ON CONFLICT (queue) DO NOTHING
+		ON CONFLICT (queue) DO UPDATE SET
+			max_concurrency = EXCLUDED.max_concurrency,
+			max_retry = EXCLUDED.max_retry,
+			compute_backend = EXCLUDED.compute_backend
 	`, queue, cfg.MaxConcurrency, cfg.MaxRetry, cfg.ComputeBackend)
 	return err
 }

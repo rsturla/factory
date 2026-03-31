@@ -581,8 +581,12 @@ func (s *Store) EnsureQueue(ctx context.Context, queue string, cfg store.QueueCo
 	defer s.mu.Unlock()
 
 	_, err := s.db.ExecContext(ctx, `
-		INSERT OR IGNORE INTO queue_state (queue, max_concurrency, max_retry, compute_backend)
+		INSERT INTO queue_state (queue, max_concurrency, max_retry, compute_backend)
 		VALUES (?, ?, ?, ?)
+		ON CONFLICT (queue) DO UPDATE SET
+			max_concurrency = excluded.max_concurrency,
+			max_retry = excluded.max_retry,
+			compute_backend = excluded.compute_backend
 	`, queue, cfg.MaxConcurrency, cfg.MaxRetry, cfg.ComputeBackend)
 	return err
 }

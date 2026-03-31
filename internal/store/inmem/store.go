@@ -42,7 +42,9 @@ func New() *Store {
 func (s *Store) EnsureQueue(_ context.Context, queue string, cfg store.QueueConfig) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.queues[queue]; !ok {
+	if existing, ok := s.queues[queue]; ok {
+		existing.config = cfg
+	} else {
 		s.queues[queue] = &queueMeta{config: cfg}
 	}
 	return nil

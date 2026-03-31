@@ -829,21 +829,20 @@ func (s *Store) Transition(ctx context.Context, queue, key string, from, to stor
 func (s *Store) EnsureQueue(ctx context.Context, queue string, cfg store.QueueConfig) error {
 	cfgJSON, _ := json.Marshal(cfg)
 	pk := "_queue#" + queue
-	_, err := s.ddb.PutItem(ctx, &dynamodb.PutItemInput{
+
+	// Upsert — always update config, preserve in_progress counter.
+	_, err := s.ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: &s.table,
-		Item: map[string]dyntypes.AttributeValue{
-			"PK":     &dyntypes.AttributeValueMemberS{Value: pk},
-			"SK":     &dyntypes.AttributeValueMemberS{Value: cfgSK},
-			"config": &dyntypes.AttributeValueMemberS{Value: string(cfgJSON)},
+		Key: map[string]dyntypes.AttributeValue{
+			"PK": &dyntypes.AttributeValueMemberS{Value: pk},
+			"SK": &dyntypes.AttributeValueMemberS{Value: cfgSK},
 		},
-		ConditionExpression: aws.String("attribute_not_exists(PK)"),
+		UpdateExpression: aws.String("SET config = :cfg"),
+		ExpressionAttributeValues: map[string]dyntypes.AttributeValue{
+			":cfg": &dyntypes.AttributeValueMemberS{Value: string(cfgJSON)},
+		},
 	})
 	if err != nil {
-		// Already exists — that's fine.
-		var condFail *dyntypes.ConditionalCheckFailedException
-		if ok := errors.As(err, &condFail); ok {
-			return nil
-		}
 		return fmt.Errorf("ensure queue: %w", err)
 	}
 	return nil
