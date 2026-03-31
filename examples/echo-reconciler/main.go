@@ -14,7 +14,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/hummingbird-org/factory/pkg/sdk"
+	"github.com/hummingbird-org/factory-workqueue/pkg/sdk"
 )
 
 func main() {

@@ -7,7 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/hummingbird-org/factory/internal/store/postgres"
+	"github.com/hummingbird-org/factory-workqueue/internal/store/postgres"
 )
 
 func connectForMigrationTest(t *testing.T) (*pgxpool.Pool, *postgres.Store) {

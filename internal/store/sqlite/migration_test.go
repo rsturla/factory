@@ -5,8 +5,8 @@ import (
 	"database/sql"
 	"testing"
 
-	"github.com/hummingbird-org/factory/internal/store"
-	"github.com/hummingbird-org/factory/internal/store/sqlite"
+	"github.com/hummingbird-org/factory-workqueue/internal/store"
+	"github.com/hummingbird-org/factory-workqueue/internal/store/sqlite"
 )
 
 func TestMigration_AppliesAll(t *testing.T) {

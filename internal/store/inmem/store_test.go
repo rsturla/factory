@@ -3,9 +3,9 @@ package inmem_test
 import (
 	"testing"
 
-	"github.com/hummingbird-org/factory/internal/store"
-	"github.com/hummingbird-org/factory/internal/store/conformance"
-	"github.com/hummingbird-org/factory/internal/store/inmem"
+	"github.com/hummingbird-org/factory-workqueue/internal/store"
+	"github.com/hummingbird-org/factory-workqueue/internal/store/conformance"
+	"github.com/hummingbird-org/factory-workqueue/internal/store/inmem"
 )
 
 func TestInMemConformance(t *testing.T) {

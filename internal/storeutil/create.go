@@ -9,10 +9,10 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/hummingbird-org/factory/internal/store"
-	storeddb "github.com/hummingbird-org/factory/internal/store/dynamodb"
-	storepostgres "github.com/hummingbird-org/factory/internal/store/postgres"
-	storesqlite "github.com/hummingbird-org/factory/internal/store/sqlite"
+	"github.com/hummingbird-org/factory-workqueue/internal/store"
+	storeddb "github.com/hummingbird-org/factory-workqueue/internal/store/dynamodb"
+	storepostgres "github.com/hummingbird-org/factory-workqueue/internal/store/postgres"
+	storesqlite "github.com/hummingbird-org/factory-workqueue/internal/store/sqlite"
 )
 
 // Result holds the created store and any resources that need cleanup.

@@ -48,7 +48,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/hummingbird-org/factory/internal/authz"
+	"github.com/hummingbird-org/factory-workqueue/internal/authz"
 )
 
 // Config holds OPA connection settings.

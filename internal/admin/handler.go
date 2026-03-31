@@ -7,8 +7,8 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/hummingbird-org/factory/internal/authz"
-	"github.com/hummingbird-org/factory/internal/store"
+	"github.com/hummingbird-org/factory-workqueue/internal/authz"
+	"github.com/hummingbird-org/factory-workqueue/internal/store"
 )
 
 // Handler serves the admin API endpoints.

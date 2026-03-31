@@ -22,7 +22,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/hummingbird-org/factory/internal/store"
+	"github.com/hummingbird-org/factory-workqueue/internal/store"
 )
 
 //go:embed migrations/*.sql

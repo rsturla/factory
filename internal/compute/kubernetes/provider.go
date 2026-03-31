@@ -15,7 +15,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
-	"github.com/hummingbird-org/factory/internal/compute"
+	"github.com/hummingbird-org/factory-workqueue/internal/compute"
 )
 
 // Config holds configuration for the Kubernetes provider.

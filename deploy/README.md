@@ -1,66 +1,67 @@
 # Deployment
 
-Docker Compose files for running the factory stack locally with each store backend.
-
-## Usage
-
-All commands are run from the `deploy/` directory.
-
-### PostgreSQL (recommended for production)
-
-```bash
-docker compose -f docker-compose.postgres.yaml up --build -d
-
-# Enqueue work
-curl -X POST http://localhost:8081/enqueue -d '{"key":"curl.fc43","priority":10}'
-
-# Check status
-curl http://localhost:18080/admin/queues/echo
-
-# Watch reconciler
-docker compose -f docker-compose.postgres.yaml logs echo-reconciler -f
-
-# Tear down
-docker compose -f docker-compose.postgres.yaml down -v
-```
-
-### SQLite (single-node, no external database)
-
-```bash
-docker compose -f docker-compose.sqlite.yaml up --build -d
-
-curl -X POST http://localhost:8081/enqueue -d '{"key":"test-pkg","priority":5}'
-
-docker compose -f docker-compose.sqlite.yaml down -v
-```
-
-### DynamoDB + S3 (AWS-native, uses DynamoDB Local + rustfs)
-
-```bash
-docker compose -f docker-compose.dynamodb.yaml up --build -d
-
-curl -X POST http://localhost:8081/enqueue -d '{"key":"test-pkg","priority":5}'
-
-docker compose -f docker-compose.dynamodb.yaml down -v
-```
-
-## Services
-
-Each compose file runs the same logical stack:
-
-| Service | Port | Purpose |
-|---------|------|---------|
-| echo-receiver | 8081 | Accepts `/enqueue` and `/webhook` requests |
-| echo-dispatcher | 8083 | Claims items, calls reconciler |
-| echo-reconciler | (internal) | Logs the key, sleeps 2s, returns completed |
-| admin | 18080 | Cross-queue admin API (postgres only) |
+Docker Compose files for running the factory workqueue stack locally.
 
 ## Store backends
 
-All three binaries (receiver, dispatcher, admin) support `STORE_BACKEND` env var:
+```bash
+# PostgreSQL (recommended)
+docker compose -f docker-compose.postgres.yaml up --build -d
 
-| Value | Required env vars |
-|-------|-------------------|
-| `postgres` (default) | `DATABASE_URL` |
-| `dynamodb` | `DDB_TABLE`, `S3_BUCKET`, `AWS_REGION` |
-| `sqlite` | `SQLITE_PATH` |
+# SQLite (single-node, no external database)
+docker compose -f docker-compose.sqlite.yaml up --build -d
+
+# DynamoDB + S3 (uses DynamoDB Local + rustfs)
+docker compose -f docker-compose.dynamodb.yaml up --build -d
+```
+
+## Authorization
+
+```bash
+# Cedar (in-process policy evaluation)
+docker compose -f docker-compose.cedar.yaml up --build -d
+
+# OPA (external policy server)
+docker compose -f docker-compose.opa.yaml up --build -d
+```
+
+## Observability
+
+```bash
+# Tracing with Jaeger (UI at http://localhost:16686)
+docker compose -f docker-compose.tracing.yaml up --build -d
+```
+
+## Stress testing
+
+```bash
+# Max throughput (concurrency=100, delay=0)
+docker compose -f docker-compose.stress.yaml up --build -d
+seq 1 10000 | xargs -P100 -I{} curl -sf -o /dev/null \
+  -X POST http://localhost:8081/enqueue -d '{"key":"stress-{}","priority":0}'
+```
+
+## Usage
+
+All compose files expose the same endpoints:
+
+| Service | Port | Purpose |
+|---------|------|---------|
+| Receiver | 8081 | `POST /enqueue` |
+| Admin API | 18080 | `GET /admin/queues`, items, workers, events |
+| Jaeger UI | 16686 | Trace visualization (tracing compose only) |
+
+```bash
+# Enqueue work
+curl -X POST http://localhost:8081/enqueue -d '{"key":"test","priority":10}'
+
+# Check status
+curl http://localhost:18080/admin/queues
+
+# Tear down
+docker compose -f <file>.yaml down -v
+```
+
+## Kubernetes
+
+See [kubernetes/](kubernetes/) for production Kubernetes/OpenShift manifests.

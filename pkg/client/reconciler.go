@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/hummingbird-org/factory/pkg/sdk"
+	"github.com/hummingbird-org/factory-workqueue/pkg/sdk"
 )
 
 // ReconcilerClient calls a reconciler service's /process endpoint.

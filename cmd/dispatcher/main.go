@@ -33,14 +33,14 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"github.com/hummingbird-org/factory/internal/compute"
-	computeec2 "github.com/hummingbird-org/factory/internal/compute/ec2"
-	computek8s "github.com/hummingbird-org/factory/internal/compute/kubernetes"
-	"github.com/hummingbird-org/factory/internal/dispatcher"
-	"github.com/hummingbird-org/factory/internal/metrics"
-	"github.com/hummingbird-org/factory/internal/storeutil"
-	"github.com/hummingbird-org/factory/internal/tracing"
-	"github.com/hummingbird-org/factory/pkg/client"
+	"github.com/hummingbird-org/factory-workqueue/internal/compute"
+	computeec2 "github.com/hummingbird-org/factory-workqueue/internal/compute/ec2"
+	computek8s "github.com/hummingbird-org/factory-workqueue/internal/compute/kubernetes"
+	"github.com/hummingbird-org/factory-workqueue/internal/dispatcher"
+	"github.com/hummingbird-org/factory-workqueue/internal/metrics"
+	"github.com/hummingbird-org/factory-workqueue/internal/storeutil"
+	"github.com/hummingbird-org/factory-workqueue/internal/tracing"
+	"github.com/hummingbird-org/factory-workqueue/pkg/client"
 )
 
 func main() {

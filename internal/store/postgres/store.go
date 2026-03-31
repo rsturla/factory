@@ -18,7 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/hummingbird-org/factory/internal/store"
+	"github.com/hummingbird-org/factory-workqueue/internal/store"
 )
 
 //go:embed migrations/*.sql

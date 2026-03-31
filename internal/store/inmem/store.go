@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hummingbird-org/factory/internal/store"
+	"github.com/hummingbird-org/factory-workqueue/internal/store"
 )
 
 // Store implements store.Interface using in-memory data structures.

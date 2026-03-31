@@ -118,7 +118,7 @@ Authorization is pluggable via `AUTHZ_BACKEND` — same pattern as store backend
 
 ## Writing a reconciler
 
-Reconcilers are separate Go projects that import `factory/pkg/sdk`:
+Reconcilers are separate Go projects that import `factory-workqueue/pkg/sdk`:
 
 ```go
 package main
@@ -126,7 +126,7 @@ package main
 import (
     "context"
     "net/http"
-    "github.com/hummingbird-org/factory/pkg/sdk"
+    "github.com/hummingbird-org/factory-workqueue/pkg/sdk"
 )
 
 func main() {

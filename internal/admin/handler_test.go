@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hummingbird-org/factory/internal/admin"
-	"github.com/hummingbird-org/factory/internal/authz/noop"
-	"github.com/hummingbird-org/factory/internal/store"
-	"github.com/hummingbird-org/factory/internal/store/inmem"
+	"github.com/hummingbird-org/factory-workqueue/internal/admin"
+	"github.com/hummingbird-org/factory-workqueue/internal/authz/noop"
+	"github.com/hummingbird-org/factory-workqueue/internal/store"
+	"github.com/hummingbird-org/factory-workqueue/internal/store/inmem"
 )
 
 func newServer(t *testing.T) (*httptest.Server, store.Interface) {

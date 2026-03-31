@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hummingbird-org/factory/pkg/sdk"
+	"github.com/hummingbird-org/factory-workqueue/pkg/sdk"
 )
 
 func TestReconcilerHandler_Completed(t *testing.T) {

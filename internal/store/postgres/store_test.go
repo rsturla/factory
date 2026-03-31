@@ -7,9 +7,9 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/hummingbird-org/factory/internal/store"
-	"github.com/hummingbird-org/factory/internal/store/conformance"
-	"github.com/hummingbird-org/factory/internal/store/postgres"
+	"github.com/hummingbird-org/factory-workqueue/internal/store"
+	"github.com/hummingbird-org/factory-workqueue/internal/store/conformance"
+	"github.com/hummingbird-org/factory-workqueue/internal/store/postgres"
 )
 
 func TestPostgresConformance(t *testing.T) {

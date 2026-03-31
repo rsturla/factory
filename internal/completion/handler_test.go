@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hummingbird-org/factory/internal/completion"
-	"github.com/hummingbird-org/factory/internal/store"
-	"github.com/hummingbird-org/factory/internal/store/inmem"
+	"github.com/hummingbird-org/factory-workqueue/internal/completion"
+	"github.com/hummingbird-org/factory-workqueue/internal/store"
+	"github.com/hummingbird-org/factory-workqueue/internal/store/inmem"
 )
 
 func setup(t *testing.T) (store.Interface, *completion.Handler) {

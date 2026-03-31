@@ -13,7 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/autoscaling"
 	autoscalingtypes "github.com/aws/aws-sdk-go-v2/service/autoscaling/types"
 
-	"github.com/hummingbird-org/factory/internal/compute"
+	"github.com/hummingbird-org/factory-workqueue/internal/compute"
 )
 
 // Config holds configuration for the EC2/ASG provider.

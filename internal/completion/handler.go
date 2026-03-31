@@ -9,7 +9,7 @@ import (
 	"math/rand/v2"
 	"time"
 
-	"github.com/hummingbird-org/factory/internal/store"
+	"github.com/hummingbird-org/factory-workqueue/internal/store"
 )
 
 // Config controls retry behavior for a queue.

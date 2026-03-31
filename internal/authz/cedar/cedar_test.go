@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/hummingbird-org/factory/internal/authz"
-	cedarauthorizer "github.com/hummingbird-org/factory/internal/authz/cedar"
+	"github.com/hummingbird-org/factory-workqueue/internal/authz"
+	cedarauthorizer "github.com/hummingbird-org/factory-workqueue/internal/authz/cedar"
 )
 
 const testPolicy = `

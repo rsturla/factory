@@ -33,12 +33,12 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"github.com/hummingbird-org/factory/internal/authz"
-	"github.com/hummingbird-org/factory/internal/authzutil"
-	"github.com/hummingbird-org/factory/internal/metrics"
-	"github.com/hummingbird-org/factory/internal/store"
-	"github.com/hummingbird-org/factory/internal/storeutil"
-	"github.com/hummingbird-org/factory/internal/tracing"
+	"github.com/hummingbird-org/factory-workqueue/internal/authz"
+	"github.com/hummingbird-org/factory-workqueue/internal/authzutil"
+	"github.com/hummingbird-org/factory-workqueue/internal/metrics"
+	"github.com/hummingbird-org/factory-workqueue/internal/store"
+	"github.com/hummingbird-org/factory-workqueue/internal/storeutil"
+	"github.com/hummingbird-org/factory-workqueue/internal/tracing"
 )
 
 func main() {

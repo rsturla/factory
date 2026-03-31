@@ -24,11 +24,11 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"github.com/hummingbird-org/factory/internal/admin"
-	"github.com/hummingbird-org/factory/internal/authzutil"
-	"github.com/hummingbird-org/factory/internal/metrics"
-	"github.com/hummingbird-org/factory/internal/storeutil"
-	"github.com/hummingbird-org/factory/internal/tracing"
+	"github.com/hummingbird-org/factory-workqueue/internal/admin"
+	"github.com/hummingbird-org/factory-workqueue/internal/authzutil"
+	"github.com/hummingbird-org/factory-workqueue/internal/metrics"
+	"github.com/hummingbird-org/factory-workqueue/internal/storeutil"
+	"github.com/hummingbird-org/factory-workqueue/internal/tracing"
 )
 
 func main() {

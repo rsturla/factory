@@ -55,7 +55,7 @@ import (
 
 	cedarlib "github.com/cedar-policy/cedar-go"
 
-	"github.com/hummingbird-org/factory/internal/authz"
+	"github.com/hummingbird-org/factory-workqueue/internal/authz"
 )
 
 const (

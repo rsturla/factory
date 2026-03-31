@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/hummingbird-org/factory/internal/store"
+	"github.com/hummingbird-org/factory-workqueue/internal/store"
 )
 
 // WorkqueueClient implements store.Interface over HTTP.

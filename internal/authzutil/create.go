@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/hummingbird-org/factory/internal/authz"
-	cedarauthz "github.com/hummingbird-org/factory/internal/authz/cedar"
-	"github.com/hummingbird-org/factory/internal/authz/noop"
-	"github.com/hummingbird-org/factory/internal/authz/opa"
+	"github.com/hummingbird-org/factory-workqueue/internal/authz"
+	cedarauthz "github.com/hummingbird-org/factory-workqueue/internal/authz/cedar"
+	"github.com/hummingbird-org/factory-workqueue/internal/authz/noop"
+	"github.com/hummingbird-org/factory-workqueue/internal/authz/opa"
 )
 
 // CreateFromEnv creates an authz.Authorizer based on AUTHZ_BACKEND env var.

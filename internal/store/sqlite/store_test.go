@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/hummingbird-org/factory/internal/store"
-	"github.com/hummingbird-org/factory/internal/store/conformance"
-	"github.com/hummingbird-org/factory/internal/store/sqlite"
+	"github.com/hummingbird-org/factory-workqueue/internal/store"
+	"github.com/hummingbird-org/factory-workqueue/internal/store/conformance"
+	"github.com/hummingbird-org/factory-workqueue/internal/store/sqlite"
 )
 
 func TestSQLiteConformance(t *testing.T) {

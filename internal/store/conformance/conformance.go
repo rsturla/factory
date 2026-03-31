@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hummingbird-org/factory/internal/store"
+	"github.com/hummingbird-org/factory-workqueue/internal/store"
 )
 
 // Run executes the full conformance test suite against the given store implementation.

@@ -6,7 +6,7 @@ package noop
 import (
 	"context"
 
-	"github.com/hummingbird-org/factory/internal/authz"
+	"github.com/hummingbird-org/factory-workqueue/internal/authz"
 )
 
 // Authorizer allows all requests.

@@ -10,13 +10,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hummingbird-org/factory/internal/dispatcher"
-	"github.com/hummingbird-org/factory/internal/store"
-	"github.com/hummingbird-org/factory/internal/store/inmem"
-	"github.com/hummingbird-org/factory/pkg/client"
-	"github.com/hummingbird-org/factory/pkg/sdk"
+	"github.com/hummingbird-org/factory-workqueue/internal/dispatcher"
+	"github.com/hummingbird-org/factory-workqueue/internal/store"
+	"github.com/hummingbird-org/factory-workqueue/internal/store/inmem"
+	"github.com/hummingbird-org/factory-workqueue/pkg/client"
+	"github.com/hummingbird-org/factory-workqueue/pkg/sdk"
 
-	"github.com/hummingbird-org/factory/internal/compute"
+	"github.com/hummingbird-org/factory-workqueue/internal/compute"
 )
 
 // fakeReconciler returns a test HTTP server that responds to /process

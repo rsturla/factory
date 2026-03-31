@@ -11,9 +11,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 
-	"github.com/hummingbird-org/factory/internal/store"
-	"github.com/hummingbird-org/factory/internal/store/conformance"
-	storeddb "github.com/hummingbird-org/factory/internal/store/dynamodb"
+	"github.com/hummingbird-org/factory-workqueue/internal/store"
+	"github.com/hummingbird-org/factory-workqueue/internal/store/conformance"
+	storeddb "github.com/hummingbird-org/factory-workqueue/internal/store/dynamodb"
 )
 
 func TestDynamoDBConformance(t *testing.T) {

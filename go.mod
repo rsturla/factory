@@ -1,4 +1,4 @@
-module github.com/hummingbird-org/factory
+module github.com/hummingbird-org/factory-workqueue
 
 go 1.26.1
 

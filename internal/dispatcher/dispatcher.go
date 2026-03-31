@@ -14,13 +14,13 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/hummingbird-org/factory/internal/completion"
-	"github.com/hummingbird-org/factory/internal/compute"
-	"github.com/hummingbird-org/factory/internal/metrics"
-	"github.com/hummingbird-org/factory/internal/store"
-	"github.com/hummingbird-org/factory/internal/tracing"
-	"github.com/hummingbird-org/factory/pkg/client"
-	"github.com/hummingbird-org/factory/pkg/sdk"
+	"github.com/hummingbird-org/factory-workqueue/internal/completion"
+	"github.com/hummingbird-org/factory-workqueue/internal/compute"
+	"github.com/hummingbird-org/factory-workqueue/internal/metrics"
+	"github.com/hummingbird-org/factory-workqueue/internal/store"
+	"github.com/hummingbird-org/factory-workqueue/internal/tracing"
+	"github.com/hummingbird-org/factory-workqueue/pkg/client"
+	"github.com/hummingbird-org/factory-workqueue/pkg/sdk"
 )
 
 // Dispatcher manages the lifecycle of work items for a single queue.
