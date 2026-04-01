@@ -1,9 +1,20 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
+namespace: hummingbird--factory-sandbox
+
+labels:
+  - pairs:
+      paas.redhat.com/appcode: RPRM-001
+
 resources:
   - ../../base
   - route.yaml
+
+images:
+  - name: quay.io/hummingbird/factory-admin
+    newName: quay.io/rh-ee-rsturla/hummingbird-factory-admin
+    newTag: latest
 
 patches:
   - path: service-patch.yaml
@@ -11,6 +22,10 @@ patches:
     target:
       kind: Deployment
       name: factory-admin
+  - path: postgres-patch.yaml
+    target:
+      kind: PersistentVolumeClaim
+      name: factory-db
 
 configMapGenerator:
   - name: factory-cedar-policies

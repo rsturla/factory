@@ -21,7 +21,7 @@ spec:
       serviceAccountName: factory-admin
       containers:
         - name: admin
-          image: quay.io/rh-ee-rsturla/hummingbird-factory-admin:latest
+          image: quay.io/hummingbird/factory-admin:latest
           ports:
             - name: http
               containerPort: 8080

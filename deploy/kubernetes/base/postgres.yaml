@@ -13,12 +13,9 @@ metadata:
   labels:
     app.kubernetes.io/name: factory-db
     app.kubernetes.io/part-of: factory
-  annotations:
-    kubernetes.io/reclaimPolicy: Delete
 spec:
   accessModes:
     - ReadWriteOnce
-  storageClassName: aws-ebs
   resources:
     requests:
       storage: 20Gi
