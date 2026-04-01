@@ -23,6 +23,12 @@ type Authenticator struct {
 	client *http.Client
 }
 
+// NewWithClient creates an OpenShift authenticator with the given API URL and HTTP client.
+// Useful for testing.
+func NewWithClient(apiURL string, client *http.Client) *Authenticator {
+	return &Authenticator{apiURL: apiURL, client: client}
+}
+
 // New creates an OpenShift authenticator.
 // It reads the in-cluster CA and API server address automatically.
 func New() (*Authenticator, error) {
