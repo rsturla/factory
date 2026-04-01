@@ -45,6 +45,8 @@ func newDispatcher(t *testing.T, s store.Interface, reconcilerURL string) (*disp
 		BatchSize:        10,
 		MaxConcurrency:   5,
 		MaxRetry:         3,
+		LeaderInterval:   50 * time.Millisecond,
+		LeaderTTL:        10 * time.Second,
 	}
 	d := dispatcher.New(s, client.NewReconcilerClient(reconcilerURL), compute.NoopProvider{}, cfg)
 	return d, cfg
@@ -265,6 +267,8 @@ func TestDispatcher_PriorityOrder(t *testing.T) {
 		BatchSize:        1,
 		MaxConcurrency:   1,
 		MaxRetry:         3,
+		LeaderInterval:   50 * time.Millisecond,
+		LeaderTTL:        10 * time.Second,
 	}
 	d := dispatcher.New(s, client.NewReconcilerClient(srv.URL), compute.NoopProvider{}, cfg)
 
@@ -388,18 +392,20 @@ func TestDispatcher_Reaper(t *testing.T) {
 	// Wait for lease to expire.
 	time.Sleep(10 * time.Millisecond)
 
-	// Run dispatcher with fast reaper interval.
+	// Run dispatcher in scale-only mode so it only reaps, never dispatches.
 	cfg := dispatcher.Config{
-		QueueName:        "test",
-		WorkerID:         "reaper-test",
-		DispatchInterval: 1 * time.Hour, // don't dispatch
-		SweepInterval:    1 * time.Hour,
-		ReaperInterval:   50 * time.Millisecond,
-		ScaleInterval:    1 * time.Hour,
-		LeaseDuration:    1 * time.Hour,
-		BatchSize:        10,
-		MaxConcurrency:   10,
-		MaxRetry:         5,
+		QueueName:      "test",
+		WorkerID:       "reaper-test",
+		Mode:           dispatcher.ModeScaleOnly,
+		SweepInterval:  1 * time.Hour,
+		ReaperInterval: 50 * time.Millisecond,
+		ScaleInterval:  1 * time.Hour,
+		LeaseDuration:  1 * time.Hour,
+		BatchSize:      10,
+		MaxConcurrency: 10,
+		MaxRetry:       5,
+		LeaderInterval: 50 * time.Millisecond,
+		LeaderTTL:      10 * time.Second,
 	}
 	d := dispatcher.New(s, client.NewReconcilerClient(srv.URL), compute.NoopProvider{}, cfg)
 

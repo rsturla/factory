@@ -59,6 +59,8 @@ func main() {
 	cfg.DispatchInterval = envDuration("DISPATCH_INTERVAL", cfg.DispatchInterval)
 	cfg.SweepInterval = envDuration("SWEEP_INTERVAL", cfg.SweepInterval)
 	cfg.LeaseDuration = envDuration("LEASE_DURATION", cfg.LeaseDuration)
+	cfg.LeaderInterval = envDuration("LEADER_INTERVAL", cfg.LeaderInterval)
+	cfg.LeaderTTL = envDuration("LEADER_TTL", cfg.LeaderTTL)
 
 	// RECONCILER_ENDPOINT is only required in push mode.
 	reconcilerEndpoint := os.Getenv("RECONCILER_ENDPOINT")

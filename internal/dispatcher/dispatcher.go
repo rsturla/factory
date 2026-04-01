@@ -31,6 +31,11 @@ type Dispatcher struct {
 	completion *completion.Handler
 	cfg        Config
 	inFlight   sync.WaitGroup
+
+	leaderMu   sync.RWMutex
+	isLeader   bool
+	leaderTTL  time.Duration
+	sweepCount int
 }
 
 // New creates a new Dispatcher.
@@ -72,7 +77,19 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 		"max_concurrency", d.cfg.MaxConcurrency,
 	)
 
+	leaderInterval := d.cfg.LeaderInterval
+	if leaderInterval <= 0 {
+		leaderInterval = 5 * time.Second
+	}
+	leaderTTL := d.cfg.LeaderTTL
+	if leaderTTL <= 0 {
+		leaderTTL = 15 * time.Second
+	}
+	d.leaderTTL = leaderTTL
+
 	g, gctx := errgroup.WithContext(ctx)
+
+	g.Go(func() error { return d.loop(gctx, "leader", leaderInterval, d.leaderTick) })
 
 	if mode == ModePush {
 		g.Go(func() error { return d.loop(gctx, "dispatch", d.cfg.DispatchInterval, d.dispatchTick) })
@@ -104,7 +121,33 @@ func (d *Dispatcher) loop(ctx context.Context, name string, interval time.Durati
 	}
 }
 
+func (d *Dispatcher) leaderTick(ctx context.Context) {
+	ok, err := d.store.TryLeader(ctx, d.cfg.QueueName, d.cfg.WorkerID, d.leaderTTL)
+	if err != nil {
+		slog.Error("leader election failed", "queue", d.cfg.QueueName, "error", err)
+		return
+	}
+
+	d.leaderMu.Lock()
+	wasLeader := d.isLeader
+	d.isLeader = ok
+	d.leaderMu.Unlock()
+
+	if ok && !wasLeader {
+		slog.Info("acquired leadership", "queue", d.cfg.QueueName, "worker_id", d.cfg.WorkerID)
+	} else if !ok && wasLeader {
+		slog.Warn("lost leadership", "queue", d.cfg.QueueName, "worker_id", d.cfg.WorkerID)
+	}
+}
+
 func (d *Dispatcher) dispatchTick(ctx context.Context) {
+	d.leaderMu.RLock()
+	leader := d.isLeader
+	d.leaderMu.RUnlock()
+	if !leader {
+		return
+	}
+
 	if paused, _ := d.store.IsQueuePaused(ctx, d.cfg.QueueName); paused {
 		return
 	}
@@ -320,35 +363,53 @@ func (d *Dispatcher) handleResponse(ctx context.Context, item store.WorkItem, re
 }
 
 func (d *Dispatcher) sweepTick(ctx context.Context) {
-	d.store.RepairCounter(ctx, d.cfg.QueueName)
+	d.sweepCount++
 
-	counts, err := d.store.CountByStatus(ctx, d.cfg.QueueName)
+	// Count active statuses every tick (cheap — only scans pending/claimed/running).
+	// Count all statuses every 10th tick (~10 minutes) for dashboard metrics.
+	var statuses []store.Status
+	fullSweep := d.sweepCount%10 == 0
+	if !fullSweep {
+		statuses = []store.Status{store.StatusPending, store.StatusClaimed, store.StatusRunning}
+	}
+
+	counts, err := d.store.CountByStatus(ctx, d.cfg.QueueName, statuses...)
 	if err != nil {
 		slog.Error("count by status failed", "queue", d.cfg.QueueName, "error", err)
 		return
 	}
-	// Reset all statuses to 0 first — statuses with no items won't
-	// appear in the counts map, so we need to explicitly zero them.
-	for _, status := range []store.Status{
+
+	allStatuses := []store.Status{
 		store.StatusPending, store.StatusClaimed, store.StatusRunning,
 		store.StatusSucceeded, store.StatusFailed, store.StatusDeadLetter,
-	} {
-		metrics.QueueDepth.WithLabelValues(d.cfg.QueueName, string(status)).Set(0)
 	}
-	for status, count := range counts {
-		metrics.QueueDepth.WithLabelValues(d.cfg.QueueName, string(status)).Set(float64(count))
+	for _, status := range allStatuses {
+		if c, ok := counts[status]; ok {
+			metrics.QueueDepth.WithLabelValues(d.cfg.QueueName, string(status)).Set(float64(c))
+		} else if fullSweep {
+			metrics.QueueDepth.WithLabelValues(d.cfg.QueueName, string(status)).Set(0)
+		}
 	}
 	inProg := counts[store.StatusClaimed] + counts[store.StatusRunning]
 	metrics.InProgress.WithLabelValues(d.cfg.QueueName).Set(float64(inProg))
 	metrics.MaxConcurrency.WithLabelValues(d.cfg.QueueName).Set(float64(d.cfg.MaxConcurrency))
 
-	// Oldest pending item age.
+	// Oldest pending item age — hits the partial index, very cheap.
 	pending := store.StatusPending
 	oldest, err := d.store.List(ctx, store.ListFilter{Queue: d.cfg.QueueName, Status: &pending, Limit: 1})
 	if err == nil && len(oldest) > 0 {
 		metrics.OldestPendingAge.WithLabelValues(d.cfg.QueueName).Set(time.Since(oldest[0].CreatedAt).Seconds())
 	} else {
 		metrics.OldestPendingAge.WithLabelValues(d.cfg.QueueName).Set(0)
+	}
+
+	// Repair the in_progress counter if it drifted (e.g., after a crash).
+	// Only the leader repairs — standbys just read metrics.
+	d.leaderMu.RLock()
+	leader := d.isLeader
+	d.leaderMu.RUnlock()
+	if leader {
+		d.store.RepairCounter(ctx, d.cfg.QueueName)
 	}
 }
 
@@ -375,7 +436,14 @@ func (d *Dispatcher) reaperTick(ctx context.Context) {
 }
 
 func (d *Dispatcher) scaleTick(ctx context.Context) {
-	counts, err := d.store.CountByStatus(ctx, d.cfg.QueueName)
+	d.leaderMu.RLock()
+	leader := d.isLeader
+	d.leaderMu.RUnlock()
+	if !leader {
+		return
+	}
+
+	counts, err := d.store.CountByStatus(ctx, d.cfg.QueueName, store.StatusPending, store.StatusClaimed, store.StatusRunning)
 	if err != nil {
 		return
 	}
