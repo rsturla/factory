@@ -84,7 +84,9 @@ type Interface interface {
 	// --- Query Operations ---
 
 	// CountByStatus returns item counts grouped by status for a queue.
-	CountByStatus(ctx context.Context, queue string) (map[Status]int64, error)
+	// When statuses is empty, all statuses are counted.
+	// When statuses is provided, only those statuses are counted.
+	CountByStatus(ctx context.Context, queue string, statuses ...Status) (map[Status]int64, error)
 
 	// List returns items matching the filter.
 	List(ctx context.Context, filter ListFilter) ([]WorkItem, error)
@@ -110,6 +112,13 @@ type Interface interface {
 
 	// GetItemHistory returns the transition history for an item.
 	GetItemHistory(ctx context.Context, queue, key string) ([]HistoryEntry, error)
+
+	// --- Leader Election ---
+
+	// TryLeader attempts to become or renew leadership for a queue.
+	// Returns true if this workerID is (or became) the leader.
+	// The lease expires after ttl. Must be called periodically to renew.
+	TryLeader(ctx context.Context, queue, workerID string, ttl time.Duration) (bool, error)
 
 	// --- Events ---
 

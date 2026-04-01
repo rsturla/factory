@@ -47,6 +47,11 @@ func Run(t *testing.T, setup func(t *testing.T) store.Interface) {
 	t.Run("MultipleQueuesIsolated", func(t *testing.T) { testMultipleQueuesIsolated(t, setup) })
 	t.Run("EnsureQueueUpdatesConfig", func(t *testing.T) { testEnsureQueueUpdatesConfig(t, setup) })
 	t.Run("PauseAndResumeQueue", func(t *testing.T) { testPauseAndResumeQueue(t, setup) })
+	t.Run("TryLeaderAcquire", func(t *testing.T) { testTryLeaderAcquire(t, setup) })
+	t.Run("TryLeaderRenew", func(t *testing.T) { testTryLeaderRenew(t, setup) })
+	t.Run("TryLeaderReject", func(t *testing.T) { testTryLeaderReject(t, setup) })
+	t.Run("TryLeaderExpireThenSteal", func(t *testing.T) { testTryLeaderExpireThenSteal(t, setup) })
+	t.Run("TryLeaderNoQueue", func(t *testing.T) { testTryLeaderNoQueue(t, setup) })
 }
 
 func testEnqueue(t *testing.T, setup func(t *testing.T) store.Interface) {
@@ -740,5 +745,115 @@ func testPauseAndResumeQueue(t *testing.T, setup func(t *testing.T) store.Interf
 	items, _ := s.ClaimBatch(ctx, "test", 1, "w", time.Hour)
 	if len(items) != 1 {
 		t.Errorf("expected 1 claimed (store doesn't enforce pause), got %d", len(items))
+	}
+}
+
+// testTryLeaderAcquire verifies that a worker can acquire leadership
+// on a queue with no current leader.
+func testTryLeaderAcquire(t *testing.T, setup func(t *testing.T) store.Interface) {
+	ctx := context.Background()
+	s := setup(t)
+
+	ok, err := s.TryLeader(ctx, "test", "dispatcher-1", 10*time.Second)
+	if err != nil {
+		t.Fatalf("TryLeader: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected to acquire leadership on empty queue")
+	}
+}
+
+// testTryLeaderRenew verifies that the current leader can renew its lease.
+func testTryLeaderRenew(t *testing.T, setup func(t *testing.T) store.Interface) {
+	ctx := context.Background()
+	s := setup(t)
+
+	// Acquire.
+	ok, _ := s.TryLeader(ctx, "test", "dispatcher-1", 10*time.Second)
+	if !ok {
+		t.Fatal("initial acquire failed")
+	}
+
+	// Renew — same worker should succeed.
+	ok, err := s.TryLeader(ctx, "test", "dispatcher-1", 10*time.Second)
+	if err != nil {
+		t.Fatalf("TryLeader renew: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected leader to renew its own lease")
+	}
+}
+
+// testTryLeaderReject verifies that a different worker cannot steal
+// an active (non-expired) lease.
+func testTryLeaderReject(t *testing.T, setup func(t *testing.T) store.Interface) {
+	ctx := context.Background()
+	s := setup(t)
+
+	// Worker 1 acquires.
+	ok, _ := s.TryLeader(ctx, "test", "dispatcher-1", 10*time.Second)
+	if !ok {
+		t.Fatal("initial acquire failed")
+	}
+
+	// Worker 2 tries to steal — should fail.
+	ok, err := s.TryLeader(ctx, "test", "dispatcher-2", 10*time.Second)
+	if err != nil {
+		t.Fatalf("TryLeader steal: %v", err)
+	}
+	if ok {
+		t.Fatal("expected different worker to be rejected while lease is active")
+	}
+
+	// Worker 1 should still be able to renew.
+	ok, _ = s.TryLeader(ctx, "test", "dispatcher-1", 10*time.Second)
+	if !ok {
+		t.Fatal("original leader should still be able to renew")
+	}
+}
+
+// testTryLeaderExpireThenSteal verifies that after the leader's lease
+// expires, another worker can acquire leadership.
+func testTryLeaderExpireThenSteal(t *testing.T, setup func(t *testing.T) store.Interface) {
+	ctx := context.Background()
+	s := setup(t)
+
+	// Worker 1 acquires with a very short TTL.
+	ok, _ := s.TryLeader(ctx, "test", "dispatcher-1", 1*time.Millisecond)
+	if !ok {
+		t.Fatal("initial acquire failed")
+	}
+
+	// Wait for lease to expire.
+	time.Sleep(10 * time.Millisecond)
+
+	// Worker 2 should now be able to acquire.
+	ok, err := s.TryLeader(ctx, "test", "dispatcher-2", 10*time.Second)
+	if err != nil {
+		t.Fatalf("TryLeader after expiry: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected worker 2 to acquire leadership after lease expiry")
+	}
+
+	// Worker 1 should now be rejected.
+	ok, _ = s.TryLeader(ctx, "test", "dispatcher-1", 10*time.Second)
+	if ok {
+		t.Fatal("expected worker 1 to be rejected after worker 2 took over")
+	}
+}
+
+// testTryLeaderNoQueue verifies that TryLeader on a nonexistent queue
+// returns false without error.
+func testTryLeaderNoQueue(t *testing.T, setup func(t *testing.T) store.Interface) {
+	ctx := context.Background()
+	s := setup(t)
+
+	ok, err := s.TryLeader(ctx, "nonexistent", "dispatcher-1", 10*time.Second)
+	if err != nil {
+		t.Fatalf("TryLeader on nonexistent queue: %v", err)
+	}
+	if ok {
+		t.Fatal("expected false for nonexistent queue")
 	}
 }

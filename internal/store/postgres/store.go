@@ -563,12 +563,21 @@ func (s *Store) RepairCounter(ctx context.Context, queue string) error {
 
 // --- Query Operations ---
 
-func (s *Store) CountByStatus(ctx context.Context, queue string) (map[store.Status]int64, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT status, COUNT(*) FROM work_items
-		WHERE queue = $1
-		GROUP BY status
-	`, queue)
+func (s *Store) CountByStatus(ctx context.Context, queue string, statuses ...store.Status) (map[store.Status]int64, error) {
+	query := `SELECT status, COUNT(*) FROM work_items WHERE queue = $1`
+	args := []any{queue}
+
+	if len(statuses) > 0 {
+		placeholders := make([]string, len(statuses))
+		for i, st := range statuses {
+			placeholders[i] = fmt.Sprintf("$%d", i+2)
+			args = append(args, string(st))
+		}
+		query += " AND status IN (" + strings.Join(placeholders, ",") + ")"
+	}
+	query += " GROUP BY status"
+
+	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("count by status: %w", err)
 	}
@@ -819,6 +828,26 @@ func (s *Store) Subscribe(ctx context.Context, queue string) (<-chan store.Event
 	}()
 
 	return ch, nil
+}
+
+// --- Leader Election ---
+
+func (s *Store) TryLeader(ctx context.Context, queue, workerID string, ttl time.Duration) (bool, error) {
+	var leaderID string
+	err := s.pool.QueryRow(ctx, `
+		UPDATE queue_state
+		SET leader_id = $1, leader_expires = now() + $2::interval
+		WHERE queue = $3
+		  AND (leader_id IS NULL OR leader_id = $1 OR leader_expires < now())
+		RETURNING leader_id
+	`, workerID, ttl.String(), queue).Scan(&leaderID)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return false, nil
+		}
+		return false, fmt.Errorf("try leader: %w", err)
+	}
+	return leaderID == workerID, nil
 }
 
 // --- Helpers ---

@@ -909,12 +909,16 @@ func (s *Store) getQueueConfig(ctx context.Context, queue string) store.QueueCon
 
 // --- Query Operations ---
 
-func (s *Store) CountByStatus(ctx context.Context, queue string) (map[store.Status]int64, error) {
+func (s *Store) CountByStatus(ctx context.Context, queue string, statuses ...store.Status) (map[store.Status]int64, error) {
+	if len(statuses) == 0 {
+		statuses = []store.Status{
+			store.StatusPending, store.StatusClaimed, store.StatusRunning,
+			store.StatusSucceeded, store.StatusFailed, store.StatusDeadLetter,
+		}
+	}
+
 	counts := make(map[store.Status]int64)
-	for _, status := range []store.Status{
-		store.StatusPending, store.StatusClaimed, store.StatusRunning,
-		store.StatusSucceeded, store.StatusFailed, store.StatusDeadLetter,
-	} {
+	for _, status := range statuses {
 		n, err := s.countByStatusSingle(ctx, queue, status)
 		if err != nil {
 			return nil, err
@@ -1230,6 +1234,39 @@ func (s *Store) listS3Keys(ctx context.Context, prefix string) ([]string, error)
 		}
 	}
 	return keys, nil
+}
+
+// --- Leader Election ---
+
+func (s *Store) TryLeader(ctx context.Context, queue, workerID string, ttl time.Duration) (bool, error) {
+	pk := "_queue#" + queue
+	expires := timeStr(time.Now().Add(ttl))
+	now := timeStr(time.Now())
+
+	_, err := s.ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: &s.table,
+		Key: map[string]dyntypes.AttributeValue{
+			"PK": &dyntypes.AttributeValueMemberS{Value: pk},
+			"SK": &dyntypes.AttributeValueMemberS{Value: cfgSK},
+		},
+		ConditionExpression: aws.String(
+			"attribute_not_exists(leader_id) OR leader_id = :empty OR leader_id = :wid OR leader_expires < :now"),
+		UpdateExpression: aws.String("SET leader_id = :wid, leader_expires = :exp"),
+		ExpressionAttributeValues: map[string]dyntypes.AttributeValue{
+			":wid":   &dyntypes.AttributeValueMemberS{Value: workerID},
+			":exp":   &dyntypes.AttributeValueMemberS{Value: expires},
+			":now":   &dyntypes.AttributeValueMemberS{Value: now},
+			":empty": &dyntypes.AttributeValueMemberS{Value: ""},
+		},
+	})
+	if err != nil {
+		var condFail *dyntypes.ConditionalCheckFailedException
+		if errors.As(err, &condFail) {
+			return false, nil
+		}
+		return false, fmt.Errorf("try leader: %w", err)
+	}
+	return true, nil
 }
 
 // --- Events ---

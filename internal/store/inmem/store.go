@@ -26,9 +26,11 @@ type itemKey struct {
 }
 
 type queueMeta struct {
-	config     store.QueueConfig
-	inProgress int
-	paused     bool
+	config        store.QueueConfig
+	inProgress    int
+	paused        bool
+	leaderID      string
+	leaderExpires time.Time
 }
 
 // New creates a new in-memory store.
@@ -382,13 +384,24 @@ func (s *Store) IsQueuePaused(_ context.Context, queue string) (bool, error) {
 
 // --- Query Operations ---
 
-func (s *Store) CountByStatus(_ context.Context, queue string) (map[store.Status]int64, error) {
+func (s *Store) CountByStatus(_ context.Context, queue string, statuses ...store.Status) (map[store.Status]int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	var filter map[store.Status]bool
+	if len(statuses) > 0 {
+		filter = make(map[store.Status]bool, len(statuses))
+		for _, st := range statuses {
+			filter[st] = true
+		}
+	}
 
 	counts := make(map[store.Status]int64)
 	for ik, item := range s.items {
 		if ik.queue == queue {
+			if filter != nil && !filter[item.Status] {
+				continue
+			}
 			counts[item.Status]++
 		}
 	}
@@ -534,6 +547,26 @@ func (s *Store) addHistory(entry store.HistoryEntry) {
 		entry.CreatedAt = time.Now()
 	}
 	s.history = append(s.history, entry)
+}
+
+// --- Leader Election ---
+
+func (s *Store) TryLeader(_ context.Context, queue, workerID string, ttl time.Duration) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	q, ok := s.queues[queue]
+	if !ok {
+		return false, nil
+	}
+
+	now := time.Now()
+	if q.leaderID == "" || q.leaderID == workerID || q.leaderExpires.Before(now) {
+		q.leaderID = workerID
+		q.leaderExpires = now.Add(ttl)
+		return true, nil
+	}
+	return false, nil
 }
 
 // --- Events ---

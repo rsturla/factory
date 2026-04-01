@@ -87,7 +87,7 @@ func (c *WorkqueueClient) RepairCounter(ctx context.Context, queue string) error
 	return c.post(ctx, "/wq/repair", map[string]any{"queue": queue})
 }
 
-func (c *WorkqueueClient) CountByStatus(ctx context.Context, queue string) (map[store.Status]int64, error) {
+func (c *WorkqueueClient) CountByStatus(ctx context.Context, queue string, _ ...store.Status) (map[store.Status]int64, error) {
 	body, err := c.postJSON(ctx, "/wq/count", map[string]any{"queue": queue})
 	if err != nil {
 		return nil, err
@@ -198,6 +198,10 @@ func (c *WorkqueueClient) Subscribe(ctx context.Context, queue string) (<-chan s
 func (c *WorkqueueClient) post(ctx context.Context, path string, payload any) error {
 	_, err := c.postJSON(ctx, path, payload)
 	return err
+}
+
+func (c *WorkqueueClient) TryLeader(_ context.Context, _, _ string, _ time.Duration) (bool, error) {
+	return false, fmt.Errorf("leader election not supported over HTTP")
 }
 
 func (c *WorkqueueClient) postJSON(ctx context.Context, path string, payload any) ([]byte, error) {
