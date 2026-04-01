@@ -62,6 +62,3 @@ curl http://localhost:18080/admin/queues
 docker compose -f <file>.yaml down -v
 ```
 
-## Kubernetes
-
-See [kubernetes/](kubernetes/) for production Kubernetes/OpenShift manifests.
