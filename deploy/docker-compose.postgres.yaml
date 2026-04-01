@@ -2,7 +2,7 @@ services:
   # --- Shared Infrastructure ---
 
   postgres:
-    image: docker.io/library/postgres:16
+    image: quay.io/hummingbird/postgresql:18
     environment:
       POSTGRES_DB: factory
       POSTGRES_USER: factory

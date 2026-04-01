@@ -1,0 +1,24 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: factory-admin
+spec:
+  template:
+    spec:
+      containers:
+        - name: admin
+          env:
+            - name: AUTHN_BACKEND
+              value: openshift
+            - name: AUTHZ_BACKEND
+              value: cedar
+            - name: AUTHZ_CEDAR_POLICY_PATH
+              value: /etc/factory/policies
+          volumeMounts:
+            - name: cedar-policies
+              mountPath: /etc/factory/policies
+              readOnly: true
+      volumes:
+        - name: cedar-policies
+          configMap:
+            name: factory-cedar-policies

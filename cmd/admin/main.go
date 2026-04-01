@@ -7,6 +7,7 @@
 //	DDB_TABLE           - DynamoDB table name (dynamodb backend)
 //	S3_BUCKET           - S3 bucket for history (dynamodb backend)
 //	SQLITE_PATH         - SQLite database path (sqlite backend)
+//	AUTHN_BACKEND             - "noop" or "openshift" (default: "noop")
 //	AUTHZ_BACKEND             - "noop", "cedar", or "opa" (default: "noop")
 //	AUTHZ_CEDAR_POLICY_PATH   - Cedar policy file or directory (cedar backend)
 //	AUTHZ_OPA_ENDPOINT        - OPA server URL (opa backend)
@@ -25,6 +26,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/hummingbird-org/factory-workqueue/internal/admin"
+	"github.com/hummingbird-org/factory-workqueue/internal/authn"
+	"github.com/hummingbird-org/factory-workqueue/internal/authnutil"
 	"github.com/hummingbird-org/factory-workqueue/internal/authzutil"
 	"github.com/hummingbird-org/factory-workqueue/internal/metrics"
 	"github.com/hummingbird-org/factory-workqueue/internal/storeutil"
@@ -49,6 +52,12 @@ func main() {
 		defer result.Pool.Close()
 	}
 
+	authenticator, err := authnutil.CreateFromEnv()
+	if err != nil {
+		slog.Error("failed to create authenticator", "error", err)
+		os.Exit(1)
+	}
+
 	authorizer, err := authzutil.CreateFromEnv()
 	if err != nil {
 		slog.Error("failed to create authorizer", "error", err)
@@ -57,9 +66,14 @@ func main() {
 
 	metrics.RegisterDefaults()
 
-	mux := http.NewServeMux()
-	admin.NewHandler(result.Store, authorizer).Register(mux)
+	// Admin API routes — protected by authn + authz.
+	adminMux := http.NewServeMux()
+	admin.NewHandler(result.Store, authorizer).Register(adminMux)
 
+	// Top-level mux: health/metrics are unauthenticated,
+	// /admin/ routes go through authn middleware.
+	mux := http.NewServeMux()
+	mux.Handle("/admin/", authn.Middleware(authenticator)(adminMux))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))

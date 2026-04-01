@@ -2,6 +2,7 @@ FROM quay.io/hummingbird/go:1.26 AS builder
 
 WORKDIR /src
 COPY go.mod go.sum ./
+COPY pkg/sdk/go.mod pkg/sdk/
 RUN go mod download
 
 COPY . .
