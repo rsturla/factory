@@ -33,6 +33,14 @@ func Middleware(authorizer Authorizer, action Action, queue string) func(http.Ha
 				return
 			}
 
+			if !isReadAction(action) {
+				slog.Info("authorized write operation",
+					"user", id.User,
+					"action", action,
+					"queue", queue,
+				)
+			}
+
 			next.ServeHTTP(w, r)
 		})
 	}
@@ -41,4 +49,12 @@ func Middleware(authorizer Authorizer, action Action, queue string) func(http.Ha
 // Wrap is a convenience for wrapping a single handler with authorization.
 func Wrap(authorizer Authorizer, action Action, queue string, handler http.Handler) http.Handler {
 	return Middleware(authorizer, action, queue)(handler)
+}
+
+func isReadAction(a Action) bool {
+	switch a {
+	case ActionQueuesRead, ActionItemsRead, ActionWorkersRead, ActionEventsStream:
+		return true
+	}
+	return false
 }

@@ -121,7 +121,6 @@ func (h *Handler) retryItem(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	slog.Info("item retried via admin", "queue", name, "key", key)
 	writeJSON(w, map[string]string{"status": "requeued"})
 }
 
@@ -138,7 +137,6 @@ func (h *Handler) cancelItem(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	slog.Info("item cancelled via admin", "queue", name, "key", key)
 	writeJSON(w, map[string]string{"status": "cancelled"})
 }
 
@@ -148,7 +146,6 @@ func (h *Handler) pauseQueue(w http.ResponseWriter, r *http.Request) {
 		serverError(w, "pause queue", err)
 		return
 	}
-	slog.Info("queue paused via admin", "queue", name)
 	writeJSON(w, map[string]string{"status": "paused"})
 }
 
@@ -158,7 +155,6 @@ func (h *Handler) resumeQueue(w http.ResponseWriter, r *http.Request) {
 		serverError(w, "resume queue", err)
 		return
 	}
-	slog.Info("queue resumed via admin", "queue", name)
 	writeJSON(w, map[string]string{"status": "resumed"})
 }
 
@@ -169,7 +165,6 @@ func (h *Handler) purgeDeadLetters(w http.ResponseWriter, r *http.Request) {
 		serverError(w, "purge dead letters", err)
 		return
 	}
-	slog.Info("dead letters purged via admin", "queue", name, "count", count)
 	writeJSON(w, map[string]any{"status": "purged", "count": count})
 }
 
