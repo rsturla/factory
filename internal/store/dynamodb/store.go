@@ -1250,7 +1250,7 @@ func (s *Store) TryLeader(ctx context.Context, queue, workerID string, ttl time.
 			"SK": &dyntypes.AttributeValueMemberS{Value: cfgSK},
 		},
 		ConditionExpression: aws.String(
-			"attribute_not_exists(leader_id) OR leader_id = :empty OR leader_id = :wid OR leader_expires < :now"),
+			"attribute_exists(config) AND (attribute_not_exists(leader_id) OR leader_id = :empty OR leader_id = :wid OR leader_expires < :now)"),
 		UpdateExpression: aws.String("SET leader_id = :wid, leader_expires = :exp"),
 		ExpressionAttributeValues: map[string]dyntypes.AttributeValue{
 			":wid":   &dyntypes.AttributeValueMemberS{Value: workerID},
