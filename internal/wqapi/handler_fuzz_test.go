@@ -37,6 +37,21 @@ func fuzzEndpoint(f *testing.F, path string, seeds ...string) {
 	})
 }
 
+func FuzzWqapiEnqueueBatch(f *testing.F) {
+	fuzzEndpoint(f, "/wq/enqueue-batch",
+		`{"queue":"q","items":[{"key":"k1","priority":1},{"key":"k2","priority":2}]}`,
+		`{"queue":"q","items":[]}`,
+		`{"queue":"q","items":[{"key":"","priority":0}]}`,
+		`{"queue":"","items":[{"key":"k","priority":-1}]}`,
+		`{"queue":"q","items":[{"key":"k","priority":99999999999}]}`,
+		`{"queue":"q"}`,
+		`{}`,
+		`null`,
+		``,
+		`{invalid`,
+	)
+}
+
 func FuzzWqapiEnqueue(f *testing.F) {
 	fuzzEndpoint(f, "/wq/enqueue",
 		`{"queue":"q","key":"k","priority":1}`,

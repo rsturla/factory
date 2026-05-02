@@ -40,6 +40,11 @@ type Interface interface {
 	// status, the priority is merged upward. No payload — keys only.
 	Enqueue(ctx context.Context, queue, key string, priority int, opts ...EnqueueOption) error
 
+	// EnqueueBatch atomically enqueues multiple keys in a single round-trip.
+	// Same dedup/priority-merge semantics as Enqueue. Returns count of items
+	// actually enqueued or reactivated (in-flight items are skipped).
+	EnqueueBatch(ctx context.Context, queue string, items []BatchEnqueueItem) (int, error)
+
 	// ClaimBatch atomically claims up to batchSize pending items from a queue.
 	// Items are ordered by priority DESC, created_at ASC.
 	// Respects the queue's max_concurrency limit.
@@ -212,6 +217,13 @@ type Event struct {
 type ItemDetail struct {
 	Item    WorkItem       `json:"item"`
 	History []HistoryEntry `json:"history"`
+}
+
+// BatchEnqueueItem represents a single item in a batch enqueue request.
+type BatchEnqueueItem struct {
+	Key       string     `json:"key"`
+	Priority  int        `json:"priority"`
+	NotBefore *time.Time `json:"not_before,omitempty"`
 }
 
 // --- Options ---

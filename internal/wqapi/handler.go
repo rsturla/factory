@@ -35,6 +35,7 @@ func NewHandler(s store.Interface, a authz.Authorizer) *Handler {
 func (h *Handler) Register(mux *http.ServeMux) {
 	// Enqueue — also available on receiver, but included here for completeness.
 	mux.Handle("POST /wq/enqueue", h.withAuthz(authz.ActionEnqueue, h.enqueue))
+	mux.Handle("POST /wq/enqueue-batch", h.withAuthz(authz.ActionEnqueue, h.enqueueBatch))
 
 	// Worker operations — used by standalone workers.
 	mux.Handle("POST /wq/claim", h.withAuthz(authz.ActionEnqueue, h.claim))
@@ -148,6 +149,22 @@ func (h *Handler) enqueue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]string{"status": "ok"})
+}
+
+func (h *Handler) enqueueBatch(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Queue string                   `json:"queue"`
+		Items []store.BatchEnqueueItem `json:"items"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	count, err := h.store.EnqueueBatch(r.Context(), req.Queue, req.Items)
+	if err != nil {
+		serverError(w, err)
+		return
+	}
+	writeJSON(w, map[string]any{"status": "ok", "count": count})
 }
 
 func (h *Handler) claim(w http.ResponseWriter, r *http.Request) {

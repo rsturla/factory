@@ -107,6 +107,63 @@ func (s *Store) Enqueue(_ context.Context, queue, key string, priority int, opts
 	return nil
 }
 
+func (s *Store) EnqueueBatch(_ context.Context, queue string, items []store.BatchEnqueueItem) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	count := 0
+	now := time.Now()
+	for _, bi := range items {
+		ik := itemKey{queue, bi.Key}
+		if existing, ok := s.items[ik]; ok {
+			switch existing.Status {
+			case store.StatusPending:
+				if bi.Priority > existing.Priority {
+					existing.Priority = bi.Priority
+				}
+				existing.UpdatedAt = now
+				count++
+			case store.StatusClaimed, store.StatusRunning:
+				// In-flight — skip.
+			default:
+				existing.Status = store.StatusPending
+				existing.Priority = bi.Priority
+				existing.Attempts = 0
+				existing.NotBefore = bi.NotBefore
+				existing.WorkerID = ""
+				existing.LeaseExpires = nil
+				existing.ErrorMessage = ""
+				existing.ClaimedAt = nil
+				existing.CompletedAt = nil
+				existing.UpdatedAt = now
+				count++
+			}
+			continue
+		}
+
+		item := &store.WorkItem{
+			Queue:       queue,
+			Key:         bi.Key,
+			Status:      store.StatusPending,
+			Priority:    bi.Priority,
+			MaxAttempts: 5,
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		}
+		if bi.NotBefore != nil {
+			item.NotBefore = bi.NotBefore
+		}
+		if q, ok := s.queues[queue]; ok && q.config.MaxRetry > 0 {
+			item.MaxAttempts = q.config.MaxRetry
+		}
+
+		s.items[ik] = item
+		s.emit(store.Event{Queue: queue, Key: bi.Key, Status: "pending", Priority: bi.Priority})
+		count++
+	}
+	return count, nil
+}
+
 func (s *Store) ClaimBatch(_ context.Context, queue string, batchSize int, workerID string, leaseDuration time.Duration) ([]store.WorkItem, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

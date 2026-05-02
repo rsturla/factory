@@ -262,6 +262,68 @@ func (s *Store) Enqueue(ctx context.Context, queue, key string, priority int, op
 	return err
 }
 
+func (s *Store) EnqueueBatch(ctx context.Context, queue string, items []store.BatchEnqueueItem) (int, error) {
+	if len(items) == 0 {
+		return 0, nil
+	}
+
+	now := timeStr(time.Now())
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO work_items (queue, key, priority, not_before, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT (queue, key) DO UPDATE SET
+			priority = CASE
+				WHEN work_items.status = 'pending'
+				THEN MAX(work_items.priority, excluded.priority)
+				ELSE excluded.priority
+			END,
+			status = 'pending',
+			attempts = CASE WHEN work_items.status = 'pending' THEN work_items.attempts ELSE 0 END,
+			not_before = excluded.not_before,
+			worker_id = NULL,
+			lease_expires = NULL,
+			error_message = NULL,
+			claimed_at = NULL,
+			completed_at = NULL,
+			updated_at = ?
+		WHERE work_items.status IN ('pending', 'succeeded', 'failed', 'dead_letter')
+	`)
+	if err != nil {
+		return 0, fmt.Errorf("prepare batch enqueue: %w", err)
+	}
+	defer stmt.Close()
+
+	count := 0
+	for _, bi := range items {
+		result, err := stmt.ExecContext(ctx, queue, bi.Key, bi.Priority, timePtrStr(bi.NotBefore), now, now, now)
+		if err != nil {
+			return count, fmt.Errorf("batch enqueue item %q: %w", bi.Key, err)
+		}
+		n, _ := result.RowsAffected()
+		count += int(n)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit batch enqueue: %w", err)
+	}
+
+	for _, bi := range items {
+		s.emit(store.Event{Queue: queue, Key: bi.Key, Status: "pending", Priority: bi.Priority})
+	}
+
+	return count, nil
+}
+
 func (s *Store) ClaimBatch(ctx context.Context, queue string, batchSize int, workerID string, leaseDuration time.Duration) ([]store.WorkItem, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

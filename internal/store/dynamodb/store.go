@@ -28,6 +28,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -388,6 +389,51 @@ func (s *Store) Enqueue(ctx context.Context, queue, key string, priority int, op
 		return nil
 	}
 	return nil
+}
+
+func (s *Store) EnqueueBatch(ctx context.Context, queue string, items []store.BatchEnqueueItem) (int, error) {
+	if len(items) == 0 {
+		return 0, nil
+	}
+
+	// DynamoDB doesn't support conditional batch upserts, so we fan out
+	// individual enqueues concurrently. Chunk to limit goroutine count.
+	const concurrency = 25
+	type result struct {
+		err error
+	}
+
+	count := 0
+	for start := 0; start < len(items); start += concurrency {
+		end := start + concurrency
+		if end > len(items) {
+			end = len(items)
+		}
+		chunk := items[start:end]
+
+		results := make([]result, len(chunk))
+		var wg sync.WaitGroup
+		for i, bi := range chunk {
+			wg.Add(1)
+			go func(idx int, item store.BatchEnqueueItem) {
+				defer wg.Done()
+				var opts []store.EnqueueOption
+				if item.NotBefore != nil {
+					opts = append(opts, store.WithNotBefore(*item.NotBefore))
+				}
+				results[idx].err = s.Enqueue(ctx, queue, item.Key, item.Priority, opts...)
+			}(i, bi)
+		}
+		wg.Wait()
+
+		for _, r := range results {
+			if r.err == nil {
+				count++
+			}
+		}
+	}
+
+	return count, nil
 }
 
 func (s *Store) ClaimBatch(ctx context.Context, queue string, batchSize int, workerID string, leaseDuration time.Duration) ([]store.WorkItem, error) {

@@ -31,6 +31,20 @@ func (c *WorkqueueClient) Enqueue(ctx context.Context, queue, key string, priori
 	return c.post(ctx, "/wq/enqueue", map[string]any{"queue": queue, "key": key, "priority": priority})
 }
 
+func (c *WorkqueueClient) EnqueueBatch(ctx context.Context, queue string, items []store.BatchEnqueueItem) (int, error) {
+	body, err := c.postJSON(ctx, "/wq/enqueue-batch", map[string]any{"queue": queue, "items": items})
+	if err != nil {
+		return 0, err
+	}
+	var result struct {
+		Count int `json:"count"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return 0, fmt.Errorf("decode enqueue-batch response: %w", err)
+	}
+	return result.Count, nil
+}
+
 func (c *WorkqueueClient) ClaimBatch(ctx context.Context, queue string, batchSize int, workerID string, leaseDuration time.Duration) ([]store.WorkItem, error) {
 	body, err := c.postJSON(ctx, "/wq/claim", map[string]any{
 		"queue": queue, "batch_size": batchSize, "worker_id": workerID, "lease_duration": leaseDuration.String(),

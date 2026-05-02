@@ -73,3 +73,59 @@ func FuzzStoreLifecycle(f *testing.F) {
 		}
 	})
 }
+
+func FuzzEnqueueBatch(f *testing.F) {
+	f.Add("queue", "key1", "key2", "key3", 0, 10, -5)
+	f.Add("", "", "", "", 0, 0, 0)
+	f.Add("q", "\x00", "\xff", "normal", 1<<31-1, -(1 << 31), 42)
+	f.Add("unicode-队列", "key-1", "key-2", "key-3", 100, 200, 300)
+	f.Add("q", "same", "same", "same", 1, 2, 3)
+
+	f.Fuzz(func(t *testing.T, queue, k1, k2, k3 string, p1, p2, p3 int) {
+		ctx := context.Background()
+		s := inmem.New()
+
+		if err := s.EnsureQueue(ctx, queue, store.QueueConfig{
+			MaxConcurrency: 10,
+			MaxRetry:       5,
+		}); err != nil {
+			return
+		}
+
+		items := []store.BatchEnqueueItem{
+			{Key: k1, Priority: p1},
+			{Key: k2, Priority: p2},
+			{Key: k3, Priority: p3},
+		}
+
+		n, err := s.EnqueueBatch(ctx, queue, items)
+		if err != nil {
+			t.Fatalf("EnqueueBatch failed: %v", err)
+		}
+		if n < 0 {
+			t.Fatalf("negative count: %d", n)
+		}
+
+		counts, err := s.CountByStatus(ctx, queue)
+		if err != nil {
+			t.Fatalf("CountByStatus: %v", err)
+		}
+		if counts[store.StatusPending] < 0 {
+			t.Fatalf("negative pending count: %d", counts[store.StatusPending])
+		}
+
+		// Verify all distinct keys are retrievable.
+		for _, item := range items {
+			if item.Key == "" {
+				continue
+			}
+			got, err := s.GetItem(ctx, queue, item.Key)
+			if err != nil {
+				continue
+			}
+			if got.Status != store.StatusPending {
+				t.Fatalf("expected pending, got %s", got.Status)
+			}
+		}
+	})
+}

@@ -52,6 +52,12 @@ func Run(t *testing.T, setup func(t *testing.T) store.Interface) {
 	t.Run("TryLeaderReject", func(t *testing.T) { testTryLeaderReject(t, setup) })
 	t.Run("TryLeaderExpireThenSteal", func(t *testing.T) { testTryLeaderExpireThenSteal(t, setup) })
 	t.Run("TryLeaderNoQueue", func(t *testing.T) { testTryLeaderNoQueue(t, setup) })
+	t.Run("EnqueueBatch", func(t *testing.T) { testEnqueueBatch(t, setup) })
+	t.Run("EnqueueBatchDedup", func(t *testing.T) { testEnqueueBatchDedup(t, setup) })
+	t.Run("EnqueueBatchSkipsInFlight", func(t *testing.T) { testEnqueueBatchSkipsInFlight(t, setup) })
+	t.Run("EnqueueBatchReactivatesTerminal", func(t *testing.T) { testEnqueueBatchReactivatesTerminal(t, setup) })
+	t.Run("EnqueueBatchEmpty", func(t *testing.T) { testEnqueueBatchEmpty(t, setup) })
+	t.Run("EnqueueBatchLarge", func(t *testing.T) { testEnqueueBatchLarge(t, setup) })
 }
 
 func testEnqueue(t *testing.T, setup func(t *testing.T) store.Interface) {
@@ -855,5 +861,167 @@ func testTryLeaderNoQueue(t *testing.T, setup func(t *testing.T) store.Interface
 	}
 	if ok {
 		t.Fatal("expected false for nonexistent queue")
+	}
+}
+
+// --- EnqueueBatch tests ---
+
+func testEnqueueBatch(t *testing.T, setup func(t *testing.T) store.Interface) {
+	ctx := context.Background()
+	s := setup(t)
+
+	items := []store.BatchEnqueueItem{
+		{Key: "batch-1", Priority: 10},
+		{Key: "batch-2", Priority: 20},
+		{Key: "batch-3", Priority: 30},
+	}
+	n, err := s.EnqueueBatch(ctx, "test", items)
+	if err != nil {
+		t.Fatalf("EnqueueBatch: %v", err)
+	}
+	if n != 3 {
+		t.Fatalf("expected 3 enqueued, got %d", n)
+	}
+
+	counts, _ := s.CountByStatus(ctx, "test")
+	if counts[store.StatusPending] != 3 {
+		t.Fatalf("expected 3 pending, got %d", counts[store.StatusPending])
+	}
+
+	// Verify priority ordering via claim.
+	claimed, _ := s.ClaimBatch(ctx, "test", 3, "w", time.Hour)
+	if len(claimed) != 3 {
+		t.Fatalf("expected 3 claimed, got %d", len(claimed))
+	}
+	if claimed[0].Key != "batch-3" {
+		t.Errorf("expected highest priority first (batch-3), got %s", claimed[0].Key)
+	}
+}
+
+func testEnqueueBatchDedup(t *testing.T, setup func(t *testing.T) store.Interface) {
+	ctx := context.Background()
+	s := setup(t)
+
+	// Enqueue same key twice in a batch — higher priority wins.
+	s.Enqueue(ctx, "test", "dup-key", 5)
+	items := []store.BatchEnqueueItem{
+		{Key: "dup-key", Priority: 50},
+		{Key: "new-key", Priority: 10},
+	}
+	_, err := s.EnqueueBatch(ctx, "test", items)
+	if err != nil {
+		t.Fatalf("EnqueueBatch dedup: %v", err)
+	}
+
+	counts, _ := s.CountByStatus(ctx, "test")
+	if counts[store.StatusPending] != 2 {
+		t.Fatalf("expected 2 pending, got %d", counts[store.StatusPending])
+	}
+
+	item, _ := s.GetItem(ctx, "test", "dup-key")
+	if item.Priority != 50 {
+		t.Errorf("expected priority 50 after merge, got %d", item.Priority)
+	}
+}
+
+func testEnqueueBatchSkipsInFlight(t *testing.T, setup func(t *testing.T) store.Interface) {
+	ctx := context.Background()
+	s := setup(t)
+
+	// Enqueue and claim an item.
+	s.Enqueue(ctx, "test", "inflight", 10)
+	s.ClaimBatch(ctx, "test", 1, "w", time.Hour)
+
+	// Batch enqueue including the in-flight key.
+	items := []store.BatchEnqueueItem{
+		{Key: "inflight", Priority: 100},
+		{Key: "new-one", Priority: 5},
+	}
+	_, err := s.EnqueueBatch(ctx, "test", items)
+	if err != nil {
+		t.Fatalf("EnqueueBatch: %v", err)
+	}
+
+	// In-flight item should still be claimed.
+	item, _ := s.GetItem(ctx, "test", "inflight")
+	if item.Status != store.StatusClaimed {
+		t.Errorf("expected in-flight item to stay claimed, got %s", item.Status)
+	}
+}
+
+func testEnqueueBatchReactivatesTerminal(t *testing.T, setup func(t *testing.T) store.Interface) {
+	ctx := context.Background()
+	s := setup(t)
+
+	// Enqueue → claim → complete.
+	s.Enqueue(ctx, "test", "done-key", 0)
+	s.ClaimBatch(ctx, "test", 1, "w", time.Hour)
+	s.Complete(ctx, "test", "done-key")
+
+	// Batch enqueue should reactivate completed item.
+	items := []store.BatchEnqueueItem{
+		{Key: "done-key", Priority: 42},
+	}
+	n, err := s.EnqueueBatch(ctx, "test", items)
+	if err != nil {
+		t.Fatalf("EnqueueBatch reactivate: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 reactivated, got %d", n)
+	}
+
+	item, _ := s.GetItem(ctx, "test", "done-key")
+	if item.Status != store.StatusPending {
+		t.Errorf("expected pending after reactivate, got %s", item.Status)
+	}
+	if item.Priority != 42 {
+		t.Errorf("expected priority 42, got %d", item.Priority)
+	}
+}
+
+func testEnqueueBatchEmpty(t *testing.T, setup func(t *testing.T) store.Interface) {
+	ctx := context.Background()
+	s := setup(t)
+
+	n, err := s.EnqueueBatch(ctx, "test", nil)
+	if err != nil {
+		t.Fatalf("EnqueueBatch empty: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("expected 0, got %d", n)
+	}
+
+	n, err = s.EnqueueBatch(ctx, "test", []store.BatchEnqueueItem{})
+	if err != nil {
+		t.Fatalf("EnqueueBatch empty slice: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("expected 0, got %d", n)
+	}
+}
+
+func testEnqueueBatchLarge(t *testing.T, setup func(t *testing.T) store.Interface) {
+	ctx := context.Background()
+	s := setup(t)
+
+	items := make([]store.BatchEnqueueItem, 500)
+	for i := range items {
+		items[i] = store.BatchEnqueueItem{
+			Key:      fmt.Sprintf("bulk-%04d", i),
+			Priority: i % 10,
+		}
+	}
+
+	n, err := s.EnqueueBatch(ctx, "test", items)
+	if err != nil {
+		t.Fatalf("EnqueueBatch large: %v", err)
+	}
+	if n != 500 {
+		t.Fatalf("expected 500 enqueued, got %d", n)
+	}
+
+	counts, _ := s.CountByStatus(ctx, "test")
+	if counts[store.StatusPending] != 500 {
+		t.Fatalf("expected 500 pending, got %d", counts[store.StatusPending])
 	}
 }

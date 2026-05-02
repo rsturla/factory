@@ -72,6 +72,8 @@ func main() {
 	mux := http.NewServeMux()
 	mux.Handle("POST /enqueue", authz.Wrap(authorizer, authz.ActionEnqueue, queueName,
 		&enqueueHandler{queue: queueName, store: result.Store}))
+	mux.Handle("POST /enqueue/batch", authz.Wrap(authorizer, authz.ActionEnqueue, queueName,
+		&enqueueBatchHandler{queue: queueName, store: result.Store}))
 
 	// Workqueue API — exposes store operations over HTTP for standalone workers.
 	wqapi.NewHandler(result.Store, authorizer).Register(mux)
@@ -165,6 +167,68 @@ func (h *enqueueHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	fmt.Fprintf(w, `{"status":"enqueued","key":%q}`, req.Key)
+}
+
+type enqueueBatchHandler struct {
+	queue string
+	store store.Interface
+}
+
+type enqueueBatchRequest struct {
+	Items []store.BatchEnqueueItem `json:"items"`
+}
+
+const maxBatchSize = 10000
+
+func (h *enqueueBatchHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	ctx, span := tracing.Tracer("factory.receiver").Start(r.Context(), "enqueue_batch",
+		trace.WithAttributes(attribute.String("queue", h.queue)),
+	)
+	defer span.End()
+
+	var req enqueueBatchRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if len(req.Items) == 0 {
+		http.Error(w, "items is required and must not be empty", http.StatusBadRequest)
+		return
+	}
+	if len(req.Items) > maxBatchSize {
+		http.Error(w, fmt.Sprintf("batch too large: %d items, max %d", len(req.Items), maxBatchSize), http.StatusRequestEntityTooLarge)
+		return
+	}
+	for i, item := range req.Items {
+		if item.Key == "" {
+			http.Error(w, fmt.Sprintf("item[%d]: key is required", i), http.StatusBadRequest)
+			return
+		}
+	}
+
+	span.SetAttributes(attribute.Int("batch_size", len(req.Items)))
+
+	tracer := tracing.Tracer("factory.receiver")
+	var count int
+	func() {
+		_, storeSpan := tracer.Start(ctx, "store.EnqueueBatch")
+		defer storeSpan.End()
+		var err error
+		count, err = h.store.EnqueueBatch(ctx, h.queue, req.Items)
+		if err != nil {
+			storeSpan.RecordError(err)
+			span.RecordError(err)
+			slog.Error("enqueue batch failed", "queue", h.queue, "count", len(req.Items), "error", err)
+			http.Error(w, "enqueue batch failed", http.StatusInternalServerError)
+			return
+		}
+	}()
+
+	metrics.ItemsEnqueued.WithLabelValues(h.queue).Add(float64(count))
+	slog.Info("enqueued batch", "queue", h.queue, "requested", len(req.Items), "enqueued", count)
+
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"status":"enqueued","count":%d}`, count)
 }
 
 func requireEnv(key string) string {

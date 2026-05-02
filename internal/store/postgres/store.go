@@ -170,6 +170,46 @@ func (s *Store) Enqueue(ctx context.Context, queue, key string, priority int, op
 	return err
 }
 
+func (s *Store) EnqueueBatch(ctx context.Context, queue string, items []store.BatchEnqueueItem) (int, error) {
+	if len(items) == 0 {
+		return 0, nil
+	}
+
+	keys := make([]string, len(items))
+	priorities := make([]int, len(items))
+	notBefores := make([]*time.Time, len(items))
+	for i, item := range items {
+		keys[i] = item.Key
+		priorities[i] = item.Priority
+		notBefores[i] = item.NotBefore
+	}
+
+	tag, err := s.pool.Exec(ctx, `
+		INSERT INTO work_items (queue, key, priority, not_before)
+		SELECT $1, unnest($2::text[]), unnest($3::int[]), unnest($4::timestamptz[])
+		ON CONFLICT (queue, key) DO UPDATE SET
+			priority = CASE
+				WHEN work_items.status = 'pending'
+				THEN GREATEST(work_items.priority, EXCLUDED.priority)
+				ELSE EXCLUDED.priority
+			END,
+			status = 'pending',
+			attempts = CASE WHEN work_items.status = 'pending' THEN work_items.attempts ELSE 0 END,
+			not_before = EXCLUDED.not_before,
+			worker_id = NULL,
+			lease_expires = NULL,
+			error_message = NULL,
+			claimed_at = NULL,
+			completed_at = NULL,
+			updated_at = now()
+		WHERE work_items.status IN ('pending', 'succeeded', 'failed', 'dead_letter')
+	`, queue, keys, priorities, notBefores)
+	if err != nil {
+		return 0, fmt.Errorf("enqueue batch: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
 func (s *Store) ClaimBatch(ctx context.Context, queue string, batchSize int, workerID string, leaseDuration time.Duration) ([]store.WorkItem, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
