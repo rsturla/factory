@@ -31,7 +31,7 @@ This repo is the **platform**. It must never contain domain-specific logic (RPM,
 - `internal/store/dynamodb/` — DynamoDB+S3 hybrid implementation (AWS serverless).
 - `internal/store/sqlite/` — SQLite implementation (single-node, edge, dev).
 - `internal/store/inmem/` — In-memory implementation (unit tests).
-- `internal/store/conformance/` — 31-test suite. All store implementations must pass.
+- `internal/store/conformance/` — Conformance test suite. All store implementations must pass.
 - `internal/storeutil/` — Store creation from `STORE_BACKEND` env var. Used by all binaries.
 - `internal/dispatcher/` — Dispatch/sweep/reaper/scale loops.
 - `internal/completion/` — Retry, backoff, dead-letter decisions.
@@ -42,9 +42,17 @@ This repo is the **platform**. It must never contain domain-specific logic (RPM,
 - `internal/authz/cedar/` — Cedar policies evaluated in-process.
 - `internal/authz/opa/` — Open Policy Agent via REST API.
 - `internal/authzutil/` — Authorizer creation from `AUTHZ_BACKEND` env var.
+- `internal/authn/` — Pluggable authentication interface (`authn.Authenticator`).
+- `internal/authnutil/` — Authenticator creation from `AUTHN_BACKEND` env var.
+- `internal/envutil/` — Environment variable parsing helpers.
+- `internal/httputil/` — Shared HTTP server utilities (listen, TLS, graceful shutdown).
+- `internal/logging/` — Structured logging setup (`log/slog` configuration).
 - `internal/metrics/` — Prometheus metric definitions.
+- `internal/tracing/` — OpenTelemetry tracing setup and helpers.
+- `internal/wqapi/` — Workqueue HTTP API handlers (store operations over HTTP for standalone workers).
 - `pkg/sdk/` — Public SDK: ProcessRequest, ProcessResponse, ReconcilerHandler, response builders.
 - `pkg/client/` — HTTP clients for inter-service communication.
+- `pkg/types/` — Shared type definitions used across public packages.
 
 ## Data layer
 
@@ -59,8 +67,9 @@ Current backends: `postgres` (default), `dynamodb`, `sqlite`, `inmem` (tests onl
 
 ## Testing
 
-- `go test ./...` must pass. Currently 171 tests.
-- The conformance suite (`internal/store/conformance/`) is the source of truth for store behavior (31 tests).
+- `go test ./...` must pass.
+- The conformance suite (`internal/store/conformance/`) is the source of truth for store behavior.
+- **Do not hardcode test counts in documentation.** Counts go stale immediately. Describe what is tested, not how many tests exist.
 - New store implementations must pass the full conformance suite.
 - PostgreSQL and DynamoDB conformance tests skip gracefully when services are unavailable.
 - Dispatcher tests use inmem store + httptest reconciler server.
@@ -100,7 +109,9 @@ All binaries accept `STORE_BACKEND` (`postgres`, `dynamodb`, `sqlite`) plus back
 ## Documentation
 
 - [README.md](README.md) — project overview, quick start, full API reference
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — system architecture and design decisions
 - [docs/SDK.md](docs/SDK.md) — reconciler SDK guide, wire protocol, non-Go examples
 - [docs/SCALING.md](docs/SCALING.md) — capacity planning for 500k+ jobs/day
 - [docs/MONITORING.md](docs/MONITORING.md) — Prometheus metrics, alerting, dashboards
 - [docs/AUTH.md](docs/AUTH.md) — authentication, authorization, Cedar/OPA policies
+- [docs/RECONCILER_PATTERNS.md](docs/RECONCILER_PATTERNS.md) — common reconciler implementation patterns

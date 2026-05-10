@@ -14,7 +14,7 @@ All services expose metrics at `GET /metrics` in Prometheus exposition format.
 | `factory_items_dispatched_total` | `queue` | Total items claimed and sent to reconcilers |
 | `factory_items_completed_total` | `queue`, `outcome` | Total items completed. Outcome: `succeeded`, `failed`, `dead_letter`, `converged` |
 | `factory_items_reaped_total` | `queue` | Items reclaimed by the reaper (expired leases from dead workers) |
-| `factory_items_deduped_total` | `queue` | Enqueue requests that hit an existing pending key |
+| `factory_store_errors_total` | `queue`, `operation` | Total store operation errors |
 
 ### Gauges
 
@@ -22,7 +22,9 @@ All services expose metrics at `GET /metrics` in Prometheus exposition format.
 |--------|--------|-------------|
 | `factory_queue_depth` | `queue`, `status` | Current item count by status (`pending`, `claimed`, `running`, `succeeded`, `failed`, `dead_letter`) |
 | `factory_in_progress` | `queue` | Items currently being processed (claimed + running) |
-| `factory_worker_count` | `queue`, `compute_backend`, `status` | Registered workers by backend and status |
+| `factory_max_concurrency` | `queue` | Maximum concurrent items allowed for a queue |
+| `factory_oldest_pending_age_seconds` | `queue` | Age in seconds of the oldest pending item (0 if queue is empty) |
+| `factory_leader_status` | `queue` | Whether this instance holds leadership for a queue (1=leader, 0=not) |
 
 ### Histograms
 
@@ -126,7 +128,7 @@ spec:
 **Row 4: Health**
 - Dead letter rate (should be ~0)
 - Reaper activity (should be ~0 except during deploys)
-- Worker count by backend
+- Leader status by queue
 
 ### Example Grafana panel JSON (queue depth)
 

@@ -73,7 +73,7 @@ Webhook/CI ──► Receiver ──► PostgreSQL ◄── Dispatcher ──�
 
 **Reconciler** receives a key, fetches state, does work, returns a response. Lives in a separate repo with its own deployment. The workqueue platform knows nothing about RPMs, containers, or AI — it just manages keys.
 
-**Store** is the single source of truth for queue state. PostgreSQL for production, SQLite for edge/single-node, DynamoDB for AWS serverless. All backends pass the same 47-test conformance suite.
+**Store** is the single source of truth for queue state. PostgreSQL for production, SQLite for edge/single-node, DynamoDB for AWS serverless. All backends pass the same conformance suite.
 
 ## Data model
 

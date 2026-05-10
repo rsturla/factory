@@ -41,6 +41,12 @@ Every API endpoint is mapped to an action. The authorization backend receives th
 | `deadletter:purge` | `DELETE /admin/queues/{name}/dead-letters` | Purge dead letters |
 | `workers:read` | `GET /admin/workers` | List workers |
 | `events:stream` | `GET /admin/queues/{name}/events` | Stream events |
+| `claim` | `POST /wq/claim` | Claim items from a queue (standalone workers) |
+| `complete` | `POST /wq/complete`, `POST /wq/fail`, `POST /wq/heartbeat` | Complete, fail, or heartbeat a claimed item |
+| `requeue` | `POST /wq/requeue`, `POST /wq/requeue-undo` | Requeue an item or undo a requeue |
+| `deadletter` | `POST /wq/deadletter` | Dead-letter an item |
+| `transition` | `POST /wq/transition` | Transition an item between states |
+| `queue:admin` | `POST /wq/ensure-queue`, `POST /wq/repair`, `POST /wq/record-history`, `POST /wq/set-paused` | Queue management operations |
 
 Actions scoped to a queue (items, retry, cancel, purge, events) include the queue name in the authorization check. This enables per-queue permissions — a team can have write access to their queue but read-only access to others.
 

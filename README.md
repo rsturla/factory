@@ -59,7 +59,7 @@ factory-v2/
 │   │   ├── dynamodb/      DynamoDB+S3 backend (AWS serverless)
 │   │   ├── sqlite/        SQLite backend (single-node, edge)
 │   │   ├── inmem/         In-memory backend (testing)
-│   │   └── conformance/   31-test suite all backends must pass
+│   │   └── conformance/   Conformance suite all backends must pass
 │   ├── dispatcher/        Dispatch/sweep/reaper/scale loops
 │   ├── completion/        Retry, backoff, dead-letter logic
 │   ├── compute/           Compute provider abstraction
@@ -106,7 +106,7 @@ All persistence flows through `store.Interface`. Swap backends by setting `STORE
 | SQLite | `sqlite` | Single-node, edge, development | <0.5ms |
 | In-memory | (testing only) | Unit tests | <1us |
 
-All backends pass the same 31-test conformance suite. Adding a new backend means implementing `store.Interface` and passing the suite.
+All backends pass the same conformance suite. Adding a new backend means implementing `store.Interface` and passing the suite.
 
 ## Authorization
 
@@ -260,7 +260,7 @@ factoryctl events <queue>                Stream real-time events
 ## Testing
 
 ```bash
-# Run all offline tests (171 tests)
+# Run all offline tests
 go test ./...
 
 # Run PostgreSQL conformance (requires running PostgreSQL)

@@ -119,7 +119,12 @@ Returning a non-nil `error` from your `ReconcileFunc` signals a retriable failur
 The `fan_out` action enqueues keys into the **same queue**. To enqueue into a different queue, use `EnqueueClient`:
 
 ```go
-client := sdk.NewEnqueueClient("http://other-receiver:8081")
+client := sdk.NewEnqueueClient("http://other-receiver:8081",
+    sdk.WithHTTPClient(customHTTPClient),   // optional: custom *http.Client
+    sdk.WithHeaders(http.Header{            // optional: extra headers (auth, tracing)
+        "Authorization": []string{"Bearer token"},
+    }),
+)
 err := client.Enqueue(ctx, "container-build", "myimage-1.0", 10)
 ```
 
@@ -151,7 +156,7 @@ for {
 }
 ```
 
-Both patterns use the same store, same state machine, same retry/dead-letter logic. If a worker dies mid-work, the lease expires and the reaper reclaims the item. Workers exit after `MAX_IDLE` (default 10m) with no work, and the dispatcher scales compute back down.
+Both patterns use the same store, same state machine, same retry/dead-letter logic. If a worker dies mid-work, the lease expires and the reaper reclaims the item. For idle-exit logic (exiting a standalone worker after a period with no work), see `examples/standalone-worker/` for a reference implementation.
 
 ## Non-Go reconcilers
 
