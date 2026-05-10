@@ -1,8 +1,9 @@
 package authz
 
 import (
-	"log/slog"
 	"net/http"
+
+	"github.com/hummingbird-org/factory-workqueue/internal/logging"
 )
 
 // Middleware returns HTTP middleware that checks authorization before
@@ -22,7 +23,7 @@ func Middleware(authorizer Authorizer, action Action, queue string) func(http.Ha
 			})
 
 			if !decision.Allowed {
-				slog.Warn("authorization denied",
+				logging.Audit.Warn("authorization denied",
 					"user", id.User,
 					"groups", id.Groups,
 					"action", action,
@@ -34,7 +35,7 @@ func Middleware(authorizer Authorizer, action Action, queue string) func(http.Ha
 			}
 
 			if !isReadAction(action) {
-				slog.Info("authorized write operation",
+				logging.Audit.Info("authorized write operation",
 					"user", id.User,
 					"action", action,
 					"queue", queue,

@@ -149,6 +149,8 @@ mux.Handle("POST /process", sdk.ReconcilerHandler(func(ctx context.Context, req 
 | `FACTORY_WORKER_ID` | hostname | Worker identifier |
 | `FACTORY_LISTEN_ADDR` | `:8080` or `:8081` | HTTP listen address |
 | `FACTORY_LOG_FORMAT` | `json` | Log format: `json` or `text` |
+| `FACTORY_LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, `error`. Set `warn` in production to eliminate hot-path INFO logs. |
+| `FACTORY_AUDIT_LOG` | (stderr) | Path to audit log file. When set, authorization events write here instead of stderr. |
 
 ### STORE_ (backend selection)
 
