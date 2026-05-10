@@ -8,11 +8,11 @@ A pure workqueue platform for orchestrating software factory operations (RPM bui
 - **Single queue per reconciler**: Each reconciler type owns an isolated queue.
 - **3-service split**: Receiver (enqueue) → Dispatcher (claim/lifecycle) → Reconciler (do work).
 - **Receiver and Dispatcher are generic factory binaries** configured via env vars. Reconcilers are separate repos.
-- **Reconcilers are NOT in this repo.** They live in separate Go projects with their own `go.mod`, importing `pkg/sdk/`.
+- **Reconcilers are NOT in this repo.** They live in separate projects importing `sdk/go/reconciler/` (Go), `factory-workqueue` (Python/Rust).
 
 ## Repo boundary
 
-This repo is the **platform**. It must never contain domain-specific logic (RPM, container, codegen, etc.). The only public API surface for reconciler authors is `pkg/sdk/`.
+This repo is the **platform**. It must never contain domain-specific logic (RPM, container, codegen, etc.). The only public API surface for reconciler authors is `sdk/go/reconciler/` (Go), `sdk/python/` (Python), and `sdk/rust/` (Rust).
 
 ## Code conventions
 
@@ -50,9 +50,12 @@ This repo is the **platform**. It must never contain domain-specific logic (RPM,
 - `internal/metrics/` — Prometheus metric definitions.
 - `internal/tracing/` — OpenTelemetry tracing setup and helpers.
 - `internal/wqapi/` — Workqueue HTTP API handlers (store operations over HTTP for standalone workers).
-- `pkg/sdk/` — Public SDK: ProcessRequest, ProcessResponse, ReconcilerHandler, response builders.
-- `pkg/client/` — HTTP clients for inter-service communication.
 - `pkg/types/` — Shared type definitions used across public packages.
+- `sdk/go/reconciler/` — Go SDK: ProcessRequest, ProcessResponse, ReconcilerHandler, response builders.
+- `sdk/go/client/` — Go HTTP clients for inter-service communication.
+- `sdk/python/` — Python SDK: sync + async clients, ASGI reconciler handler.
+- `sdk/rust/` — Rust SDK: async clients (reqwest), axum reconciler handler.
+- `tests/sdk-conformance/` — Shared JSON fixtures validated by all three SDKs.
 
 ## Data layer
 
@@ -110,7 +113,7 @@ All binaries accept `STORE_BACKEND` (`postgres`, `dynamodb`, `sqlite`) plus back
 
 - [README.md](README.md) — project overview, quick start, full API reference
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — system architecture and design decisions
-- [docs/SDK.md](docs/SDK.md) — reconciler SDK guide, wire protocol, non-Go examples
+- [docs/SDK.md](docs/SDK.md) — reconciler SDK guide, wire protocol, Go/Python/Rust examples
 - [docs/SCALING.md](docs/SCALING.md) — capacity planning for 500k+ jobs/day
 - [docs/MONITORING.md](docs/MONITORING.md) — Prometheus metrics, alerting, dashboards
 - [docs/AUTH.md](docs/AUTH.md) — authentication, authorization, Cedar/OPA policies

@@ -1,4 +1,4 @@
-package sdk_test
+package reconciler_test
 
 import (
 	"context"
@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/hummingbird-org/factory-workqueue/pkg/sdk"
+	"github.com/hummingbird-org/factory-workqueue/sdk/go/reconciler"
 )
 
 func TestEnqueueSuccess(t *testing.T) {
@@ -22,7 +22,7 @@ func TestEnqueueSuccess(t *testing.T) {
 			t.Errorf("expected Content-Type application/json, got %s", ct)
 		}
 
-		var req sdk.EnqueueRequest
+		var req reconciler.EnqueueRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Errorf("failed to decode request body: %v", err)
 		}
@@ -40,7 +40,7 @@ func TestEnqueueSuccess(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := sdk.NewEnqueueClient(srv.URL)
+	client := reconciler.NewEnqueueClient(srv.URL)
 	err := client.Enqueue(context.Background(), "build-queue", "test-key", 42)
 	if err != nil {
 		t.Fatal(err)
@@ -53,7 +53,7 @@ func TestEnqueueCreated(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := sdk.NewEnqueueClient(srv.URL)
+	client := reconciler.NewEnqueueClient(srv.URL)
 	err := client.Enqueue(context.Background(), "q", "k", 0)
 	if err != nil {
 		t.Fatalf("expected 201 to be accepted: %v", err)
@@ -66,7 +66,7 @@ func TestEnqueueServerError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := sdk.NewEnqueueClient(srv.URL)
+	client := reconciler.NewEnqueueClient(srv.URL)
 	err := client.Enqueue(context.Background(), "q", "k", 0)
 	if err == nil {
 		t.Fatal("expected error for HTTP 500")
@@ -82,7 +82,7 @@ func TestEnqueueContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
-	client := sdk.NewEnqueueClient(srv.URL)
+	client := reconciler.NewEnqueueClient(srv.URL)
 	err := client.Enqueue(ctx, "q", "k", 0)
 	if err == nil {
 		t.Fatal("expected error for cancelled context")
@@ -93,7 +93,7 @@ func TestEnqueueUnreachable(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	srv.Close() // close immediately
 
-	client := sdk.NewEnqueueClient(srv.URL)
+	client := reconciler.NewEnqueueClient(srv.URL)
 	err := client.Enqueue(context.Background(), "q", "k", 0)
 	if err == nil {
 		t.Fatal("expected error for unreachable server")

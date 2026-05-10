@@ -1,0 +1,33 @@
+{
+  "valid": [
+    {"from": "pending", "to": "claimed"},
+    {"from": "pending", "to": "failed"},
+    {"from": "claimed", "to": "running"},
+    {"from": "claimed", "to": "failed"},
+    {"from": "claimed", "to": "pending"},
+    {"from": "running", "to": "succeeded"},
+    {"from": "running", "to": "failed"},
+    {"from": "running", "to": "pending"},
+    {"from": "failed", "to": "pending"},
+    {"from": "failed", "to": "dead_letter"},
+    {"from": "dead_letter", "to": "pending"}
+  ],
+  "invalid": [
+    {"from": "pending", "to": "running"},
+    {"from": "pending", "to": "succeeded"},
+    {"from": "pending", "to": "dead_letter"},
+    {"from": "claimed", "to": "succeeded"},
+    {"from": "claimed", "to": "dead_letter"},
+    {"from": "running", "to": "claimed"},
+    {"from": "running", "to": "dead_letter"},
+    {"from": "succeeded", "to": "pending"},
+    {"from": "succeeded", "to": "claimed"},
+    {"from": "succeeded", "to": "running"},
+    {"from": "succeeded", "to": "failed"},
+    {"from": "succeeded", "to": "dead_letter"},
+    {"from": "dead_letter", "to": "claimed"},
+    {"from": "dead_letter", "to": "running"},
+    {"from": "dead_letter", "to": "succeeded"},
+    {"from": "dead_letter", "to": "failed"}
+  ]
+}

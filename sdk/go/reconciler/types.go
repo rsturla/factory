@@ -1,11 +1,11 @@
-// Package sdk provides the public API surface for factory reconciler authors.
+// Package reconciler provides the public API surface for factory reconciler authors.
 //
 // Reconciler authors import this package to:
 //   - Define a ReconcileFunc that processes work items by key
 //   - Use ReconcilerHandler to serve it as an HTTP endpoint
 //   - Return structured responses (Completed, Converged, RequeueAfter, FanOut)
 //   - Enqueue work into other factory queues via EnqueueClient
-package sdk
+package reconciler
 
 import (
 	"context"

@@ -2,7 +2,7 @@
 //
 // This exposes store.Interface operations over HTTP so that standalone
 // workers (EC2, bare metal) can interact with the workqueue without
-// direct database access. The pkg/client.WorkqueueClient is the
+// direct database access. The sdk/go/client.WorkqueueClient is the
 // corresponding client.
 //
 // All endpoints accept JSON POST and return JSON responses. Authorization

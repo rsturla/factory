@@ -125,17 +125,21 @@ See [docs/SDK.md](docs/SDK.md) for the full guide, including the wire protocol, 
 Quick start with the Go SDK (zero external dependencies):
 
 ```bash
-go get github.com/hummingbird-org/factory-workqueue/pkg/sdk
+go get github.com/hummingbird-org/factory-workqueue/sdk/go/reconciler
 ```
 
 ```go
-mux.Handle("POST /process", sdk.ReconcilerHandler(func(ctx context.Context, req sdk.ProcessRequest) (sdk.ProcessResponse, error) {
+import "github.com/hummingbird-org/factory-workqueue/sdk/go/reconciler"
+
+mux.Handle("POST /process", reconciler.ReconcilerHandler(func(ctx context.Context, req reconciler.ProcessRequest) (reconciler.ProcessResponse, error) {
     if err := doWork(ctx, req.Key); err != nil {
-        return sdk.ProcessResponse{}, err // retriable failure
+        return reconciler.ProcessResponse{}, err // retriable failure
     }
-    return sdk.Completed(), nil
+    return reconciler.Completed(), nil
 }))
 ```
+
+Python and Rust SDKs are also available — see [docs/SDK.md](docs/SDK.md).
 
 ## Environment variables
 

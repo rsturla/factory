@@ -1,6 +1,6 @@
 # Reconciler SDK
 
-This guide covers everything you need to write a reconciler for Factory. The protocol is plain HTTP+JSON, so any language works. A Go SDK is provided for convenience.
+This guide covers everything you need to write a reconciler for Factory. The protocol is plain HTTP+JSON, so any language works. SDKs are provided for Go, Python, and Rust.
 
 ## Wire protocol
 
@@ -69,7 +69,7 @@ For work that delegates to external systems (Koji, Tekton, CI) and polls for com
 Install the SDK module (zero external dependencies):
 
 ```bash
-go get github.com/hummingbird-org/factory-workqueue/pkg/sdk
+go get github.com/hummingbird-org/factory-workqueue/sdk/go/reconciler
 ```
 
 ### HTTP reconciler (push model)
@@ -83,33 +83,33 @@ import (
     "context"
     "net/http"
 
-    "github.com/hummingbird-org/factory-workqueue/pkg/sdk"
+    "github.com/hummingbird-org/factory-workqueue/sdk/go/reconciler"
 )
 
 func main() {
     mux := http.NewServeMux()
-    mux.Handle("POST /process", sdk.ReconcilerHandler(reconcile))
+    mux.Handle("POST /process", reconciler.ReconcilerHandler(reconcile))
     http.ListenAndServe(":8082", mux)
 }
 
-func reconcile(ctx context.Context, req sdk.ProcessRequest) (sdk.ProcessResponse, error) {
+func reconcile(ctx context.Context, req reconciler.ProcessRequest) (reconciler.ProcessResponse, error) {
     if alreadyDone(ctx, req.Key) {
-        return sdk.Converged(), nil
+        return reconciler.Converged(), nil
     }
     if err := doWork(ctx, req.Key); err != nil {
-        return sdk.ProcessResponse{}, err
+        return reconciler.ProcessResponse{}, err
     }
-    return sdk.Completed(), nil
+    return reconciler.Completed(), nil
 }
 ```
 
 ### Response builders
 
 ```go
-sdk.Completed()              // work done
-sdk.Converged()              // already at desired state
-sdk.RequeueAfter(30*time.Second) // check back later
-sdk.FanOut("child-1", "child-2") // complete and spawn children
+reconciler.Completed()              // work done
+reconciler.Converged()              // already at desired state
+reconciler.RequeueAfter(30*time.Second) // check back later
+reconciler.FanOut("child-1", "child-2") // complete and spawn children
 ```
 
 Returning a non-nil `error` from your `ReconcileFunc` signals a retriable failure.
@@ -119,9 +119,9 @@ Returning a non-nil `error` from your `ReconcileFunc` signals a retriable failur
 The `fan_out` action enqueues keys into the **same queue**. To enqueue into a different queue, use `EnqueueClient`:
 
 ```go
-client := sdk.NewEnqueueClient("http://other-receiver:8081",
-    sdk.WithHTTPClient(customHTTPClient),   // optional: custom *http.Client
-    sdk.WithHeaders(http.Header{            // optional: extra headers (auth, tracing)
+client := reconciler.NewEnqueueClient("http://other-receiver:8081",
+    reconciler.WithHTTPClient(customHTTPClient),   // optional: custom *http.Client
+    reconciler.WithHeaders(http.Header{            // optional: extra headers (auth, tracing)
         "Authorization": []string{"Bearer token"},
     }),
 )
@@ -133,7 +133,7 @@ err := client.Enqueue(ctx, "container-build", "myimage-1.0", 10)
 The worker claims items via the workqueue HTTP API, processes them locally, and reports back. Set `DISPATCH_MODE=scale-only` on the dispatcher. See `examples/standalone-worker/`.
 
 ```go
-import "github.com/hummingbird-org/factory-workqueue/pkg/client"
+import "github.com/hummingbird-org/factory-workqueue/sdk/go/client"
 
 wq := client.NewWorkqueueClient("http://factory-receiver:8081")
 
@@ -158,26 +158,102 @@ for {
 
 Both patterns use the same store, same state machine, same retry/dead-letter logic. If a worker dies mid-work, the lease expires and the reaper reclaims the item. For idle-exit logic (exiting a standalone worker after a period with no work), see `examples/standalone-worker/` for a reference implementation.
 
-## Non-Go reconcilers
+## Python SDK
 
-Since the protocol is HTTP+JSON, you can write a reconciler in any language. Here are minimal examples.
+Install from git:
 
-### Python
+```bash
+pip install "factory-workqueue @ git+https://github.com/hummingbird-org/factory-workqueue.git#subdirectory=sdk/python"
+```
+
+### HTTP reconciler
 
 ```python
-from flask import Flask, request, jsonify
+from datetime import timedelta
+from factory_workqueue import ProcessRequest, completed, requeue_after, serve
 
-app = Flask(__name__)
+def reconcile(req: ProcessRequest):
+    if already_done(req.key):
+        return converged()
+    if not do_work(req.key):
+        return requeue_after(timedelta(seconds=30))
+    return completed()
 
-@app.post("/process")
-def process():
-    req = request.json
-    key = req["key"]
-
-    # Look up state from your source of truth, do work...
-
-    return jsonify({"action": "completed"})
+serve(reconcile)  # Serves on :8082 (requires uvicorn)
 ```
+
+### Standalone worker
+
+```python
+from datetime import timedelta
+from factory_workqueue import WorkqueueClient
+
+with WorkqueueClient("http://factory-receiver:8081") as wq:
+    items = wq.claim_batch("rpm-build", batch_size=1, worker_id="w-1",
+                           lease_duration=timedelta(hours=2))
+    for item in items:
+        try:
+            rpmbuild(item.key)
+            wq.complete("rpm-build", item.key)
+        except Exception as e:
+            wq.fail("rpm-build", item.key, str(e))
+```
+
+Async variants (`AsyncWorkqueueClient`, `AsyncEnqueueClient`) are also available. See `sdk/python/README.md`.
+
+## Rust SDK
+
+Add to `Cargo.toml`:
+
+```toml
+[dependencies]
+factory-workqueue = { git = "https://github.com/hummingbird-org/factory-workqueue.git", subdirectory = "sdk/rust" }
+```
+
+To use without axum (framework-agnostic `process()` function only):
+
+```toml
+[dependencies]
+factory-workqueue = { git = "https://github.com/hummingbird-org/factory-workqueue.git", subdirectory = "sdk/rust", default-features = false }
+```
+
+### HTTP reconciler
+
+```rust
+use std::sync::Arc;
+use factory_workqueue::{ProcessRequest, ProcessResponse, completed, requeue_after, reconciler_handler};
+
+let handler = reconciler_handler(Arc::new(|req: ProcessRequest| {
+    if already_done(&req.key) {
+        return Ok(converged());
+    }
+    Ok(completed())
+}));
+
+// Mount `handler` as an axum Router
+```
+
+### Standalone worker
+
+```rust
+use factory_workqueue::WorkqueueClient;
+use std::time::Duration;
+
+let wq = WorkqueueClient::new("http://factory-receiver:8081");
+let items = wq.claim_batch("rpm-build", 1, "w-1", Duration::from_secs(7200)).await?;
+for item in &items {
+    match rpmbuild(&item.key) {
+        Ok(_) => wq.complete("rpm-build", &item.key).await?,
+        Err(e) => wq.fail("rpm-build", &item.key, &e.to_string()).await?,
+    }
+}
+```
+
+See `sdk/rust/` for full API.
+
+## Non-SDK reconcilers
+
+Since the protocol is HTTP+JSON, you can write a reconciler in any language without an SDK.
 
 ### Shell (for prototyping)
 

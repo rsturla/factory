@@ -28,8 +28,8 @@ import (
 	"github.com/hummingbird-org/factory-workqueue/internal/store"
 	"github.com/hummingbird-org/factory-workqueue/internal/store/inmem"
 	"github.com/hummingbird-org/factory-workqueue/internal/wqapi"
-	"github.com/hummingbird-org/factory-workqueue/pkg/client"
-	"github.com/hummingbird-org/factory-workqueue/pkg/sdk"
+	"github.com/hummingbird-org/factory-workqueue/sdk/go/client"
+	"github.com/hummingbird-org/factory-workqueue/sdk/go/reconciler"
 )
 
 // platform holds all the components for an integration test.
@@ -41,7 +41,7 @@ type platform struct {
 	dispatchCfg dispatcher.Config
 }
 
-func newPlatform(t *testing.T, reconcilerFn func(sdk.ProcessRequest) sdk.ProcessResponse, opts ...func(*dispatcher.Config)) *platform {
+func newPlatform(t *testing.T, reconcilerFn func(reconciler.ProcessRequest) reconciler.ProcessResponse, opts ...func(*dispatcher.Config)) *platform {
 	t.Helper()
 
 	s := inmem.New()
@@ -67,7 +67,7 @@ func newPlatform(t *testing.T, reconcilerFn func(sdk.ProcessRequest) sdk.Process
 
 	// Fake reconciler.
 	reconciler := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req sdk.ProcessRequest
+		var req reconciler.ProcessRequest
 		json.NewDecoder(r.Body).Decode(&req)
 		resp := reconcilerFn(req)
 		w.Header().Set("Content-Type", "application/json")
@@ -132,9 +132,9 @@ func (p *platform) runFor(t *testing.T, d time.Duration) {
 
 func TestEndToEnd_SingleItem(t *testing.T) {
 	var processed atomic.Bool
-	p := newPlatform(t, func(req sdk.ProcessRequest) sdk.ProcessResponse {
+	p := newPlatform(t, func(req reconciler.ProcessRequest) reconciler.ProcessResponse {
 		processed.Store(true)
-		return sdk.Completed()
+		return reconciler.Completed()
 	})
 
 	p.enqueue(t, "item-1", 0)
@@ -152,9 +152,9 @@ func TestEndToEnd_SingleItem(t *testing.T) {
 
 func TestEndToEnd_BatchProcessing(t *testing.T) {
 	var count atomic.Int32
-	p := newPlatform(t, func(req sdk.ProcessRequest) sdk.ProcessResponse {
+	p := newPlatform(t, func(req reconciler.ProcessRequest) reconciler.ProcessResponse {
 		count.Add(1)
-		return sdk.Completed()
+		return reconciler.Completed()
 	})
 
 	for i := range 20 {
@@ -172,11 +172,11 @@ func TestEndToEnd_PriorityOrder(t *testing.T) {
 	var order []string
 	var mu sync.Mutex
 
-	p := newPlatform(t, func(req sdk.ProcessRequest) sdk.ProcessResponse {
+	p := newPlatform(t, func(req reconciler.ProcessRequest) reconciler.ProcessResponse {
 		mu.Lock()
 		order = append(order, req.Key)
 		mu.Unlock()
-		return sdk.Completed()
+		return reconciler.Completed()
 	}, func(cfg *dispatcher.Config) {
 		cfg.BatchSize = 1
 		cfg.MaxConcurrency = 1
@@ -208,12 +208,12 @@ func TestEndToEnd_PriorityOrder(t *testing.T) {
 func TestEndToEnd_RetryOnFailure(t *testing.T) {
 	var attempts atomic.Int32
 
-	p := newPlatform(t, func(req sdk.ProcessRequest) sdk.ProcessResponse {
+	p := newPlatform(t, func(req reconciler.ProcessRequest) reconciler.ProcessResponse {
 		n := attempts.Add(1)
 		if n <= 1 {
-			return sdk.ProcessResponse{Error: "temporary failure"}
+			return reconciler.ProcessResponse{Error: "temporary failure"}
 		}
-		return sdk.Completed()
+		return reconciler.Completed()
 	})
 
 	p.enqueue(t, "flaky", 0)
@@ -268,8 +268,8 @@ func TestEndToEnd_DeadLetterAfterMaxRetry(t *testing.T) {
 }
 
 func TestEndToEnd_Converged(t *testing.T) {
-	p := newPlatform(t, func(req sdk.ProcessRequest) sdk.ProcessResponse {
-		return sdk.Converged()
+	p := newPlatform(t, func(req reconciler.ProcessRequest) reconciler.ProcessResponse {
+		return reconciler.Converged()
 	})
 
 	p.enqueue(t, "already-done", 0)
@@ -284,12 +284,12 @@ func TestEndToEnd_Converged(t *testing.T) {
 func TestEndToEnd_FanOut(t *testing.T) {
 	var processed sync.Map
 
-	p := newPlatform(t, func(req sdk.ProcessRequest) sdk.ProcessResponse {
+	p := newPlatform(t, func(req reconciler.ProcessRequest) reconciler.ProcessResponse {
 		processed.Store(req.Key, true)
 		if req.Key == "parent" {
-			return sdk.FanOut("child-a", "child-b", "child-c")
+			return reconciler.FanOut("child-a", "child-b", "child-c")
 		}
-		return sdk.Completed()
+		return reconciler.Completed()
 	})
 
 	p.enqueue(t, "parent", 0)
@@ -305,12 +305,12 @@ func TestEndToEnd_FanOut(t *testing.T) {
 func TestEndToEnd_RequeueAfter(t *testing.T) {
 	var invocations atomic.Int32
 
-	p := newPlatform(t, func(req sdk.ProcessRequest) sdk.ProcessResponse {
+	p := newPlatform(t, func(req reconciler.ProcessRequest) reconciler.ProcessResponse {
 		n := invocations.Add(1)
 		if n == 1 {
-			return sdk.RequeueAfter(100 * time.Millisecond)
+			return reconciler.RequeueAfter(100 * time.Millisecond)
 		}
-		return sdk.Completed()
+		return reconciler.Completed()
 	})
 
 	p.enqueue(t, "delayed", 0)
@@ -327,8 +327,8 @@ func TestEndToEnd_RequeueAfter(t *testing.T) {
 }
 
 func TestEndToEnd_ReconcilerUnreachable(t *testing.T) {
-	p := newPlatform(t, func(req sdk.ProcessRequest) sdk.ProcessResponse {
-		return sdk.Completed()
+	p := newPlatform(t, func(req reconciler.ProcessRequest) reconciler.ProcessResponse {
+		return reconciler.Completed()
 	})
 
 	// Close the reconciler to simulate unreachable.
@@ -348,7 +348,7 @@ func TestEndToEnd_ConcurrencyLimit(t *testing.T) {
 	var concurrent atomic.Int32
 	var maxSeen atomic.Int32
 
-	p := newPlatform(t, func(req sdk.ProcessRequest) sdk.ProcessResponse {
+	p := newPlatform(t, func(req reconciler.ProcessRequest) reconciler.ProcessResponse {
 		n := concurrent.Add(1)
 		for {
 			old := maxSeen.Load()
@@ -358,7 +358,7 @@ func TestEndToEnd_ConcurrencyLimit(t *testing.T) {
 		}
 		time.Sleep(50 * time.Millisecond)
 		concurrent.Add(-1)
-		return sdk.Completed()
+		return reconciler.Completed()
 	}, func(cfg *dispatcher.Config) {
 		cfg.MaxConcurrency = 3
 	})
@@ -377,9 +377,9 @@ func TestEndToEnd_ConcurrencyLimit(t *testing.T) {
 func TestEndToEnd_Deduplication(t *testing.T) {
 	var count atomic.Int32
 
-	p := newPlatform(t, func(req sdk.ProcessRequest) sdk.ProcessResponse {
+	p := newPlatform(t, func(req reconciler.ProcessRequest) reconciler.ProcessResponse {
 		count.Add(1)
-		return sdk.Completed()
+		return reconciler.Completed()
 	})
 
 	// Enqueue the same key 5 times.
@@ -397,9 +397,9 @@ func TestEndToEnd_Deduplication(t *testing.T) {
 func TestEndToEnd_ReEnqueueAfterComplete(t *testing.T) {
 	var count atomic.Int32
 
-	p := newPlatform(t, func(req sdk.ProcessRequest) sdk.ProcessResponse {
+	p := newPlatform(t, func(req reconciler.ProcessRequest) reconciler.ProcessResponse {
 		count.Add(1)
-		return sdk.Completed()
+		return reconciler.Completed()
 	})
 
 	// First round.
@@ -521,13 +521,13 @@ func TestEndToEnd_MultipleQueuesIsolated(t *testing.T) {
 	// Two reconcilers — one per queue.
 	buildReconciler := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		buildCount.Add(1)
-		json.NewEncoder(w).Encode(sdk.Completed())
+		json.NewEncoder(w).Encode(reconciler.Completed())
 	}))
 	defer buildReconciler.Close()
 
 	testReconciler := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		testCount.Add(1)
-		json.NewEncoder(w).Encode(sdk.Completed())
+		json.NewEncoder(w).Encode(reconciler.Completed())
 	}))
 	defer testReconciler.Close()
 
@@ -580,10 +580,10 @@ func TestEndToEnd_ReaperReclaimsExpiredLease(t *testing.T) {
 	// Start a dispatcher with fast reaper.
 	reconciled := make(chan string, 1)
 	reconciler := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req sdk.ProcessRequest
+		var req reconciler.ProcessRequest
 		json.NewDecoder(r.Body).Decode(&req)
 		reconciled <- req.Key
-		json.NewEncoder(w).Encode(sdk.Completed())
+		json.NewEncoder(w).Encode(reconciler.Completed())
 	}))
 	defer reconciler.Close()
 
@@ -752,18 +752,18 @@ func TestEndToEnd_ReconciliationPollingPattern(t *testing.T) {
 	// until external work completes, then returns Completed.
 	var invocations atomic.Int32
 
-	p := newPlatform(t, func(req sdk.ProcessRequest) sdk.ProcessResponse {
+	p := newPlatform(t, func(req reconciler.ProcessRequest) reconciler.ProcessResponse {
 		n := invocations.Add(1)
 		switch {
 		case n == 1:
 			// First call: "start the build"
-			return sdk.RequeueAfter(50 * time.Millisecond)
+			return reconciler.RequeueAfter(50 * time.Millisecond)
 		case n == 2:
 			// Second call: "build still running"
-			return sdk.RequeueAfter(50 * time.Millisecond)
+			return reconciler.RequeueAfter(50 * time.Millisecond)
 		default:
 			// Third call: "build done"
-			return sdk.Completed()
+			return reconciler.Completed()
 		}
 	})
 
@@ -782,9 +782,9 @@ func TestEndToEnd_ReconciliationPollingPattern(t *testing.T) {
 
 func TestEndToEnd_PausedQueueDoesNotDispatch(t *testing.T) {
 	var processed atomic.Int32
-	p := newPlatform(t, func(req sdk.ProcessRequest) sdk.ProcessResponse {
+	p := newPlatform(t, func(req reconciler.ProcessRequest) reconciler.ProcessResponse {
 		processed.Add(1)
-		return sdk.Completed()
+		return reconciler.Completed()
 	})
 
 	// Enqueue an item first, then pause.
@@ -831,9 +831,9 @@ func TestEndToEnd_PausedQueueDoesNotDispatch(t *testing.T) {
 func TestEndToEnd_FullHTTPPipeline(t *testing.T) {
 	var processed sync.Map
 
-	p := newPlatform(t, func(req sdk.ProcessRequest) sdk.ProcessResponse {
+	p := newPlatform(t, func(req reconciler.ProcessRequest) reconciler.ProcessResponse {
 		processed.Store(req.Key, true)
-		return sdk.Completed()
+		return reconciler.Completed()
 	})
 
 	// Use the workqueue HTTP client to enqueue via the wqapi endpoint

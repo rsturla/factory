@@ -47,7 +47,7 @@ import (
 	"time"
 
 	"github.com/hummingbird-org/factory-workqueue/internal/store"
-	"github.com/hummingbird-org/factory-workqueue/pkg/client"
+	"github.com/hummingbird-org/factory-workqueue/sdk/go/client"
 )
 
 func main() {

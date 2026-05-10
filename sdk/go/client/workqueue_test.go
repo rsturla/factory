@@ -11,8 +11,8 @@ import (
 	"github.com/hummingbird-org/factory-workqueue/internal/authz/noop"
 	"github.com/hummingbird-org/factory-workqueue/internal/store/inmem"
 	"github.com/hummingbird-org/factory-workqueue/internal/wqapi"
-	"github.com/hummingbird-org/factory-workqueue/pkg/client"
 	"github.com/hummingbird-org/factory-workqueue/pkg/types"
+	"github.com/hummingbird-org/factory-workqueue/sdk/go/client"
 )
 
 func setupTestServer(t *testing.T) (*httptest.Server, *inmem.Store) {

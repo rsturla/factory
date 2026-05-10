@@ -14,7 +14,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/hummingbird-org/factory-workqueue/pkg/sdk"
+	"github.com/hummingbird-org/factory-workqueue/sdk/go/reconciler"
 )
 
 func main() {
@@ -23,7 +23,7 @@ func main() {
 	processDuration, _ := time.ParseDuration(delay)
 
 	mux := http.NewServeMux()
-	mux.Handle("POST /process", sdk.ReconcilerHandler(func(ctx context.Context, req sdk.ProcessRequest) (sdk.ProcessResponse, error) {
+	mux.Handle("POST /process", reconciler.ReconcilerHandler(func(ctx context.Context, req reconciler.ProcessRequest) (reconciler.ProcessResponse, error) {
 		slog.Info("processing",
 			"key", req.Key,
 			"attempt", req.Attempt,
@@ -34,7 +34,7 @@ func main() {
 		time.Sleep(processDuration)
 
 		slog.Info("completed", "key", req.Key)
-		return sdk.Completed(), nil
+		return reconciler.Completed(), nil
 	}))
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {

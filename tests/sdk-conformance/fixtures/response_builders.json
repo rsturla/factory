@@ -1,0 +1,52 @@
+{
+  "tests": [
+    {
+      "name": "completed",
+      "builder": "completed",
+      "args": [],
+      "expected": {"action": "completed"}
+    },
+    {
+      "name": "converged",
+      "builder": "converged",
+      "args": [],
+      "expected": {"action": "converged"}
+    },
+    {
+      "name": "requeue_30s",
+      "builder": "requeue_after",
+      "args": ["30s"],
+      "expected": {"action": "requeue", "requeue_after": "30s"}
+    },
+    {
+      "name": "requeue_5m",
+      "builder": "requeue_after",
+      "args": ["5m0s"],
+      "expected": {"action": "requeue", "requeue_after": "5m0s"}
+    },
+    {
+      "name": "requeue_1h30m",
+      "builder": "requeue_after",
+      "args": ["1h30m0s"],
+      "expected": {"action": "requeue", "requeue_after": "1h30m0s"}
+    },
+    {
+      "name": "fan_out_two_keys",
+      "builder": "fan_out",
+      "args": ["child-a", "child-b"],
+      "expected": {"action": "fan_out", "fan_out_keys": ["child-a", "child-b"]}
+    },
+    {
+      "name": "fan_out_single_key",
+      "builder": "fan_out",
+      "args": ["only-child"],
+      "expected": {"action": "fan_out", "fan_out_keys": ["only-child"]}
+    },
+    {
+      "name": "fan_out_empty_returns_completed",
+      "builder": "fan_out",
+      "args": [],
+      "expected": {"action": "completed"}
+    }
+  ]
+}

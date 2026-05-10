@@ -20,8 +20,8 @@ import (
 	"github.com/hummingbird-org/factory-workqueue/internal/metrics"
 	"github.com/hummingbird-org/factory-workqueue/internal/store"
 	"github.com/hummingbird-org/factory-workqueue/internal/tracing"
-	"github.com/hummingbird-org/factory-workqueue/pkg/client"
-	"github.com/hummingbird-org/factory-workqueue/pkg/sdk"
+	"github.com/hummingbird-org/factory-workqueue/sdk/go/client"
+	"github.com/hummingbird-org/factory-workqueue/sdk/go/reconciler"
 )
 
 // Dispatcher manages the lifecycle of work items for a single queue.
@@ -259,7 +259,7 @@ func (d *Dispatcher) processItem(ctx context.Context, item store.WorkItem) {
 	})
 
 	// Call the reconciler.
-	var resp sdk.ProcessResponse
+	var resp reconciler.ProcessResponse
 	var reconcileDur float64
 	var reconcileErr error
 	func() {
@@ -268,7 +268,7 @@ func (d *Dispatcher) processItem(ctx context.Context, item store.WorkItem) {
 		defer reconcileSpan.End()
 
 		start := time.Now()
-		resp, reconcileErr = d.reconciler.Process(ctx, sdk.ProcessRequest{
+		resp, reconcileErr = d.reconciler.Process(ctx, reconciler.ProcessRequest{
 			Key:      item.Key,
 			Attempt:  item.Attempts,
 			Priority: item.Priority,
@@ -308,7 +308,7 @@ func (d *Dispatcher) processItem(ctx context.Context, item store.WorkItem) {
 	d.handleResponse(ctx, item, resp, reconcileDur, span, traceID)
 }
 
-func (d *Dispatcher) handleResponse(ctx context.Context, item store.WorkItem, resp sdk.ProcessResponse, durSec float64, span trace.Span, traceID string) {
+func (d *Dispatcher) handleResponse(ctx context.Context, item store.WorkItem, resp reconciler.ProcessResponse, durSec float64, span trace.Span, traceID string) {
 	queue, key := item.Queue, item.Key
 
 	if resp.Error != "" {
@@ -325,7 +325,7 @@ func (d *Dispatcher) handleResponse(ctx context.Context, item store.WorkItem, re
 	tracer := tracing.Tracer("factory.dispatcher")
 
 	switch resp.Action {
-	case sdk.ActionCompleted:
+	case reconciler.ActionCompleted:
 		span.SetAttributes(attribute.String("outcome", "completed"))
 		metrics.ReconcileDuration.WithLabelValues(queue, "completed").Observe(durSec)
 		metrics.ItemsCompleted.WithLabelValues(queue, "succeeded").Inc()
@@ -337,7 +337,7 @@ func (d *Dispatcher) handleResponse(ctx context.Context, item store.WorkItem, re
 			d.completion.HandleSuccess(ctx, queue, key)
 		}()
 
-	case sdk.ActionConverged:
+	case reconciler.ActionConverged:
 		span.SetAttributes(attribute.String("outcome", "converged"))
 		metrics.ReconcileDuration.WithLabelValues(queue, "converged").Observe(durSec)
 		metrics.ItemsCompleted.WithLabelValues(queue, "converged").Inc()
@@ -349,7 +349,7 @@ func (d *Dispatcher) handleResponse(ctx context.Context, item store.WorkItem, re
 			d.completion.HandleSuccess(ctx, queue, key)
 		}()
 
-	case sdk.ActionRequeue:
+	case reconciler.ActionRequeue:
 		span.SetAttributes(attribute.String("outcome", "requeue"))
 		metrics.ReconcileDuration.WithLabelValues(queue, "requeue").Observe(durSec)
 		delay, err := time.ParseDuration(resp.RequeueAfter)
@@ -362,7 +362,7 @@ func (d *Dispatcher) handleResponse(ctx context.Context, item store.WorkItem, re
 			d.completion.HandleRequeueAfter(ctx, queue, key, delay)
 		}()
 
-	case sdk.ActionFanOut:
+	case reconciler.ActionFanOut:
 		span.SetAttributes(attribute.String("outcome", "fan_out"), attribute.Int("fan_out_count", len(resp.FanOutKeys)))
 		metrics.ReconcileDuration.WithLabelValues(queue, "fan_out").Observe(durSec)
 		metrics.ItemsCompleted.WithLabelValues(queue, "succeeded").Inc()

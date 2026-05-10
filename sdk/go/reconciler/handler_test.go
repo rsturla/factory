@@ -1,4 +1,4 @@
-package sdk_test
+package reconciler_test
 
 import (
 	"context"
@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hummingbird-org/factory-workqueue/pkg/sdk"
+	"github.com/hummingbird-org/factory-workqueue/sdk/go/reconciler"
 )
 
 func TestReconcilerHandler_Completed(t *testing.T) {
-	handler := sdk.ReconcilerHandler(func(ctx context.Context, req sdk.ProcessRequest) (sdk.ProcessResponse, error) {
+	handler := reconciler.ReconcilerHandler(func(ctx context.Context, req reconciler.ProcessRequest) (reconciler.ProcessResponse, error) {
 		if req.Key != "test-key" {
 			t.Errorf("expected key test-key, got %s", req.Key)
 		}
@@ -24,7 +24,7 @@ func TestReconcilerHandler_Completed(t *testing.T) {
 		if req.Priority != 50 {
 			t.Errorf("expected priority 50, got %d", req.Priority)
 		}
-		return sdk.Completed(), nil
+		return reconciler.Completed(), nil
 	})
 
 	body := `{"key":"test-key","attempt":1,"priority":50}`
@@ -36,16 +36,16 @@ func TestReconcilerHandler_Completed(t *testing.T) {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
 
-	var resp sdk.ProcessResponse
+	var resp reconciler.ProcessResponse
 	json.NewDecoder(w.Body).Decode(&resp)
-	if resp.Action != sdk.ActionCompleted {
+	if resp.Action != reconciler.ActionCompleted {
 		t.Errorf("expected action completed, got %s", resp.Action)
 	}
 }
 
 func TestReconcilerHandler_Converged(t *testing.T) {
-	handler := sdk.ReconcilerHandler(func(ctx context.Context, req sdk.ProcessRequest) (sdk.ProcessResponse, error) {
-		return sdk.Converged(), nil
+	handler := reconciler.ReconcilerHandler(func(ctx context.Context, req reconciler.ProcessRequest) (reconciler.ProcessResponse, error) {
+		return reconciler.Converged(), nil
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/process",
@@ -53,16 +53,16 @@ func TestReconcilerHandler_Converged(t *testing.T) {
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
-	var resp sdk.ProcessResponse
+	var resp reconciler.ProcessResponse
 	json.NewDecoder(w.Body).Decode(&resp)
-	if resp.Action != sdk.ActionConverged {
+	if resp.Action != reconciler.ActionConverged {
 		t.Errorf("expected converged, got %s", resp.Action)
 	}
 }
 
 func TestReconcilerHandler_RequeueAfter(t *testing.T) {
-	handler := sdk.ReconcilerHandler(func(ctx context.Context, req sdk.ProcessRequest) (sdk.ProcessResponse, error) {
-		return sdk.RequeueAfter(5 * time.Minute), nil
+	handler := reconciler.ReconcilerHandler(func(ctx context.Context, req reconciler.ProcessRequest) (reconciler.ProcessResponse, error) {
+		return reconciler.RequeueAfter(5 * time.Minute), nil
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/process",
@@ -70,9 +70,9 @@ func TestReconcilerHandler_RequeueAfter(t *testing.T) {
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
-	var resp sdk.ProcessResponse
+	var resp reconciler.ProcessResponse
 	json.NewDecoder(w.Body).Decode(&resp)
-	if resp.Action != sdk.ActionRequeue {
+	if resp.Action != reconciler.ActionRequeue {
 		t.Errorf("expected requeue, got %s", resp.Action)
 	}
 	if resp.RequeueAfter != "5m0s" {
@@ -81,8 +81,8 @@ func TestReconcilerHandler_RequeueAfter(t *testing.T) {
 }
 
 func TestReconcilerHandler_FanOut(t *testing.T) {
-	handler := sdk.ReconcilerHandler(func(ctx context.Context, req sdk.ProcessRequest) (sdk.ProcessResponse, error) {
-		return sdk.FanOut("child-1", "child-2", "child-3"), nil
+	handler := reconciler.ReconcilerHandler(func(ctx context.Context, req reconciler.ProcessRequest) (reconciler.ProcessResponse, error) {
+		return reconciler.FanOut("child-1", "child-2", "child-3"), nil
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/process",
@@ -90,9 +90,9 @@ func TestReconcilerHandler_FanOut(t *testing.T) {
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
-	var resp sdk.ProcessResponse
+	var resp reconciler.ProcessResponse
 	json.NewDecoder(w.Body).Decode(&resp)
-	if resp.Action != sdk.ActionFanOut {
+	if resp.Action != reconciler.ActionFanOut {
 		t.Errorf("expected fan_out, got %s", resp.Action)
 	}
 	if len(resp.FanOutKeys) != 3 {
@@ -104,8 +104,8 @@ func TestReconcilerHandler_FanOut(t *testing.T) {
 }
 
 func TestReconcilerHandler_Error(t *testing.T) {
-	handler := sdk.ReconcilerHandler(func(ctx context.Context, req sdk.ProcessRequest) (sdk.ProcessResponse, error) {
-		return sdk.ProcessResponse{}, fmt.Errorf("connection refused")
+	handler := reconciler.ReconcilerHandler(func(ctx context.Context, req reconciler.ProcessRequest) (reconciler.ProcessResponse, error) {
+		return reconciler.ProcessResponse{}, fmt.Errorf("connection refused")
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/process",
@@ -117,7 +117,7 @@ func TestReconcilerHandler_Error(t *testing.T) {
 		t.Fatalf("expected 200 (error encoded in body), got %d", w.Code)
 	}
 
-	var resp sdk.ProcessResponse
+	var resp reconciler.ProcessResponse
 	json.NewDecoder(w.Body).Decode(&resp)
 	if resp.Error != "connection refused" {
 		t.Errorf("expected error 'connection refused', got %q", resp.Error)
@@ -125,8 +125,8 @@ func TestReconcilerHandler_Error(t *testing.T) {
 }
 
 func TestReconcilerHandler_BadRequest(t *testing.T) {
-	handler := sdk.ReconcilerHandler(func(ctx context.Context, req sdk.ProcessRequest) (sdk.ProcessResponse, error) {
-		return sdk.Completed(), nil
+	handler := reconciler.ReconcilerHandler(func(ctx context.Context, req reconciler.ProcessRequest) (reconciler.ProcessResponse, error) {
+		return reconciler.Completed(), nil
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/process",
@@ -140,8 +140,8 @@ func TestReconcilerHandler_BadRequest(t *testing.T) {
 }
 
 func TestReconcilerHandler_WrongMethod(t *testing.T) {
-	handler := sdk.ReconcilerHandler(func(ctx context.Context, req sdk.ProcessRequest) (sdk.ProcessResponse, error) {
-		return sdk.Completed(), nil
+	handler := reconciler.ReconcilerHandler(func(ctx context.Context, req reconciler.ProcessRequest) (reconciler.ProcessResponse, error) {
+		return reconciler.Completed(), nil
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/process", nil)
@@ -155,25 +155,25 @@ func TestReconcilerHandler_WrongMethod(t *testing.T) {
 
 func TestResponseBuilders(t *testing.T) {
 	t.Run("Completed", func(t *testing.T) {
-		r := sdk.Completed()
+		r := reconciler.Completed()
 		if r.Action != "completed" {
 			t.Errorf("got %s", r.Action)
 		}
 	})
 	t.Run("Converged", func(t *testing.T) {
-		r := sdk.Converged()
+		r := reconciler.Converged()
 		if r.Action != "converged" {
 			t.Errorf("got %s", r.Action)
 		}
 	})
 	t.Run("RequeueAfter", func(t *testing.T) {
-		r := sdk.RequeueAfter(30 * time.Second)
+		r := reconciler.RequeueAfter(30 * time.Second)
 		if r.Action != "requeue" || r.RequeueAfter != "30s" {
 			t.Errorf("got action=%s, delay=%s", r.Action, r.RequeueAfter)
 		}
 	})
 	t.Run("FanOut", func(t *testing.T) {
-		r := sdk.FanOut("a", "b")
+		r := reconciler.FanOut("a", "b")
 		if r.Action != "fan_out" || len(r.FanOutKeys) != 2 {
 			t.Errorf("got action=%s, keys=%v", r.Action, r.FanOutKeys)
 		}

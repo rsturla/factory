@@ -6,8 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/hummingbird-org/factory-workqueue/pkg/client"
-	"github.com/hummingbird-org/factory-workqueue/pkg/sdk"
+	"github.com/hummingbird-org/factory-workqueue/sdk/go/client"
+	"github.com/hummingbird-org/factory-workqueue/sdk/go/reconciler"
 )
 
 func FuzzReconcilerClientProcess(f *testing.F) {
@@ -36,7 +36,7 @@ func FuzzReconcilerClientProcess(f *testing.F) {
 
 		c := client.NewReconcilerClient(srv.URL)
 		// Must not panic. Errors are acceptable.
-		resp, err := c.Process(context.Background(), sdk.ProcessRequest{Key: "k"})
+		resp, err := c.Process(context.Background(), reconciler.ProcessRequest{Key: "k"})
 		if err != nil {
 			return
 		}

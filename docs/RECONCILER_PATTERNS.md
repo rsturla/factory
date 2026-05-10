@@ -23,30 +23,30 @@ This means your reconciler must be **idempotent**. It will be called multiple ti
 **Examples:** Apply a Kubernetes manifest, update a DNS record, send a notification, run a linter.
 
 ```go
-func reconcile(ctx context.Context, req sdk.ProcessRequest) (sdk.ProcessResponse, error) {
+func reconcile(ctx context.Context, req reconciler.ProcessRequest) (reconciler.ProcessResponse, error) {
     // 1. Fetch desired state.
     manifest, err := gitRepo.GetManifest(ctx, req.Key)
     if err != nil {
-        return sdk.ProcessResponse{}, fmt.Errorf("fetch manifest: %w", err)
+        return reconciler.ProcessResponse{}, fmt.Errorf("fetch manifest: %w", err)
     }
 
     // 2. Fetch current state.
     current, err := k8s.GetDeployment(ctx, manifest.Name)
     if err != nil && !errors.Is(err, ErrNotFound) {
-        return sdk.ProcessResponse{}, fmt.Errorf("get deployment: %w", err)
+        return reconciler.ProcessResponse{}, fmt.Errorf("get deployment: %w", err)
     }
 
     // 3. Compare.
     if current != nil && current.Spec == manifest.Spec {
-        return sdk.Converged(), nil
+        return reconciler.Converged(), nil
     }
 
     // 4. Act.
     if err := k8s.Apply(ctx, manifest); err != nil {
-        return sdk.ProcessResponse{}, err
+        return reconciler.ProcessResponse{}, err
     }
 
-    return sdk.Completed(), nil
+    return reconciler.Completed(), nil
 }
 ```
 
@@ -63,36 +63,36 @@ func reconcile(ctx context.Context, req sdk.ProcessRequest) (sdk.ProcessResponse
 **Examples:** Trigger a Koji RPM build, start a Tekton pipeline, submit a CI job, request an AI code review.
 
 ```go
-func reconcile(ctx context.Context, req sdk.ProcessRequest) (sdk.ProcessResponse, error) {
+func reconcile(ctx context.Context, req reconciler.ProcessRequest) (reconciler.ProcessResponse, error) {
     // 1. Check if work is already running.
     build, err := koji.GetBuild(ctx, req.Key)
     if err != nil {
-        return sdk.ProcessResponse{}, err
+        return reconciler.ProcessResponse{}, err
     }
 
     switch {
     case build == nil:
         // 2a. No build exists — start one.
         if err := koji.StartBuild(ctx, req.Key); err != nil {
-            return sdk.ProcessResponse{}, err
+            return reconciler.ProcessResponse{}, err
         }
         // Check back in 30 seconds.
-        return sdk.RequeueAfter(30 * time.Second), nil
+        return reconciler.RequeueAfter(30 * time.Second), nil
 
     case build.Status == "running":
         // 2b. Build is running — check again later.
-        return sdk.RequeueAfter(30 * time.Second), nil
+        return reconciler.RequeueAfter(30 * time.Second), nil
 
     case build.Status == "succeeded":
         // 2c. Build finished.
-        return sdk.Completed(), nil
+        return reconciler.Completed(), nil
 
     case build.Status == "failed":
         // 2d. Build failed — report error for retry with backoff.
-        return sdk.ProcessResponse{}, fmt.Errorf("build failed: %s", build.Error)
+        return reconciler.ProcessResponse{}, fmt.Errorf("build failed: %s", build.Error)
 
     default:
-        return sdk.RequeueAfter(1 * time.Minute), nil
+        return reconciler.RequeueAfter(1 * time.Minute), nil
     }
 }
 ```
@@ -116,11 +116,11 @@ func reconcile(ctx context.Context, req sdk.ProcessRequest) (sdk.ProcessResponse
 **Examples:** A package update triggers multiple arch builds. A release triggers container builds for 10 images. A test suite fans out to per-test-file items.
 
 ```go
-func reconcile(ctx context.Context, req sdk.ProcessRequest) (sdk.ProcessResponse, error) {
+func reconcile(ctx context.Context, req reconciler.ProcessRequest) (reconciler.ProcessResponse, error) {
     // req.Key = "curl-8.7.1-2.fc43"
     pkg, err := registry.GetPackage(ctx, req.Key)
     if err != nil {
-        return sdk.ProcessResponse{}, err
+        return reconciler.ProcessResponse{}, err
     }
 
     // Fan out to per-architecture builds.
@@ -130,7 +130,7 @@ func reconcile(ctx context.Context, req sdk.ProcessRequest) (sdk.ProcessResponse
         // e.g., "curl-8.7.1-2.fc43.x86_64", "curl-8.7.1-2.fc43.aarch64"
     }
 
-    return sdk.FanOut(children...), nil
+    return reconciler.FanOut(children...), nil
 }
 ```
 
@@ -143,14 +143,14 @@ func reconcile(ctx context.Context, req sdk.ProcessRequest) (sdk.ProcessResponse
 **Cross-queue fan-out:**
 
 ```go
-func reconcile(ctx context.Context, req sdk.ProcessRequest) (sdk.ProcessResponse, error) {
+func reconcile(ctx context.Context, req reconciler.ProcessRequest) (reconciler.ProcessResponse, error) {
     // RPM build succeeded — trigger container rebuild.
-    containerReceiver := sdk.NewEnqueueClient("http://container-receiver:8081")
+    containerReceiver := reconciler.NewEnqueueClient("http://container-receiver:8081")
     err := containerReceiver.Enqueue(ctx, "base-image-rebuild", 10)
     if err != nil {
-        return sdk.ProcessResponse{}, err
+        return reconciler.ProcessResponse{}, err
     }
-    return sdk.Completed(), nil
+    return reconciler.Completed(), nil
 }
 ```
 
@@ -161,46 +161,46 @@ func reconcile(ctx context.Context, req sdk.ProcessRequest) (sdk.ProcessResponse
 **Examples:** Promote a package through testing → staging → production. Build RPM → build container → push to registry → update deployment.
 
 ```go
-func reconcile(ctx context.Context, req sdk.ProcessRequest) (sdk.ProcessResponse, error) {
+func reconcile(ctx context.Context, req reconciler.ProcessRequest) (reconciler.ProcessResponse, error) {
     release, err := db.GetRelease(ctx, req.Key)
     if err != nil {
-        return sdk.ProcessResponse{}, err
+        return reconciler.ProcessResponse{}, err
     }
 
     switch release.Phase {
     case "building":
         if !release.BuildComplete {
-            return sdk.RequeueAfter(30 * time.Second), nil
+            return reconciler.RequeueAfter(30 * time.Second), nil
         }
         release.Phase = "testing"
         db.UpdateRelease(ctx, release)
-        return sdk.RequeueAfter(0), nil
+        return reconciler.RequeueAfter(0), nil
 
     case "testing":
         results, _ := ci.GetTestResults(ctx, release.TestRunID)
         if results == nil {
             // Tests not started yet.
             ci.StartTests(ctx, release)
-            return sdk.RequeueAfter(1 * time.Minute), nil
+            return reconciler.RequeueAfter(1 * time.Minute), nil
         }
         if results.Status == "running" {
-            return sdk.RequeueAfter(30 * time.Second), nil
+            return reconciler.RequeueAfter(30 * time.Second), nil
         }
         if results.Status == "failed" {
-            return sdk.ProcessResponse{}, fmt.Errorf("tests failed: %d failures", results.Failures)
+            return reconciler.ProcessResponse{}, fmt.Errorf("tests failed: %d failures", results.Failures)
         }
         release.Phase = "promoting"
         db.UpdateRelease(ctx, release)
-        return sdk.RequeueAfter(0), nil
+        return reconciler.RequeueAfter(0), nil
 
     case "promoting":
         if err := registry.Promote(ctx, release); err != nil {
-            return sdk.ProcessResponse{}, err
+            return reconciler.ProcessResponse{}, err
         }
-        return sdk.Completed(), nil
+        return reconciler.Completed(), nil
 
     default:
-        return sdk.Converged(), nil
+        return reconciler.Converged(), nil
     }
 }
 ```
@@ -280,18 +280,18 @@ The key is an identifier, not a serialized message. State belongs in your source
 
 ```go
 // BAD: always does work even if already done
-func reconcile(ctx context.Context, req sdk.ProcessRequest) (sdk.ProcessResponse, error) {
+func reconcile(ctx context.Context, req reconciler.ProcessRequest) (reconciler.ProcessResponse, error) {
     doWork(ctx, req.Key) // runs every time, even on retry
-    return sdk.Completed(), nil
+    return reconciler.Completed(), nil
 }
 
 // GOOD: checks first
-func reconcile(ctx context.Context, req sdk.ProcessRequest) (sdk.ProcessResponse, error) {
+func reconcile(ctx context.Context, req reconciler.ProcessRequest) (reconciler.ProcessResponse, error) {
     if isDone(ctx, req.Key) {
-        return sdk.Converged(), nil
+        return reconciler.Converged(), nil
     }
     doWork(ctx, req.Key)
-    return sdk.Completed(), nil
+    return reconciler.Completed(), nil
 }
 ```
 
@@ -302,12 +302,12 @@ Without the convergence check, retries and lease-expiry re-deliveries redo compl
 ```go
 // BAD: reports error when build is just slow
 if build.Status == "running" {
-    return sdk.ProcessResponse{}, fmt.Errorf("build still running")
+    return reconciler.ProcessResponse{}, fmt.Errorf("build still running")
 }
 
 // GOOD: requeue without consuming retry budget
 if build.Status == "running" {
-    return sdk.RequeueAfter(30 * time.Second), nil
+    return reconciler.RequeueAfter(30 * time.Second), nil
 }
 ```
 
@@ -317,22 +317,22 @@ Errors consume retry budget. After `DISPATCH_MAX_RETRY` errors, the item is dead
 
 ```go
 // BAD: blocks HTTP handler for 30 minutes
-func reconcile(ctx context.Context, req sdk.ProcessRequest) (sdk.ProcessResponse, error) {
+func reconcile(ctx context.Context, req reconciler.ProcessRequest) (reconciler.ProcessResponse, error) {
     result := runBuild(ctx, req.Key) // 30 minutes
-    return sdk.Completed(), nil
+    return reconciler.Completed(), nil
 }
 
 // GOOD: delegate and poll
-func reconcile(ctx context.Context, req sdk.ProcessRequest) (sdk.ProcessResponse, error) {
+func reconcile(ctx context.Context, req reconciler.ProcessRequest) (reconciler.ProcessResponse, error) {
     build := getBuild(ctx, req.Key)
     if build == nil {
         startBuild(ctx, req.Key)
-        return sdk.RequeueAfter(30 * time.Second), nil
+        return reconciler.RequeueAfter(30 * time.Second), nil
     }
     if build.Running {
-        return sdk.RequeueAfter(30 * time.Second), nil
+        return reconciler.RequeueAfter(30 * time.Second), nil
     }
-    return sdk.Completed(), nil
+    return reconciler.Completed(), nil
 }
 ```
 
@@ -344,17 +344,17 @@ Reconcilers are plain HTTP handlers. Test them with `httptest`:
 
 ```go
 func TestReconciler(t *testing.T) {
-    handler := sdk.ReconcilerHandler(reconcile)
+    handler := reconciler.ReconcilerHandler(reconcile)
     srv := httptest.NewServer(handler)
     defer srv.Close()
 
     body := `{"key": "test-item", "attempt": 1}`
     resp, _ := http.Post(srv.URL+"/process", "application/json", strings.NewReader(body))
 
-    var result sdk.ProcessResponse
+    var result reconciler.ProcessResponse
     json.NewDecoder(resp.Body).Decode(&result)
 
-    if result.Action != sdk.ActionCompleted {
+    if result.Action != reconciler.ActionCompleted {
         t.Errorf("expected completed, got %s", result.Action)
     }
 }

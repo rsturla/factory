@@ -12,7 +12,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/hummingbird-org/factory-workqueue/pkg/sdk"
+	"github.com/hummingbird-org/factory-workqueue/sdk/go/reconciler"
 )
 
 // Option configures a ReconcilerClient.
@@ -86,31 +86,31 @@ func WithCACert(path string) Option {
 }
 
 // Process sends a work item key to the reconciler and returns its response.
-func (c *ReconcilerClient) Process(ctx context.Context, req sdk.ProcessRequest) (sdk.ProcessResponse, error) {
+func (c *ReconcilerClient) Process(ctx context.Context, req reconciler.ProcessRequest) (reconciler.ProcessResponse, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
-		return sdk.ProcessResponse{}, fmt.Errorf("marshal request: %w", err)
+		return reconciler.ProcessResponse{}, fmt.Errorf("marshal request: %w", err)
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint+"/process", bytes.NewReader(body))
 	if err != nil {
-		return sdk.ProcessResponse{}, fmt.Errorf("create request: %w", err)
+		return reconciler.ProcessResponse{}, fmt.Errorf("create request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
-		return sdk.ProcessResponse{}, fmt.Errorf("call reconciler: %w", err)
+		return reconciler.ProcessResponse{}, fmt.Errorf("call reconciler: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return sdk.ProcessResponse{}, fmt.Errorf("reconciler returned status %d", resp.StatusCode)
+		return reconciler.ProcessResponse{}, fmt.Errorf("reconciler returned status %d", resp.StatusCode)
 	}
 
-	var result sdk.ProcessResponse
+	var result reconciler.ProcessResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return sdk.ProcessResponse{}, fmt.Errorf("decode response: %w", err)
+		return reconciler.ProcessResponse{}, fmt.Errorf("decode response: %w", err)
 	}
 
 	return result, nil

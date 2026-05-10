@@ -1,4 +1,4 @@
-package sdk_test
+package reconciler_test
 
 import (
 	"bytes"
@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/hummingbird-org/factory-workqueue/pkg/sdk"
+	"github.com/hummingbird-org/factory-workqueue/sdk/go/reconciler"
 )
 
 func FuzzReconcilerHandler(f *testing.F) {
@@ -21,8 +21,8 @@ func FuzzReconcilerHandler(f *testing.F) {
 	f.Add([]byte(`{invalid`))
 	f.Add([]byte(`{"key":123}`))
 
-	handler := sdk.ReconcilerHandler(func(ctx context.Context, req sdk.ProcessRequest) (sdk.ProcessResponse, error) {
-		return sdk.Completed(), nil
+	handler := reconciler.ReconcilerHandler(func(ctx context.Context, req reconciler.ProcessRequest) (reconciler.ProcessResponse, error) {
+		return reconciler.Completed(), nil
 	})
 
 	f.Fuzz(func(t *testing.T, data []byte) {

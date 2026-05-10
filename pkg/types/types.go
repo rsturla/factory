@@ -1,6 +1,6 @@
 // Package types defines the shared data types for the factory workqueue
 // platform. These types are used by both internal store implementations
-// and external clients (pkg/client, pkg/sdk).
+// and external clients (sdk/go/client, sdk/go/reconciler).
 package types
 
 import (

@@ -13,18 +13,18 @@ import (
 	"github.com/hummingbird-org/factory-workqueue/internal/dispatcher"
 	"github.com/hummingbird-org/factory-workqueue/internal/store"
 	"github.com/hummingbird-org/factory-workqueue/internal/store/inmem"
-	"github.com/hummingbird-org/factory-workqueue/pkg/client"
-	"github.com/hummingbird-org/factory-workqueue/pkg/sdk"
+	"github.com/hummingbird-org/factory-workqueue/sdk/go/client"
+	"github.com/hummingbird-org/factory-workqueue/sdk/go/reconciler"
 
 	"github.com/hummingbird-org/factory-workqueue/internal/compute"
 )
 
 // fakeReconciler returns a test HTTP server that responds to /process
 // with the given handler function.
-func fakeReconciler(t *testing.T, fn func(sdk.ProcessRequest) sdk.ProcessResponse) *httptest.Server {
+func fakeReconciler(t *testing.T, fn func(reconciler.ProcessRequest) reconciler.ProcessResponse) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req sdk.ProcessRequest
+		var req reconciler.ProcessRequest
 		json.NewDecoder(r.Body).Decode(&req)
 		resp := fn(req)
 		w.Header().Set("Content-Type", "application/json")
@@ -63,9 +63,9 @@ func TestDispatcher_ClaimsAndCompletes(t *testing.T) {
 	ctx := context.Background()
 
 	var processed sync.Map
-	srv := fakeReconciler(t, func(req sdk.ProcessRequest) sdk.ProcessResponse {
+	srv := fakeReconciler(t, func(req reconciler.ProcessRequest) reconciler.ProcessResponse {
 		processed.Store(req.Key, true)
-		return sdk.Completed()
+		return reconciler.Completed()
 	})
 	defer srv.Close()
 
@@ -100,8 +100,8 @@ func TestDispatcher_Converged(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
 
-	srv := fakeReconciler(t, func(req sdk.ProcessRequest) sdk.ProcessResponse {
-		return sdk.Converged()
+	srv := fakeReconciler(t, func(req reconciler.ProcessRequest) reconciler.ProcessResponse {
+		return reconciler.Converged()
 	})
 	defer srv.Close()
 
@@ -124,12 +124,12 @@ func TestDispatcher_ReconcilerError_Requeues(t *testing.T) {
 	ctx := context.Background()
 
 	var attempts atomic.Int32
-	srv := fakeReconciler(t, func(req sdk.ProcessRequest) sdk.ProcessResponse {
+	srv := fakeReconciler(t, func(req reconciler.ProcessRequest) reconciler.ProcessResponse {
 		n := attempts.Add(1)
 		if n <= 1 {
-			return sdk.ProcessResponse{Error: "temporary failure"}
+			return reconciler.ProcessResponse{Error: "temporary failure"}
 		}
-		return sdk.Completed()
+		return reconciler.Completed()
 	})
 	defer srv.Close()
 
@@ -154,8 +154,8 @@ func TestDispatcher_ReconcilerUnreachable_InfraFailure(t *testing.T) {
 	ctx := context.Background()
 
 	// Point to a closed server — connection refused.
-	srv := fakeReconciler(t, func(req sdk.ProcessRequest) sdk.ProcessResponse {
-		return sdk.Completed()
+	srv := fakeReconciler(t, func(req reconciler.ProcessRequest) reconciler.ProcessResponse {
+		return reconciler.Completed()
 	})
 	srv.Close() // close immediately
 
@@ -181,11 +181,11 @@ func TestDispatcher_FanOut(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
 
-	srv := fakeReconciler(t, func(req sdk.ProcessRequest) sdk.ProcessResponse {
+	srv := fakeReconciler(t, func(req reconciler.ProcessRequest) reconciler.ProcessResponse {
 		if req.Key == "parent" {
-			return sdk.FanOut("child-1", "child-2")
+			return reconciler.FanOut("child-1", "child-2")
 		}
-		return sdk.Completed()
+		return reconciler.Completed()
 	})
 	defer srv.Close()
 
@@ -216,8 +216,8 @@ func TestDispatcher_RequeueAfter(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
 
-	srv := fakeReconciler(t, func(req sdk.ProcessRequest) sdk.ProcessResponse {
-		return sdk.RequeueAfter(10 * time.Minute)
+	srv := fakeReconciler(t, func(req reconciler.ProcessRequest) reconciler.ProcessResponse {
+		return reconciler.RequeueAfter(10 * time.Minute)
 	})
 	defer srv.Close()
 
@@ -247,11 +247,11 @@ func TestDispatcher_PriorityOrder(t *testing.T) {
 
 	var order []string
 	var mu sync.Mutex
-	srv := fakeReconciler(t, func(req sdk.ProcessRequest) sdk.ProcessResponse {
+	srv := fakeReconciler(t, func(req reconciler.ProcessRequest) reconciler.ProcessResponse {
 		mu.Lock()
 		order = append(order, req.Key)
 		mu.Unlock()
-		return sdk.Completed()
+		return reconciler.Completed()
 	})
 	defer srv.Close()
 
@@ -304,7 +304,7 @@ func TestDispatcher_MaxConcurrency(t *testing.T) {
 	var concurrent atomic.Int32
 	var maxSeen atomic.Int32
 
-	srv := fakeReconciler(t, func(req sdk.ProcessRequest) sdk.ProcessResponse {
+	srv := fakeReconciler(t, func(req reconciler.ProcessRequest) reconciler.ProcessResponse {
 		n := concurrent.Add(1)
 		for {
 			old := maxSeen.Load()
@@ -314,7 +314,7 @@ func TestDispatcher_MaxConcurrency(t *testing.T) {
 		}
 		time.Sleep(100 * time.Millisecond)
 		concurrent.Add(-1)
-		return sdk.Completed()
+		return reconciler.Completed()
 	})
 	defer srv.Close()
 
@@ -340,9 +340,9 @@ func TestDispatcher_GracefulShutdown(t *testing.T) {
 
 	var processed atomic.Int32
 
-	srv := fakeReconciler(t, func(req sdk.ProcessRequest) sdk.ProcessResponse {
+	srv := fakeReconciler(t, func(req reconciler.ProcessRequest) reconciler.ProcessResponse {
 		processed.Add(1)
-		return sdk.Completed()
+		return reconciler.Completed()
 	})
 	defer srv.Close()
 
@@ -377,9 +377,9 @@ func TestReconcilerTimeout(t *testing.T) {
 	ctx := context.Background()
 
 	// Reconciler sleeps longer than the lease, so the item's lease expires.
-	srv := fakeReconciler(t, func(req sdk.ProcessRequest) sdk.ProcessResponse {
+	srv := fakeReconciler(t, func(req reconciler.ProcessRequest) reconciler.ProcessResponse {
 		time.Sleep(500 * time.Millisecond)
-		return sdk.Completed()
+		return reconciler.Completed()
 	})
 	defer srv.Close()
 
@@ -484,9 +484,9 @@ func TestReconcilerReturnsRetry(t *testing.T) {
 	ctx := context.Background()
 
 	var attempts atomic.Int32
-	srv := fakeReconciler(t, func(req sdk.ProcessRequest) sdk.ProcessResponse {
+	srv := fakeReconciler(t, func(req reconciler.ProcessRequest) reconciler.ProcessResponse {
 		attempts.Add(1)
-		return sdk.ProcessResponse{
+		return reconciler.ProcessResponse{
 			Error: "transient failure",
 		}
 	})
@@ -528,8 +528,8 @@ func TestDispatcher_Reaper(t *testing.T) {
 	ctx := context.Background()
 
 	// Don't need a real reconciler for reaper test.
-	srv := fakeReconciler(t, func(req sdk.ProcessRequest) sdk.ProcessResponse {
-		return sdk.Completed()
+	srv := fakeReconciler(t, func(req reconciler.ProcessRequest) reconciler.ProcessResponse {
+		return reconciler.Completed()
 	})
 	defer srv.Close()
 
