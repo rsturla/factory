@@ -1,0 +1,35 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: factory
+
+resources:
+  - ../../base
+  - echo-reconciler.yaml
+
+components:
+  - ../../components/postgres
+
+patches:
+  - path: dispatcher-patch.yaml
+    target:
+      kind: Deployment
+      name: factory-dispatcher
+  - path: receiver-patch.yaml
+    target:
+      kind: Deployment
+      name: factory-receiver
+
+images:
+  - name: quay.io/hummingbird/factory-admin
+    newName: factory-admin
+    newTag: test
+  - name: quay.io/hummingbird/factory-receiver
+    newName: factory-receiver
+    newTag: test
+  - name: quay.io/hummingbird/factory-dispatcher
+    newName: factory-dispatcher
+    newTag: test
+  - name: quay.io/hummingbird/postgresql
+    newName: docker.io/library/postgres
+    newTag: "17"

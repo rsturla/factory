@@ -11,6 +11,9 @@ resources:
   - ../../base
   - route.yaml
 
+components:
+  - ../../components/postgres
+
 images:
   - name: quay.io/hummingbird/factory-admin
     newName: quay.io/rh-ee-rsturla/hummingbird-factory-admin

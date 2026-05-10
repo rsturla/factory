@@ -1,0 +1,12 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: factory-receiver
+spec:
+  template:
+    spec:
+      containers:
+        - name: receiver
+          env:
+            - name: FACTORY_QUEUE_NAME
+              value: echo

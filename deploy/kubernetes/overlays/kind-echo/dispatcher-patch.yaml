@@ -1,0 +1,18 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: factory-dispatcher
+spec:
+  template:
+    spec:
+      containers:
+        - name: dispatcher
+          env:
+            - name: FACTORY_QUEUE_NAME
+              value: echo
+            - name: RECONCILER_ENDPOINT
+              value: http://echo-reconciler:8082
+            - name: DISPATCH_MAX_CONCURRENCY
+              value: "10"
+            - name: DISPATCH_BATCH_SIZE
+              value: "5"

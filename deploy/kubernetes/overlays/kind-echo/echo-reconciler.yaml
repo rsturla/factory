@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: echo-reconciler
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: echo-reconciler
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: echo-reconciler
+    spec:
+      containers:
+        - name: reconciler
+          image: factory-echo-reconciler:test
+          imagePullPolicy: Never
+          env:
+            - name: FACTORY_LISTEN_ADDR
+              value: ":8082"
+            - name: PROCESS_DELAY
+              value: "200ms"
+          ports:
+            - containerPort: 8082
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: echo-reconciler
+spec:
+  selector:
+    app.kubernetes.io/name: echo-reconciler
+  ports:
+    - port: 8082

@@ -44,6 +44,89 @@ docker compose -f docker-compose.postgres.yaml logs echo-reconciler -f
 docker compose -f docker-compose.postgres.yaml down -v
 ```
 
+## Kubernetes deployment
+
+The Kustomize base in `deploy/kubernetes/base/` provides the workqueue services (admin, receiver, dispatcher, HPA). It does **not** include a database — bring your own PostgreSQL (RDS, Aurora, Cloud SQL) or use the in-cluster component.
+
+### With in-cluster PostgreSQL
+
+```bash
+# Create an overlay for your queue
+mkdir -p my-overlay
+cat > my-overlay/kustomization.yaml << 'EOF'
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: factory
+resources:
+  - github.com/hummingbird-org/factory-workqueue/deploy/kubernetes/base
+components:
+  - github.com/hummingbird-org/factory-workqueue/deploy/kubernetes/components/postgres
+patches:
+  - patch: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: factory-dispatcher
+      spec:
+        template:
+          spec:
+            containers:
+              - name: dispatcher
+                env:
+                  - name: FACTORY_QUEUE_NAME
+                    value: my-queue
+                  - name: RECONCILER_ENDPOINT
+                    value: http://my-reconciler:8082
+    target:
+      kind: Deployment
+      name: factory-dispatcher
+  - patch: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: factory-receiver
+      spec:
+        template:
+          spec:
+            containers:
+              - name: receiver
+                env:
+                  - name: FACTORY_QUEUE_NAME
+                    value: my-queue
+    target:
+      kind: Deployment
+      name: factory-receiver
+EOF
+
+kubectl create namespace factory
+kubectl apply -k my-overlay/
+```
+
+### With external PostgreSQL (RDS, Aurora, Cloud SQL)
+
+Skip the postgres component and provide your own Secret:
+
+```yaml
+# my-overlay/kustomization.yaml
+resources:
+  - github.com/hummingbird-org/factory-workqueue/deploy/kubernetes/base
+  - db-secret.yaml
+# patches for queue name, reconciler endpoint...
+
+# my-overlay/db-secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: factory-db
+type: Opaque
+stringData:
+  uri: "postgres://admin:password@mydb.abc123.rds.amazonaws.com:5432/factory?sslmode=require"
+```
+
+### Example overlay
+
+See `deploy/kubernetes/overlays/kind-echo/` for a complete working example with an echo reconciler.
+
 ## Project structure
 
 ```
@@ -80,6 +163,13 @@ factory-v2/
 │   ├── echo-reconciler/   HTTP server reconciler (K8s, push model)
 │   └── standalone-worker/ Self-dispatching worker (EC2, pull model)
 ├── deploy/
+│   ├── kubernetes/
+│   │   ├── base/              Kustomize base (services only, no database)
+│   │   ├── components/
+│   │   │   └── postgres/      Opt-in in-cluster PostgreSQL
+│   │   └── overlays/
+│   │       ├── kind-echo/     Example: kind cluster with echo reconciler
+│   │       └── openshift/     OpenShift with Route + Cedar
 │   ├── docker-compose.postgres.yaml
 │   ├── docker-compose.sqlite.yaml
 │   ├── docker-compose.dynamodb.yaml

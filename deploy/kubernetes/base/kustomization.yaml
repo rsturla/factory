@@ -1,8 +1,23 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: factory
+    includeSelectors: false
+
 resources:
   - serviceaccount.yaml
   - deployment.yaml
   - service.yaml
-  - postgres.yaml
+  - receiver.yaml
+  - dispatcher.yaml
+  - hpa.yaml
+
+images:
+  - name: quay.io/hummingbird/factory-admin
+    newTag: latest
+  - name: quay.io/hummingbird/factory-receiver
+    newTag: latest
+  - name: quay.io/hummingbird/factory-dispatcher
+    newTag: latest
