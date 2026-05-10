@@ -148,24 +148,32 @@ func parseMigrationVersion(filename string) (int, error) {
 func (s *Store) Enqueue(ctx context.Context, queue, key string, priority int, opts ...store.EnqueueOption) error {
 	o := store.ApplyEnqueueOptions(opts)
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO work_items (queue, key, priority, not_before)
-		VALUES ($1, $2, $3, $4)
+		WITH upserted AS (
+			INSERT INTO work_items (queue, key, priority, not_before)
+			VALUES ($1, $2, $3, $4)
+			ON CONFLICT (queue, key) DO UPDATE SET
+				priority = CASE
+					WHEN work_items.status = 'pending'
+					THEN GREATEST(work_items.priority, EXCLUDED.priority)
+					ELSE EXCLUDED.priority
+				END,
+				status = 'pending',
+				attempts = CASE WHEN work_items.status = 'pending' THEN work_items.attempts ELSE 0 END,
+				not_before = EXCLUDED.not_before,
+				worker_id = NULL,
+				lease_expires = NULL,
+				error_message = NULL,
+				claimed_at = NULL,
+				completed_at = NULL,
+				updated_at = now()
+			WHERE work_items.status IN ('pending', 'succeeded', 'failed', 'dead_letter')
+			RETURNING queue, key, priority, not_before, created_at
+		)
+		INSERT INTO claim_queue (queue, key, priority, not_before, created_at)
+		SELECT queue, key, priority, not_before, created_at FROM upserted
 		ON CONFLICT (queue, key) DO UPDATE SET
-			priority = CASE
-				WHEN work_items.status = 'pending'
-				THEN GREATEST(work_items.priority, EXCLUDED.priority)
-				ELSE EXCLUDED.priority
-			END,
-			status = 'pending',
-			attempts = CASE WHEN work_items.status = 'pending' THEN work_items.attempts ELSE 0 END,
-			not_before = EXCLUDED.not_before,
-			worker_id = NULL,
-			lease_expires = NULL,
-			error_message = NULL,
-			claimed_at = NULL,
-			completed_at = NULL,
-			updated_at = now()
-		WHERE work_items.status IN ('pending', 'succeeded', 'failed', 'dead_letter')
+			priority = GREATEST(claim_queue.priority, EXCLUDED.priority),
+			not_before = EXCLUDED.not_before
 	`, queue, key, priority, o.NotBefore)
 	return err
 }
@@ -185,24 +193,32 @@ func (s *Store) EnqueueBatch(ctx context.Context, queue string, items []store.Ba
 	}
 
 	tag, err := s.pool.Exec(ctx, `
-		INSERT INTO work_items (queue, key, priority, not_before)
-		SELECT $1, unnest($2::text[]), unnest($3::int[]), unnest($4::timestamptz[])
+		WITH upserted AS (
+			INSERT INTO work_items (queue, key, priority, not_before)
+			SELECT $1, unnest($2::text[]), unnest($3::int[]), unnest($4::timestamptz[])
+			ON CONFLICT (queue, key) DO UPDATE SET
+				priority = CASE
+					WHEN work_items.status = 'pending'
+					THEN GREATEST(work_items.priority, EXCLUDED.priority)
+					ELSE EXCLUDED.priority
+				END,
+				status = 'pending',
+				attempts = CASE WHEN work_items.status = 'pending' THEN work_items.attempts ELSE 0 END,
+				not_before = EXCLUDED.not_before,
+				worker_id = NULL,
+				lease_expires = NULL,
+				error_message = NULL,
+				claimed_at = NULL,
+				completed_at = NULL,
+				updated_at = now()
+			WHERE work_items.status IN ('pending', 'succeeded', 'failed', 'dead_letter')
+			RETURNING queue, key, priority, not_before, created_at
+		)
+		INSERT INTO claim_queue (queue, key, priority, not_before, created_at)
+		SELECT queue, key, priority, not_before, created_at FROM upserted
 		ON CONFLICT (queue, key) DO UPDATE SET
-			priority = CASE
-				WHEN work_items.status = 'pending'
-				THEN GREATEST(work_items.priority, EXCLUDED.priority)
-				ELSE EXCLUDED.priority
-			END,
-			status = 'pending',
-			attempts = CASE WHEN work_items.status = 'pending' THEN work_items.attempts ELSE 0 END,
-			not_before = EXCLUDED.not_before,
-			worker_id = NULL,
-			lease_expires = NULL,
-			error_message = NULL,
-			claimed_at = NULL,
-			completed_at = NULL,
-			updated_at = now()
-		WHERE work_items.status IN ('pending', 'succeeded', 'failed', 'dead_letter')
+			priority = GREATEST(claim_queue.priority, EXCLUDED.priority),
+			not_before = EXCLUDED.not_before
 	`, queue, keys, priorities, notBefores)
 	if err != nil {
 		return 0, fmt.Errorf("enqueue batch: %w", err)
@@ -233,6 +249,18 @@ func (s *Store) ClaimBatch(ctx context.Context, queue string, batchSize int, wor
 	limit := min(batchSize, remaining)
 
 	rows, err := tx.Query(ctx, `
+		WITH claimed_keys AS (
+			DELETE FROM claim_queue
+			WHERE (queue, key) IN (
+				SELECT queue, key FROM claim_queue
+				WHERE queue = $3
+				  AND (not_before IS NULL OR not_before <= now())
+				ORDER BY not_before NULLS FIRST, priority DESC, created_at ASC, key ASC
+				FOR UPDATE SKIP LOCKED
+				LIMIT $4
+			)
+			RETURNING key
+		)
 		UPDATE work_items
 		SET status = 'claimed',
 			worker_id = $1,
@@ -240,15 +268,7 @@ func (s *Store) ClaimBatch(ctx context.Context, queue string, batchSize int, wor
 			attempts = attempts + 1,
 			claimed_at = now(),
 			updated_at = now()
-		WHERE (queue, key) IN (
-			SELECT queue, key FROM work_items
-			WHERE queue = $3
-			  AND status = 'pending'
-			  AND (not_before IS NULL OR not_before <= now())
-			ORDER BY priority DESC, created_at ASC, key ASC
-			FOR UPDATE SKIP LOCKED
-			LIMIT $4
-		)
+		WHERE queue = $3 AND key IN (SELECT key FROM claimed_keys)
 		RETURNING queue, key, status, priority, attempts, max_attempts,
 			not_before, lease_expires, worker_id, error_message,
 			created_at, updated_at, claimed_at, completed_at
@@ -291,14 +311,22 @@ func (s *Store) ClaimBatch(ctx context.Context, queue string, batchSize int, wor
 		return nil, fmt.Errorf("update in_progress: %w", err)
 	}
 
-	for _, item := range items {
-		_, err = tx.Exec(ctx, `
-			INSERT INTO work_item_history (queue, key, from_status, to_status, worker_id, attempt)
-			VALUES ($1, $2, 'pending', 'claimed', $3, $4)
-		`, item.Queue, item.Key, workerID, item.Attempts)
-		if err != nil {
-			return nil, fmt.Errorf("record history: %w", err)
-		}
+	histQueues := make([]string, len(items))
+	histKeys := make([]string, len(items))
+	histWorkers := make([]string, len(items))
+	histAttempts := make([]int, len(items))
+	for i, item := range items {
+		histQueues[i] = item.Queue
+		histKeys[i] = item.Key
+		histWorkers[i] = workerID
+		histAttempts[i] = item.Attempts
+	}
+	_, err = tx.Exec(ctx, `
+		INSERT INTO work_item_history (queue, key, from_status, to_status, worker_id, attempt)
+		SELECT unnest($1::text[]), unnest($2::text[]), 'pending', 'claimed', unnest($3::text[]), unnest($4::int[])
+	`, histQueues, histKeys, histWorkers, histAttempts)
+	if err != nil {
+		return nil, fmt.Errorf("record history: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -394,6 +422,16 @@ func (s *Store) Requeue(ctx context.Context, queue, key string, opts ...store.Re
 	}
 
 	_, err = tx.Exec(ctx, `
+		INSERT INTO claim_queue (queue, key, priority, not_before, created_at)
+		SELECT queue, key, priority, not_before, created_at
+		FROM work_items WHERE queue = $1 AND key = $2
+		ON CONFLICT (queue, key) DO NOTHING
+	`, queue, key)
+	if err != nil {
+		return fmt.Errorf("insert claim_queue: %w", err)
+	}
+
+	_, err = tx.Exec(ctx, `
 		INSERT INTO work_item_history (queue, key, from_status, to_status)
 		VALUES ($1, $2, 'running', 'pending')
 	`, queue, key)
@@ -437,6 +475,16 @@ func (s *Store) RequeueUndoAttempt(ctx context.Context, queue, key string, notBe
 	`, queue)
 	if err != nil {
 		return fmt.Errorf("decrement in_progress: %w", err)
+	}
+
+	_, err = tx.Exec(ctx, `
+		INSERT INTO claim_queue (queue, key, priority, not_before, created_at)
+		SELECT queue, key, priority, not_before, created_at
+		FROM work_items WHERE queue = $1 AND key = $2
+		ON CONFLICT (queue, key) DO UPDATE SET not_before = EXCLUDED.not_before
+	`, queue, key)
+	if err != nil {
+		return fmt.Errorf("insert claim_queue: %w", err)
 	}
 
 	_, err = tx.Exec(ctx, `
@@ -546,6 +594,25 @@ func (s *Store) Transition(ctx context.Context, queue, key string, from, to stor
 		return fmt.Errorf("transition: %w", err)
 	}
 
+	if to == store.StatusPending {
+		_, err = tx.Exec(ctx, `
+			INSERT INTO claim_queue (queue, key, priority, not_before, created_at)
+			SELECT queue, key, priority, not_before, created_at
+			FROM work_items WHERE queue = $1 AND key = $2
+			ON CONFLICT (queue, key) DO NOTHING
+		`, queue, key)
+		if err != nil {
+			return fmt.Errorf("insert claim_queue: %w", err)
+		}
+	} else if from == store.StatusPending {
+		_, err = tx.Exec(ctx, `
+			DELETE FROM claim_queue WHERE queue = $1 AND key = $2
+		`, queue, key)
+		if err != nil {
+			return fmt.Errorf("delete claim_queue: %w", err)
+		}
+	}
+
 	_, err = tx.Exec(ctx, `
 		INSERT INTO work_item_history (queue, key, from_status, to_status, worker_id, error_message)
 		VALUES ($1, $2, $3, $4, NULLIF($5, ''), NULLIF($6, ''))
@@ -598,7 +665,34 @@ func (s *Store) RepairCounter(ctx context.Context, queue string) error {
 		)
 		WHERE queue = $1
 	`, queue)
-	return err
+	if err != nil {
+		return fmt.Errorf("repair in_progress: %w", err)
+	}
+
+	_, err = s.pool.Exec(ctx, `
+		DELETE FROM claim_queue
+		WHERE queue = $1
+		  AND (queue, key) NOT IN (
+			SELECT queue, key FROM work_items
+			WHERE queue = $1 AND status = 'pending'
+		  )
+	`, queue)
+	if err != nil {
+		return fmt.Errorf("repair claim_queue orphans: %w", err)
+	}
+
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO claim_queue (queue, key, priority, not_before, created_at)
+		SELECT queue, key, priority, not_before, created_at
+		FROM work_items
+		WHERE queue = $1 AND status = 'pending'
+		ON CONFLICT (queue, key) DO NOTHING
+	`, queue)
+	if err != nil {
+		return fmt.Errorf("repair claim_queue backfill: %w", err)
+	}
+
+	return nil
 }
 
 // --- Query Operations ---
@@ -783,13 +877,27 @@ func (s *Store) ListWorkers(ctx context.Context, queue string) ([]store.WorkerLe
 }
 
 func (s *Store) PurgeDeadLetters(ctx context.Context, queue string) (int64, error) {
-	tag, err := s.pool.Exec(ctx, `
-		DELETE FROM work_items WHERE queue = $1 AND status = 'dead_letter'
-	`, queue)
-	if err != nil {
-		return 0, fmt.Errorf("purge dead letters: %w", err)
+	const batchSize = 1000
+	var total int64
+	for {
+		tag, err := s.pool.Exec(ctx, `
+			DELETE FROM work_items
+			WHERE ctid IN (
+				SELECT ctid FROM work_items
+				WHERE queue = $1 AND status = 'dead_letter'
+				LIMIT $2
+			)
+		`, queue, batchSize)
+		if err != nil {
+			return total, fmt.Errorf("purge dead letters: %w", err)
+		}
+		n := tag.RowsAffected()
+		total += n
+		if n < batchSize {
+			break
+		}
 	}
-	return tag.RowsAffected(), nil
+	return total, nil
 }
 
 // --- History ---

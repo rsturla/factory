@@ -1,0 +1,85 @@
+name: Benchmark
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  bench:
+    name: Postgres benchmarks
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: quay.io/hummingbird/postgresql:18
+        env:
+          POSTGRES_DB: factory
+          POSTGRES_USER: factory
+          POSTGRES_PASSWORD: factory
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U factory"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Find packages with benchmarks
+        id: find
+        run: |
+          pkgs=$(grep -rl '^func Benchmark' --include='*_test.go' . \
+            | xargs -I{} dirname {} | sort -u | sed 's|^\./|./|')
+          echo "packages=$pkgs" >> "$GITHUB_OUTPUT"
+          echo "Benchmark packages: $pkgs"
+
+      - name: Run benchmarks
+        if: steps.find.outputs.packages != ''
+        run: |
+          go test ${{ steps.find.outputs.packages }} \
+            -bench=. -benchmem -count=5 -run='^$' -timeout 300s \
+            | tee bench-results.txt
+        env:
+          DATABASE_URL: postgres://factory:factory@localhost:5432/factory?sslmode=disable
+
+      - name: Download previous benchmark
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: bench-baseline.txt
+          key: bench-baseline-${{ github.base_ref || 'main' }}
+          restore-keys: bench-baseline-
+
+      - name: Install benchstat
+        run: go install golang.org/x/perf/cmd/benchstat@latest
+
+      - name: Compare benchmarks
+        id: benchstat
+        run: |
+          if [ -f bench-baseline.txt ]; then
+            echo "## Benchmark comparison" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            benchstat bench-baseline.txt bench-results.txt | tee -a "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## Benchmark results (no baseline)" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            benchstat bench-results.txt | tee -a "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Save baseline on main
+        if: github.ref == 'refs/heads/main'
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: bench-results.txt
+          key: bench-baseline-main-${{ github.sha }}

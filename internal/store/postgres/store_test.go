@@ -36,7 +36,7 @@ func TestPostgresConformance(t *testing.T) {
 
 	conformance.Run(t, func(t *testing.T) store.Interface {
 		// Clean all data between tests.
-		pool.Exec(ctx, "TRUNCATE work_item_history, work_items, worker_leases, queue_state")
+		pool.Exec(ctx, "TRUNCATE work_item_history, claim_queue, work_items, worker_leases, queue_state")
 
 		if err := s.EnsureQueue(ctx, "test", store.QueueConfig{
 			MaxConcurrency: 10,

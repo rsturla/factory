@@ -28,7 +28,7 @@ func connectForMigrationTest(t *testing.T) (*pgxpool.Pool, *postgres.Store) {
 	}
 
 	// Clean slate.
-	pool.Exec(ctx, "DROP TABLE IF EXISTS schema_migrations, work_item_history, work_items, worker_leases, queue_state CASCADE")
+	pool.Exec(ctx, "DROP TABLE IF EXISTS schema_migrations, work_item_history, claim_queue, work_items, worker_leases, queue_state CASCADE")
 
 	s := postgres.New(pool)
 	return pool, s
@@ -48,7 +48,7 @@ func TestMigration_AppliesAll(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query schema_migrations: %v", err)
 	}
-	if count != 3 {
+	if count != 5 {
 		t.Errorf("expected 2 migrations applied, got %d", count)
 	}
 }
@@ -68,7 +68,7 @@ func TestMigration_Idempotent(t *testing.T) {
 
 	var count int
 	pool.QueryRow(ctx, "SELECT COUNT(*) FROM schema_migrations").Scan(&count)
-	if count != 3 {
+	if count != 5 {
 		t.Errorf("expected 2 migrations after double run, got %d", count)
 	}
 }
@@ -95,6 +95,8 @@ func TestMigration_TracksVersionsInOrder(t *testing.T) {
 		{1, "001_initial.sql"},
 		{2, "002_add_completed_index.sql"},
 		{3, "003_add_queue_paused.sql"},
+		{4, "004_queue_performance_tuning.sql"},
+		{5, "005_claim_queue.sql"},
 	}
 
 	i := 0
@@ -127,7 +129,7 @@ func TestMigration_TablesCreated(t *testing.T) {
 
 	for _, table := range []string{
 		"work_items", "work_item_history", "worker_leases",
-		"queue_state", "schema_migrations",
+		"queue_state", "schema_migrations", "claim_queue",
 	} {
 		var exists bool
 		pool.QueryRow(ctx,
@@ -149,10 +151,8 @@ func TestMigration_IndexesCreated(t *testing.T) {
 	}
 
 	for _, idx := range []string{
-		"idx_work_items_claimable",
-		"idx_work_items_queue_status",
+		"idx_claim_queue_dispatch",
 		"idx_history_queue_key",
-		"idx_work_items_completed_at",
 	} {
 		var exists bool
 		pool.QueryRow(ctx,
