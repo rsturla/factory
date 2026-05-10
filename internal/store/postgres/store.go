@@ -254,6 +254,7 @@ func (s *Store) ClaimBatch(ctx context.Context, queue string, batchSize int, wor
 	}
 	limit := min(batchSize, remaining)
 
+	// Single statement: claim items, insert leases, update counter, record history.
 	rows, err := tx.Query(ctx, `
 		WITH claimed_keys AS (
 			DELETE FROM claim_queue
@@ -266,18 +267,36 @@ func (s *Store) ClaimBatch(ctx context.Context, queue string, batchSize int, wor
 				LIMIT $4
 			)
 			RETURNING key
+		),
+		claimed AS (
+			UPDATE work_items
+			SET status = 'claimed',
+				worker_id = $1,
+				lease_expires = now() + $2::interval,
+				attempts = attempts + 1,
+				claimed_at = now(),
+				updated_at = now()
+			WHERE queue = $3 AND key IN (SELECT key FROM claimed_keys)
+			RETURNING queue, key, status, priority, attempts, max_attempts,
+				not_before, lease_expires, worker_id, error_message,
+				created_at, updated_at, claimed_at, completed_at
+		),
+		insert_leases AS (
+			INSERT INTO active_leases (queue, key, worker_id, lease_expires)
+			SELECT queue, key, worker_id, lease_expires FROM claimed
+		),
+		update_counter AS (
+			UPDATE queue_state SET in_progress = in_progress + (SELECT count(*) FROM claimed)
+			WHERE queue = $3
+		),
+		insert_history AS (
+			INSERT INTO work_item_history (queue, key, from_status, to_status, worker_id, attempt)
+			SELECT queue, key, 'pending', 'claimed', worker_id, attempts FROM claimed
 		)
-		UPDATE work_items
-		SET status = 'claimed',
-			worker_id = $1,
-			lease_expires = now() + $2::interval,
-			attempts = attempts + 1,
-			claimed_at = now(),
-			updated_at = now()
-		WHERE queue = $3 AND key IN (SELECT key FROM claimed_keys)
-		RETURNING queue, key, status, priority, attempts, max_attempts,
+		SELECT queue, key, status, priority, attempts, max_attempts,
 			not_before, lease_expires, worker_id, error_message,
 			created_at, updated_at, claimed_at, completed_at
+		FROM claimed
 	`, workerID, leaseDuration.String(), queue, limit)
 	if err != nil {
 		return nil, fmt.Errorf("claim query: %w", err)
@@ -310,44 +329,6 @@ func (s *Store) ClaimBatch(ctx context.Context, queue string, batchSize int, wor
 		return items[i].Key < items[j].Key
 	})
 
-	_, err = tx.Exec(ctx, `
-		UPDATE queue_state SET in_progress = in_progress + $1 WHERE queue = $2
-	`, len(items), queue)
-	if err != nil {
-		return nil, fmt.Errorf("update in_progress: %w", err)
-	}
-
-	claimedKeys := make([]string, len(items))
-	for i, item := range items {
-		claimedKeys[i] = item.Key
-	}
-	_, err = tx.Exec(ctx, `
-		INSERT INTO active_leases (queue, key, worker_id, lease_expires)
-		SELECT queue, key, worker_id, lease_expires FROM work_items
-		WHERE queue = $1 AND key = ANY($2::text[])
-	`, queue, claimedKeys)
-	if err != nil {
-		return nil, fmt.Errorf("insert active_leases: %w", err)
-	}
-
-	histQueues := make([]string, len(items))
-	histKeys := make([]string, len(items))
-	histWorkers := make([]string, len(items))
-	histAttempts := make([]int, len(items))
-	for i, item := range items {
-		histQueues[i] = item.Queue
-		histKeys[i] = item.Key
-		histWorkers[i] = workerID
-		histAttempts[i] = item.Attempts
-	}
-	_, err = tx.Exec(ctx, `
-		INSERT INTO work_item_history (queue, key, from_status, to_status, worker_id, attempt)
-		SELECT unnest($1::text[]), unnest($2::text[]), 'pending', 'claimed', unnest($3::text[]), unnest($4::int[])
-	`, histQueues, histKeys, histWorkers, histAttempts)
-	if err != nil {
-		return nil, fmt.Errorf("record history: %w", err)
-	}
-
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit: %w", err)
 	}
@@ -355,20 +336,29 @@ func (s *Store) ClaimBatch(ctx context.Context, queue string, batchSize int, wor
 }
 
 func (s *Store) Complete(ctx context.Context, queue, key string) error {
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
-	}
-	defer tx.Rollback(ctx)
-
-	tag, err := tx.Exec(ctx, `
-		UPDATE work_items
-		SET status = 'succeeded',
-			completed_at = now(),
-			updated_at = now(),
-			lease_expires = NULL
-		WHERE queue = $1 AND key = $2
-		  AND status IN ('claimed', 'running')
+	tag, err := s.pool.Exec(ctx, `
+		WITH completed AS (
+			UPDATE work_items
+			SET status = 'succeeded',
+				completed_at = now(),
+				updated_at = now(),
+				lease_expires = NULL
+			WHERE queue = $1 AND key = $2
+			  AND status IN ('claimed', 'running')
+			RETURNING queue, key
+		),
+		delete_lease AS (
+			DELETE FROM active_leases
+			WHERE queue = $1 AND key = $2
+			  AND EXISTS (SELECT 1 FROM completed)
+		),
+		decrement AS (
+			UPDATE queue_state SET in_progress = GREATEST(in_progress - 1, 0)
+			WHERE queue = $1
+			  AND EXISTS (SELECT 1 FROM completed)
+		)
+		INSERT INTO work_item_history (queue, key, from_status, to_status)
+		SELECT queue, key, 'running', 'succeeded' FROM completed
 	`, queue, key)
 	if err != nil {
 		return fmt.Errorf("complete: %w", err)
@@ -376,48 +366,32 @@ func (s *Store) Complete(ctx context.Context, queue, key string) error {
 	if tag.RowsAffected() == 0 {
 		return store.ErrNotFound
 	}
-
-	_, err = tx.Exec(ctx, `
-		DELETE FROM active_leases WHERE queue = $1 AND key = $2
-	`, queue, key)
-	if err != nil {
-		return fmt.Errorf("delete active_lease: %w", err)
-	}
-
-	_, err = tx.Exec(ctx, `
-		UPDATE queue_state SET in_progress = GREATEST(in_progress - 1, 0) WHERE queue = $1
-	`, queue)
-	if err != nil {
-		return fmt.Errorf("decrement in_progress: %w", err)
-	}
-
-	_, err = tx.Exec(ctx, `
-		INSERT INTO work_item_history (queue, key, from_status, to_status)
-		VALUES ($1, $2, 'running', 'succeeded')
-	`, queue, key)
-	if err != nil {
-		return fmt.Errorf("record history: %w", err)
-	}
-
-	return tx.Commit(ctx)
+	return nil
 }
 
 func (s *Store) Fail(ctx context.Context, queue, key string, errMsg string) error {
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
-	}
-	defer tx.Rollback(ctx)
-
-	tag, err := tx.Exec(ctx, `
-		UPDATE work_items
-		SET status = 'failed',
-			error_message = NULLIF($3, ''),
-			completed_at = now(),
-			updated_at = now(),
-			lease_expires = NULL
-		WHERE queue = $1 AND key = $2
-		  AND status IN ('claimed', 'running')
+	// No in_progress decrement — Fail() is always followed by Requeue() or
+	// Deadletter(), which handle the decrement. Decrementing in both places
+	// would double-decrement the counter.
+	tag, err := s.pool.Exec(ctx, `
+		WITH failed AS (
+			UPDATE work_items
+			SET status = 'failed',
+				error_message = NULLIF($3, ''),
+				completed_at = now(),
+				updated_at = now(),
+				lease_expires = NULL
+			WHERE queue = $1 AND key = $2
+			  AND status IN ('claimed', 'running')
+			RETURNING queue, key
+		),
+		delete_lease AS (
+			DELETE FROM active_leases
+			WHERE queue = $1 AND key = $2
+			  AND EXISTS (SELECT 1 FROM failed)
+		)
+		INSERT INTO work_item_history (queue, key, from_status, to_status, error_message)
+		SELECT queue, key, 'running', 'failed', NULLIF($3, '') FROM failed
 	`, queue, key, errMsg)
 	if err != nil {
 		return fmt.Errorf("fail: %w", err)
@@ -425,50 +399,44 @@ func (s *Store) Fail(ctx context.Context, queue, key string, errMsg string) erro
 	if tag.RowsAffected() == 0 {
 		return store.ErrNotFound
 	}
-
-	_, err = tx.Exec(ctx, `
-		DELETE FROM active_leases WHERE queue = $1 AND key = $2
-	`, queue, key)
-	if err != nil {
-		return fmt.Errorf("delete active_lease: %w", err)
-	}
-
-	// Do NOT decrement in_progress here. Fail() is always followed by
-	// Requeue() or Deadletter(), which handle the decrement. Decrementing
-	// in both places would double-decrement the counter.
-
-	_, err = tx.Exec(ctx, `
-		INSERT INTO work_item_history (queue, key, from_status, to_status, error_message)
-		VALUES ($1, $2, 'running', 'failed', NULLIF($3, ''))
-	`, queue, key, errMsg)
-	if err != nil {
-		return fmt.Errorf("record history: %w", err)
-	}
-
-	return tx.Commit(ctx)
+	return nil
 }
 
 func (s *Store) Requeue(ctx context.Context, queue, key string, opts ...store.RequeueOption) error {
 	o := store.ApplyRequeueOptions(opts)
 
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
-	}
-	defer tx.Rollback(ctx)
-
-	tag, err := tx.Exec(ctx, `
-		UPDATE work_items
-		SET status = 'pending',
-			not_before = $3,
-			worker_id = NULL,
-			lease_expires = NULL,
-			error_message = NULL,
-			updated_at = now(),
-			claimed_at = NULL,
-			completed_at = NULL
-		WHERE queue = $1 AND key = $2
-		  AND status IN ('claimed', 'running', 'failed')
+	tag, err := s.pool.Exec(ctx, `
+		WITH requeued AS (
+			UPDATE work_items
+			SET status = 'pending',
+				not_before = $3,
+				worker_id = NULL,
+				lease_expires = NULL,
+				error_message = NULL,
+				updated_at = now(),
+				claimed_at = NULL,
+				completed_at = NULL
+			WHERE queue = $1 AND key = $2
+			  AND status IN ('claimed', 'running', 'failed')
+			RETURNING queue, key, priority, not_before, created_at
+		),
+		delete_lease AS (
+			DELETE FROM active_leases
+			WHERE queue = $1 AND key = $2
+			  AND EXISTS (SELECT 1 FROM requeued)
+		),
+		decrement AS (
+			UPDATE queue_state SET in_progress = GREATEST(in_progress - 1, 0)
+			WHERE queue = $1
+			  AND EXISTS (SELECT 1 FROM requeued)
+		),
+		insert_claim AS (
+			INSERT INTO claim_queue (queue, key, priority, not_before, created_at)
+			SELECT queue, key, priority, not_before, created_at FROM requeued
+			ON CONFLICT (queue, key) DO NOTHING
+		)
+		INSERT INTO work_item_history (queue, key, from_status, to_status)
+		SELECT queue, key, 'running', 'pending' FROM requeued
 	`, queue, key, o.NotBefore)
 	if err != nil {
 		return fmt.Errorf("requeue: %w", err)
@@ -476,62 +444,43 @@ func (s *Store) Requeue(ctx context.Context, queue, key string, opts ...store.Re
 	if tag.RowsAffected() == 0 {
 		return store.ErrNotFound
 	}
-
-	_, err = tx.Exec(ctx, `
-		DELETE FROM active_leases WHERE queue = $1 AND key = $2
-	`, queue, key)
-	if err != nil {
-		return fmt.Errorf("delete active_lease: %w", err)
-	}
-
-	_, err = tx.Exec(ctx, `
-		UPDATE queue_state SET in_progress = GREATEST(in_progress - 1, 0) WHERE queue = $1
-	`, queue)
-	if err != nil {
-		return fmt.Errorf("decrement in_progress: %w", err)
-	}
-
-	_, err = tx.Exec(ctx, `
-		INSERT INTO claim_queue (queue, key, priority, not_before, created_at)
-		SELECT queue, key, priority, not_before, created_at
-		FROM work_items WHERE queue = $1 AND key = $2
-		ON CONFLICT (queue, key) DO NOTHING
-	`, queue, key)
-	if err != nil {
-		return fmt.Errorf("insert claim_queue: %w", err)
-	}
-
-	_, err = tx.Exec(ctx, `
-		INSERT INTO work_item_history (queue, key, from_status, to_status)
-		VALUES ($1, $2, 'running', 'pending')
-	`, queue, key)
-	if err != nil {
-		return fmt.Errorf("record history: %w", err)
-	}
-
-	return tx.Commit(ctx)
+	return nil
 }
 
 func (s *Store) RequeueUndoAttempt(ctx context.Context, queue, key string, notBefore time.Time) error {
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
-	}
-	defer tx.Rollback(ctx)
-
-	tag, err := tx.Exec(ctx, `
-		UPDATE work_items
-		SET status = 'pending',
-			attempts = GREATEST(attempts - 1, 0),
-			not_before = $3,
-			worker_id = NULL,
-			lease_expires = NULL,
-			error_message = NULL,
-			updated_at = now(),
-			claimed_at = NULL,
-			completed_at = NULL
-		WHERE queue = $1 AND key = $2
-		  AND status IN ('claimed', 'running')
+	tag, err := s.pool.Exec(ctx, `
+		WITH requeued AS (
+			UPDATE work_items
+			SET status = 'pending',
+				attempts = GREATEST(attempts - 1, 0),
+				not_before = $3,
+				worker_id = NULL,
+				lease_expires = NULL,
+				error_message = NULL,
+				updated_at = now(),
+				claimed_at = NULL,
+				completed_at = NULL
+			WHERE queue = $1 AND key = $2
+			  AND status IN ('claimed', 'running')
+			RETURNING queue, key, priority, not_before, created_at
+		),
+		delete_lease AS (
+			DELETE FROM active_leases
+			WHERE queue = $1 AND key = $2
+			  AND EXISTS (SELECT 1 FROM requeued)
+		),
+		decrement AS (
+			UPDATE queue_state SET in_progress = GREATEST(in_progress - 1, 0)
+			WHERE queue = $1
+			  AND EXISTS (SELECT 1 FROM requeued)
+		),
+		insert_claim AS (
+			INSERT INTO claim_queue (queue, key, priority, not_before, created_at)
+			SELECT queue, key, priority, not_before, created_at FROM requeued
+			ON CONFLICT (queue, key) DO UPDATE SET not_before = EXCLUDED.not_before
+		)
+		INSERT INTO work_item_history (queue, key, from_status, to_status)
+		SELECT queue, key, 'claimed', 'pending' FROM requeued
 	`, queue, key, notBefore)
 	if err != nil {
 		return fmt.Errorf("requeue undo: %w", err)
@@ -539,57 +488,33 @@ func (s *Store) RequeueUndoAttempt(ctx context.Context, queue, key string, notBe
 	if tag.RowsAffected() == 0 {
 		return store.ErrNotFound
 	}
-
-	_, err = tx.Exec(ctx, `
-		DELETE FROM active_leases WHERE queue = $1 AND key = $2
-	`, queue, key)
-	if err != nil {
-		return fmt.Errorf("delete active_lease: %w", err)
-	}
-
-	_, err = tx.Exec(ctx, `
-		UPDATE queue_state SET in_progress = GREATEST(in_progress - 1, 0) WHERE queue = $1
-	`, queue)
-	if err != nil {
-		return fmt.Errorf("decrement in_progress: %w", err)
-	}
-
-	_, err = tx.Exec(ctx, `
-		INSERT INTO claim_queue (queue, key, priority, not_before, created_at)
-		SELECT queue, key, priority, not_before, created_at
-		FROM work_items WHERE queue = $1 AND key = $2
-		ON CONFLICT (queue, key) DO UPDATE SET not_before = EXCLUDED.not_before
-	`, queue, key)
-	if err != nil {
-		return fmt.Errorf("insert claim_queue: %w", err)
-	}
-
-	_, err = tx.Exec(ctx, `
-		INSERT INTO work_item_history (queue, key, from_status, to_status)
-		VALUES ($1, $2, 'claimed', 'pending')
-	`, queue, key)
-	if err != nil {
-		return fmt.Errorf("record history: %w", err)
-	}
-
-	return tx.Commit(ctx)
+	return nil
 }
 
 func (s *Store) Deadletter(ctx context.Context, queue, key string) error {
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
-	}
-	defer tx.Rollback(ctx)
-
-	tag, err := tx.Exec(ctx, `
-		UPDATE work_items
-		SET status = 'dead_letter',
-			completed_at = now(),
-			updated_at = now(),
-			lease_expires = NULL
-		WHERE queue = $1 AND key = $2
-		  AND status IN ('claimed', 'running', 'failed')
+	tag, err := s.pool.Exec(ctx, `
+		WITH dead AS (
+			UPDATE work_items
+			SET status = 'dead_letter',
+				completed_at = now(),
+				updated_at = now(),
+				lease_expires = NULL
+			WHERE queue = $1 AND key = $2
+			  AND status IN ('claimed', 'running', 'failed')
+			RETURNING queue, key
+		),
+		delete_lease AS (
+			DELETE FROM active_leases
+			WHERE queue = $1 AND key = $2
+			  AND EXISTS (SELECT 1 FROM dead)
+		),
+		decrement AS (
+			UPDATE queue_state SET in_progress = GREATEST(in_progress - 1, 0)
+			WHERE queue = $1
+			  AND EXISTS (SELECT 1 FROM dead)
+		)
+		INSERT INTO work_item_history (queue, key, from_status, to_status)
+		SELECT queue, key, 'failed', 'dead_letter' FROM dead
 	`, queue, key)
 	if err != nil {
 		return fmt.Errorf("deadletter: %w", err)
@@ -597,30 +522,7 @@ func (s *Store) Deadletter(ctx context.Context, queue, key string) error {
 	if tag.RowsAffected() == 0 {
 		return store.ErrNotFound
 	}
-
-	_, err = tx.Exec(ctx, `
-		DELETE FROM active_leases WHERE queue = $1 AND key = $2
-	`, queue, key)
-	if err != nil {
-		return fmt.Errorf("delete active_lease: %w", err)
-	}
-
-	_, err = tx.Exec(ctx, `
-		UPDATE queue_state SET in_progress = GREATEST(in_progress - 1, 0) WHERE queue = $1
-	`, queue)
-	if err != nil {
-		return fmt.Errorf("decrement in_progress: %w", err)
-	}
-
-	_, err = tx.Exec(ctx, `
-		INSERT INTO work_item_history (queue, key, from_status, to_status)
-		VALUES ($1, $2, 'failed', 'dead_letter')
-	`, queue, key)
-	if err != nil {
-		return fmt.Errorf("record history: %w", err)
-	}
-
-	return tx.Commit(ctx)
+	return nil
 }
 
 func (s *Store) ExtendLease(ctx context.Context, queue, key string, duration time.Duration) error {
