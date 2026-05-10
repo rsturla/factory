@@ -80,8 +80,12 @@ func RequeueAfter(d time.Duration) ProcessResponse {
 }
 
 // FanOut returns a response that completes the current item and enqueues
-// the given keys into the same queue.
+// the given keys into the same queue. If no keys are provided, it returns
+// a completed response instead of an empty fan-out.
 func FanOut(keys ...string) ProcessResponse {
+	if len(keys) == 0 {
+		return ProcessResponse{Action: ActionCompleted}
+	}
 	return ProcessResponse{
 		Action:     ActionFanOut,
 		FanOutKeys: keys,

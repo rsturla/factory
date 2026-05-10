@@ -20,8 +20,8 @@ func TestMigration_AppliesAll(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query schema_migrations: %v", err)
 	}
-	if count != 4 {
-		t.Errorf("expected 4 migrations applied, got %d", count)
+	if count != 5 {
+		t.Errorf("expected 5 migrations applied, got %d", count)
 	}
 }
 
@@ -55,8 +55,8 @@ func TestMigration_Idempotent(t *testing.T) {
 
 	var count int
 	s2.DB().QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&count)
-	if count != 4 {
-		t.Errorf("expected 4 migrations after reopen, got %d", count)
+	if count != 5 {
+		t.Errorf("expected 5 migrations after reopen, got %d", count)
 	}
 }
 
@@ -80,6 +80,7 @@ func TestMigration_TracksVersionsInOrder(t *testing.T) {
 		{2, "002_add_completed_index.sql"},
 		{3, "003_add_queue_paused.sql"},
 		{4, "004_leader_election.sql"},
+		{5, "005_active_leases.sql"},
 	}
 
 	i := 0
@@ -109,7 +110,7 @@ func TestMigration_TablesCreated(t *testing.T) {
 
 	for _, table := range []string{
 		"work_items", "work_item_history", "worker_leases",
-		"queue_state", "schema_migrations",
+		"queue_state", "schema_migrations", "active_leases",
 	} {
 		var name string
 		err := s.DB().QueryRow(
@@ -134,6 +135,7 @@ func TestMigration_IndexesCreated(t *testing.T) {
 		"idx_work_items_queue_status",
 		"idx_history_queue_key",
 		"idx_work_items_completed_at",
+		"idx_active_leases_expiry",
 	} {
 		var name string
 		err := s.DB().QueryRow(

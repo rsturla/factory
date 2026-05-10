@@ -168,6 +168,9 @@ func (s *Store) Enqueue(ctx context.Context, queue, key string, priority int, op
 				updated_at = now()
 			WHERE work_items.status IN ('pending', 'succeeded', 'failed', 'dead_letter')
 			RETURNING queue, key, priority, not_before, created_at
+		),
+		lease_cleanup AS (
+			DELETE FROM active_leases WHERE queue = $1 AND key = $2
 		)
 		INSERT INTO claim_queue (queue, key, priority, not_before, created_at)
 		SELECT queue, key, priority, not_before, created_at FROM upserted
@@ -213,6 +216,9 @@ func (s *Store) EnqueueBatch(ctx context.Context, queue string, items []store.Ba
 				updated_at = now()
 			WHERE work_items.status IN ('pending', 'succeeded', 'failed', 'dead_letter')
 			RETURNING queue, key, priority, not_before, created_at
+		),
+		lease_cleanup AS (
+			DELETE FROM active_leases WHERE queue = $1 AND key = ANY($2::text[])
 		)
 		INSERT INTO claim_queue (queue, key, priority, not_before, created_at)
 		SELECT queue, key, priority, not_before, created_at FROM upserted
@@ -311,6 +317,19 @@ func (s *Store) ClaimBatch(ctx context.Context, queue string, batchSize int, wor
 		return nil, fmt.Errorf("update in_progress: %w", err)
 	}
 
+	claimedKeys := make([]string, len(items))
+	for i, item := range items {
+		claimedKeys[i] = item.Key
+	}
+	_, err = tx.Exec(ctx, `
+		INSERT INTO active_leases (queue, key, worker_id, lease_expires)
+		SELECT queue, key, worker_id, lease_expires FROM work_items
+		WHERE queue = $1 AND key = ANY($2::text[])
+	`, queue, claimedKeys)
+	if err != nil {
+		return nil, fmt.Errorf("insert active_leases: %w", err)
+	}
+
 	histQueues := make([]string, len(items))
 	histKeys := make([]string, len(items))
 	histWorkers := make([]string, len(items))
@@ -336,14 +355,6 @@ func (s *Store) ClaimBatch(ctx context.Context, queue string, batchSize int, wor
 }
 
 func (s *Store) Complete(ctx context.Context, queue, key string) error {
-	return s.completeWithStatus(ctx, queue, key, "succeeded", "")
-}
-
-func (s *Store) Fail(ctx context.Context, queue, key string, errMsg string) error {
-	return s.completeWithStatus(ctx, queue, key, "failed", errMsg)
-}
-
-func (s *Store) completeWithStatus(ctx context.Context, queue, key, status, errMsg string) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
@@ -352,19 +363,25 @@ func (s *Store) completeWithStatus(ctx context.Context, queue, key, status, errM
 
 	tag, err := tx.Exec(ctx, `
 		UPDATE work_items
-		SET status = $3,
-			error_message = NULLIF($4, ''),
+		SET status = 'succeeded',
 			completed_at = now(),
 			updated_at = now(),
 			lease_expires = NULL
 		WHERE queue = $1 AND key = $2
 		  AND status IN ('claimed', 'running')
-	`, queue, key, status, errMsg)
+	`, queue, key)
 	if err != nil {
 		return fmt.Errorf("complete: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return store.ErrNotFound
+	}
+
+	_, err = tx.Exec(ctx, `
+		DELETE FROM active_leases WHERE queue = $1 AND key = $2
+	`, queue, key)
+	if err != nil {
+		return fmt.Errorf("delete active_lease: %w", err)
 	}
 
 	_, err = tx.Exec(ctx, `
@@ -375,9 +392,55 @@ func (s *Store) completeWithStatus(ctx context.Context, queue, key, status, errM
 	}
 
 	_, err = tx.Exec(ctx, `
+		INSERT INTO work_item_history (queue, key, from_status, to_status)
+		VALUES ($1, $2, 'running', 'succeeded')
+	`, queue, key)
+	if err != nil {
+		return fmt.Errorf("record history: %w", err)
+	}
+
+	return tx.Commit(ctx)
+}
+
+func (s *Store) Fail(ctx context.Context, queue, key string, errMsg string) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	tag, err := tx.Exec(ctx, `
+		UPDATE work_items
+		SET status = 'failed',
+			error_message = NULLIF($3, ''),
+			completed_at = now(),
+			updated_at = now(),
+			lease_expires = NULL
+		WHERE queue = $1 AND key = $2
+		  AND status IN ('claimed', 'running')
+	`, queue, key, errMsg)
+	if err != nil {
+		return fmt.Errorf("fail: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return store.ErrNotFound
+	}
+
+	_, err = tx.Exec(ctx, `
+		DELETE FROM active_leases WHERE queue = $1 AND key = $2
+	`, queue, key)
+	if err != nil {
+		return fmt.Errorf("delete active_lease: %w", err)
+	}
+
+	// Do NOT decrement in_progress here. Fail() is always followed by
+	// Requeue() or Deadletter(), which handle the decrement. Decrementing
+	// in both places would double-decrement the counter.
+
+	_, err = tx.Exec(ctx, `
 		INSERT INTO work_item_history (queue, key, from_status, to_status, error_message)
-		VALUES ($1, $2, 'running', $3, NULLIF($4, ''))
-	`, queue, key, status, errMsg)
+		VALUES ($1, $2, 'running', 'failed', NULLIF($3, ''))
+	`, queue, key, errMsg)
 	if err != nil {
 		return fmt.Errorf("record history: %w", err)
 	}
@@ -412,6 +475,13 @@ func (s *Store) Requeue(ctx context.Context, queue, key string, opts ...store.Re
 	}
 	if tag.RowsAffected() == 0 {
 		return store.ErrNotFound
+	}
+
+	_, err = tx.Exec(ctx, `
+		DELETE FROM active_leases WHERE queue = $1 AND key = $2
+	`, queue, key)
+	if err != nil {
+		return fmt.Errorf("delete active_lease: %w", err)
 	}
 
 	_, err = tx.Exec(ctx, `
@@ -471,6 +541,13 @@ func (s *Store) RequeueUndoAttempt(ctx context.Context, queue, key string, notBe
 	}
 
 	_, err = tx.Exec(ctx, `
+		DELETE FROM active_leases WHERE queue = $1 AND key = $2
+	`, queue, key)
+	if err != nil {
+		return fmt.Errorf("delete active_lease: %w", err)
+	}
+
+	_, err = tx.Exec(ctx, `
 		UPDATE queue_state SET in_progress = GREATEST(in_progress - 1, 0) WHERE queue = $1
 	`, queue)
 	if err != nil {
@@ -522,6 +599,13 @@ func (s *Store) Deadletter(ctx context.Context, queue, key string) error {
 	}
 
 	_, err = tx.Exec(ctx, `
+		DELETE FROM active_leases WHERE queue = $1 AND key = $2
+	`, queue, key)
+	if err != nil {
+		return fmt.Errorf("delete active_lease: %w", err)
+	}
+
+	_, err = tx.Exec(ctx, `
 		UPDATE queue_state SET in_progress = GREATEST(in_progress - 1, 0) WHERE queue = $1
 	`, queue)
 	if err != nil {
@@ -553,11 +637,22 @@ func (s *Store) ExtendLease(ctx context.Context, queue, key string, duration tim
 	if tag.RowsAffected() == 0 {
 		return store.ErrNotFound
 	}
+
+	_, err = s.pool.Exec(ctx, `
+		UPDATE active_leases SET lease_expires = now() + $3::interval
+		WHERE queue = $1 AND key = $2
+	`, queue, key, duration.String())
+	if err != nil {
+		return fmt.Errorf("extend active_lease: %w", err)
+	}
 	return nil
 }
 
 func (s *Store) Transition(ctx context.Context, queue, key string, from, to store.Status, opts ...store.TransitionOption) error {
 	o := store.ApplyTransitionOptions(opts)
+	if !store.ValidTransition(from, to) {
+		return store.ErrInvalidTransition
+	}
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -778,6 +873,36 @@ func (s *Store) List(ctx context.Context, filter store.ListFilter) ([]store.Work
 	return items, rows.Err()
 }
 
+func (s *Store) ListExpiredLeases(ctx context.Context, queue string, limit int) ([]store.WorkItem, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT w.queue, w.key, w.status, w.priority, w.attempts, w.max_attempts,
+			w.not_before, w.lease_expires, w.worker_id, w.error_message,
+			w.created_at, w.updated_at, w.claimed_at, w.completed_at
+		FROM active_leases a
+		JOIN work_items w ON w.queue = a.queue AND w.key = a.key
+		WHERE a.queue = $1 AND a.lease_expires < now()
+		ORDER BY a.lease_expires ASC
+		LIMIT $2
+	`, queue, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list expired leases: %w", err)
+	}
+	defer rows.Close()
+
+	var items []store.WorkItem
+	for rows.Next() {
+		var item store.WorkItem
+		if err := scanWorkItem(rows, &item); err != nil {
+			return nil, fmt.Errorf("scan expired item: %w", err)
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
 func (s *Store) GetItem(ctx context.Context, queue, key string) (*store.WorkItem, error) {
 	row := s.pool.QueryRow(ctx, `
 		SELECT queue, key, status, priority, attempts, max_attempts,
@@ -822,24 +947,34 @@ func (s *Store) ListQueues(ctx context.Context) ([]store.QueueInfo, error) {
 		return nil, err
 	}
 
+	countRows, err := s.pool.Query(ctx, `
+		SELECT queue, status, COUNT(*)::int FROM work_items GROUP BY queue, status
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("count items: %w", err)
+	}
+	defer countRows.Close()
+
+	countMap := make(map[string]map[string]int)
+	for countRows.Next() {
+		var queue, status string
+		var count int
+		if err := countRows.Scan(&queue, &status, &count); err != nil {
+			return nil, fmt.Errorf("scan count: %w", err)
+		}
+		if countMap[queue] == nil {
+			countMap[queue] = make(map[string]int)
+		}
+		countMap[queue][status] = count
+	}
+	if err := countRows.Err(); err != nil {
+		return nil, err
+	}
+
 	for i := range queues {
-		countRows, err := s.pool.Query(ctx, `
-			SELECT status, COUNT(*)::int FROM work_items
-			WHERE queue = $1 GROUP BY status
-		`, queues[i].Name)
-		if err != nil {
-			return nil, fmt.Errorf("count items for %s: %w", queues[i].Name, err)
+		if counts, ok := countMap[queues[i].Name]; ok {
+			queues[i].Counts = counts
 		}
-		for countRows.Next() {
-			var status string
-			var count int
-			if err := countRows.Scan(&status, &count); err != nil {
-				countRows.Close()
-				return nil, err
-			}
-			queues[i].Counts[status] = count
-		}
-		countRows.Close()
 	}
 
 	return queues, nil
@@ -947,7 +1082,7 @@ func (s *Store) Subscribe(ctx context.Context, queue string) (<-chan store.Event
 		return nil, fmt.Errorf("acquire conn: %w", err)
 	}
 
-	channel := "work_item_" + queue
+	channel := pgx.Identifier{"work_item_" + queue}.Sanitize()
 	_, err = conn.Exec(ctx, "LISTEN "+channel)
 	if err != nil {
 		conn.Release()
@@ -996,6 +1131,12 @@ func (s *Store) TryLeader(ctx context.Context, queue, workerID string, ttl time.
 		return false, fmt.Errorf("try leader: %w", err)
 	}
 	return leaderID == workerID, nil
+}
+
+// --- Health ---
+
+func (s *Store) Ping(ctx context.Context) error {
+	return s.pool.Ping(ctx)
 }
 
 // --- Helpers ---

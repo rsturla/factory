@@ -32,12 +32,14 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+
+	"github.com/hummingbird-org/factory-workqueue/internal/envutil"
 )
 
 var apiEndpoint string
 
 func main() {
-	apiEndpoint = envOr("FACTORY_API", "http://localhost:8080")
+	apiEndpoint = envutil.Or("FACTORY_API", "http://localhost:8080")
 
 	if len(os.Args) < 2 {
 		usage()
@@ -335,13 +337,6 @@ func intOr(m map[string]any, key string, fallback int) int {
 		case int:
 			return n
 		}
-	}
-	return fallback
-}
-
-func envOr(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
 	}
 	return fallback
 }

@@ -232,24 +232,14 @@ func (s *Store) ClaimBatch(_ context.Context, queue string, batchSize int, worke
 func (s *Store) Complete(_ context.Context, queue, key string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.completeItem(queue, key, store.StatusSucceeded, "")
-}
 
-func (s *Store) Fail(_ context.Context, queue, key string, errMsg string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.completeItem(queue, key, store.StatusFailed, errMsg)
-}
-
-func (s *Store) completeItem(queue, key string, status store.Status, errMsg string) error {
 	ik := itemKey{queue, key}
 	item, ok := s.items[ik]
 	if !ok || (item.Status != store.StatusClaimed && item.Status != store.StatusRunning) {
 		return store.ErrNotFound
 	}
 
-	item.Status = status
-	item.ErrorMessage = errMsg
+	item.Status = store.StatusSucceeded
 	now := time.Now()
 	item.CompletedAt = &now
 	item.UpdatedAt = now
@@ -260,9 +250,37 @@ func (s *Store) completeItem(queue, key string, status store.Status, errMsg stri
 	}
 
 	s.addHistory(store.HistoryEntry{
-		Queue: queue, Key: key, FromStatus: "running", ToStatus: string(status), CreatedAt: now,
+		Queue: queue, Key: key, FromStatus: "running", ToStatus: "succeeded", CreatedAt: now,
 	})
-	s.emit(store.Event{Queue: queue, Key: key, Status: string(status), Priority: item.Priority})
+	s.emit(store.Event{Queue: queue, Key: key, Status: "succeeded", Priority: item.Priority})
+	return nil
+}
+
+func (s *Store) Fail(_ context.Context, queue, key string, errMsg string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	ik := itemKey{queue, key}
+	item, ok := s.items[ik]
+	if !ok || (item.Status != store.StatusClaimed && item.Status != store.StatusRunning) {
+		return store.ErrNotFound
+	}
+
+	item.Status = store.StatusFailed
+	item.ErrorMessage = errMsg
+	now := time.Now()
+	item.CompletedAt = &now
+	item.UpdatedAt = now
+	item.LeaseExpires = nil
+
+	// Do NOT decrement in_progress here. Fail() is always followed by
+	// Requeue() or Deadletter(), which handle the decrement. Decrementing
+	// in both places would double-decrement the counter.
+
+	s.addHistory(store.HistoryEntry{
+		Queue: queue, Key: key, FromStatus: "running", ToStatus: "failed", CreatedAt: now,
+	})
+	s.emit(store.Event{Queue: queue, Key: key, Status: "failed", Priority: item.Priority})
 	return nil
 }
 
@@ -372,6 +390,9 @@ func (s *Store) ExtendLease(_ context.Context, queue, key string, duration time.
 
 func (s *Store) Transition(_ context.Context, queue, key string, from, to store.Status, opts ...store.TransitionOption) error {
 	o := store.ApplyTransitionOptions(opts)
+	if !store.ValidTransition(from, to) {
+		return store.ErrInvalidTransition
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -394,7 +415,7 @@ func (s *Store) Transition(_ context.Context, queue, key string, from, to store.
 	item.UpdatedAt = time.Now()
 
 	s.addHistory(store.HistoryEntry{
-		Queue: queue, Key: key, FromStatus: string(from), ToStatus: string(to),
+		Queue: queue, Key: key, FromStatus: from, ToStatus: to,
 		WorkerID: o.WorkerID, CreatedAt: time.Now(),
 	})
 	s.emit(store.Event{Queue: queue, Key: key, Status: string(to), Priority: item.Priority})
@@ -506,6 +527,34 @@ func (s *Store) List(_ context.Context, filter store.ListFilter) ([]store.WorkIt
 		end = len(items)
 	}
 	return items[start:end], nil
+}
+
+func (s *Store) ListExpiredLeases(_ context.Context, queue string, limit int) ([]store.WorkItem, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	var expired []store.WorkItem
+	for ik, item := range s.items {
+		if ik.queue != queue {
+			continue
+		}
+		if item.Status != store.StatusClaimed && item.Status != store.StatusRunning {
+			continue
+		}
+		if item.LeaseExpires != nil && item.LeaseExpires.Before(now) {
+			expired = append(expired, *item)
+		}
+	}
+
+	sort.Slice(expired, func(i, j int) bool {
+		return expired[i].LeaseExpires.Before(*expired[j].LeaseExpires)
+	})
+
+	if limit > 0 && len(expired) > limit {
+		expired = expired[:limit]
+	}
+	return expired, nil
 }
 
 func (s *Store) GetItem(_ context.Context, queue, key string) (*store.WorkItem, error) {
@@ -659,6 +708,12 @@ func (s *Store) emit(event store.Event) {
 		default:
 		}
 	}
+}
+
+// --- Health ---
+
+func (s *Store) Ping(_ context.Context) error {
+	return nil
 }
 
 // Verify interface compliance.

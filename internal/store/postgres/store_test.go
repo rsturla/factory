@@ -13,7 +13,7 @@ import (
 )
 
 func TestPostgresConformance(t *testing.T) {
-	databaseURL := os.Getenv("DATABASE_URL")
+	databaseURL := os.Getenv("PG_DATABASE_URL")
 	if databaseURL == "" {
 		databaseURL = "postgres://factory:factory@localhost:5432/factory?sslmode=disable"
 	}

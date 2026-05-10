@@ -2,24 +2,28 @@
 //
 // Environment variables:
 //
-//	QUEUE_NAME            - The queue to dispatch (required)
-//	DISPATCH_MODE         - "push" (default) or "scale-only"
-//	RECONCILER_ENDPOINT   - Base URL of the reconciler service (required in push mode)
-//	STORE_BACKEND         - "postgres", "dynamodb", or "sqlite" (default: "postgres")
-//	DATABASE_URL          - PostgreSQL connection string (postgres backend)
-//	DDB_TABLE             - DynamoDB table name (dynamodb backend)
-//	S3_BUCKET             - S3 bucket for history (dynamodb backend)
-//	DDB_ENDPOINT          - DynamoDB endpoint (optional, for local dev)
-//	S3_ENDPOINT           - S3 endpoint (optional, for MinIO etc.)
-//	SQLITE_PATH           - SQLite database path (sqlite backend)
-//	WORKER_ID             - Unique identifier for this dispatcher (default: hostname)
-//	COMPUTE_BACKEND       - "noop", "kubernetes", "ec2" (default: "noop")
-//	LISTEN_ADDR           - HTTP listen address for health/metrics (default: ":8080")
-//	MAX_CONCURRENCY       - Maximum concurrent items (default: 10)
-//	MAX_RETRY             - Maximum retry attempts (default: 5)
-//	BATCH_SIZE            - Items to claim per dispatch cycle (default: 10)
-//	DISPATCH_INTERVAL     - Dispatch loop interval (default: 2s)
-//	LEASE_DURATION        - Lease duration for claimed items (default: 1h)
+//	FACTORY_QUEUE_NAME        - The queue to dispatch (required)
+//	DISPATCH_MODE             - "push" (default) or "scale-only"
+//	RECONCILER_ENDPOINT       - Base URL of the reconciler service (required in push mode)
+//	STORE_BACKEND             - "postgres", "dynamodb", or "sqlite" (default: "postgres")
+//	PG_DATABASE_URL           - PostgreSQL connection string (postgres backend)
+//	DDB_TABLE                 - DynamoDB table name (dynamodb backend)
+//	S3_BUCKET                 - S3 bucket for history (dynamodb backend)
+//	DDB_ENDPOINT              - DynamoDB endpoint (optional, for local dev)
+//	S3_ENDPOINT               - S3 endpoint (optional, for MinIO etc.)
+//	SQLITE_PATH               - SQLite database path (sqlite backend)
+//	FACTORY_WORKER_ID         - Unique identifier for this dispatcher (default: hostname)
+//	COMPUTE_BACKEND           - "noop", "kubernetes", "ec2" (default: "noop")
+//	RECONCILER_CA_CERT        - Path to PEM CA cert for reconciler TLS (optional)
+//	FACTORY_LISTEN_ADDR       - HTTP listen address for health/metrics (default: ":8080")
+//	DISPATCH_MAX_CONCURRENCY  - Maximum concurrent items (default: 10)
+//	DISPATCH_MAX_RETRY        - Maximum retry attempts (default: 5)
+//	DISPATCH_BATCH_SIZE       - Items to claim per dispatch cycle (default: 10)
+//	DISPATCH_INTERVAL         - Dispatch loop interval (default: 2s)
+//	DISPATCH_SWEEP_INTERVAL   - Sweep loop interval (default: 30s)
+//	DISPATCH_LEASE_DURATION   - Lease duration for claimed items (default: 1h)
+//	DISPATCH_LEADER_INTERVAL  - Leader election interval (default: 10s)
+//	DISPATCH_LEADER_TTL       - Leader TTL (default: 30s)
 package main
 
 import (
@@ -28,7 +32,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"syscall"
 	"time"
 
@@ -38,6 +41,9 @@ import (
 	computeec2 "github.com/hummingbird-org/factory-workqueue/internal/compute/ec2"
 	computek8s "github.com/hummingbird-org/factory-workqueue/internal/compute/kubernetes"
 	"github.com/hummingbird-org/factory-workqueue/internal/dispatcher"
+	"github.com/hummingbird-org/factory-workqueue/internal/envutil"
+	"github.com/hummingbird-org/factory-workqueue/internal/httputil"
+	"github.com/hummingbird-org/factory-workqueue/internal/logging"
 	"github.com/hummingbird-org/factory-workqueue/internal/metrics"
 	"github.com/hummingbird-org/factory-workqueue/internal/storeutil"
 	"github.com/hummingbird-org/factory-workqueue/internal/tracing"
@@ -45,22 +51,24 @@ import (
 )
 
 func main() {
-	queueName := requireEnv("QUEUE_NAME")
-	workerID := envOr("WORKER_ID", hostname())
-	listenAddr := envOr("LISTEN_ADDR", ":8080")
-	dispatchMode := dispatcher.Mode(envOr("DISPATCH_MODE", "push"))
+	logging.Init()
+
+	queueName := envutil.Require("FACTORY_QUEUE_NAME")
+	workerID := envutil.Or("FACTORY_WORKER_ID", hostname())
+	listenAddr := envutil.Or("FACTORY_LISTEN_ADDR", ":8080")
+	dispatchMode := dispatcher.Mode(envutil.Or("DISPATCH_MODE", "push"))
 
 	cfg := dispatcher.DefaultConfig(queueName)
 	cfg.WorkerID = workerID
 	cfg.Mode = dispatchMode
-	cfg.MaxConcurrency = envInt("MAX_CONCURRENCY", cfg.MaxConcurrency)
-	cfg.MaxRetry = envInt("MAX_RETRY", cfg.MaxRetry)
-	cfg.BatchSize = envInt("BATCH_SIZE", cfg.BatchSize)
-	cfg.DispatchInterval = envDuration("DISPATCH_INTERVAL", cfg.DispatchInterval)
-	cfg.SweepInterval = envDuration("SWEEP_INTERVAL", cfg.SweepInterval)
-	cfg.LeaseDuration = envDuration("LEASE_DURATION", cfg.LeaseDuration)
-	cfg.LeaderInterval = envDuration("LEADER_INTERVAL", cfg.LeaderInterval)
-	cfg.LeaderTTL = envDuration("LEADER_TTL", cfg.LeaderTTL)
+	cfg.MaxConcurrency = envutil.Int("DISPATCH_MAX_CONCURRENCY", cfg.MaxConcurrency)
+	cfg.MaxRetry = envutil.Int("DISPATCH_MAX_RETRY", cfg.MaxRetry)
+	cfg.BatchSize = envutil.Int("DISPATCH_BATCH_SIZE", cfg.BatchSize)
+	cfg.DispatchInterval = envutil.Duration("DISPATCH_INTERVAL", cfg.DispatchInterval)
+	cfg.SweepInterval = envutil.Duration("DISPATCH_SWEEP_INTERVAL", cfg.SweepInterval)
+	cfg.LeaseDuration = envutil.Duration("DISPATCH_LEASE_DURATION", cfg.LeaseDuration)
+	cfg.LeaderInterval = envutil.Duration("DISPATCH_LEADER_INTERVAL", cfg.LeaderInterval)
+	cfg.LeaderTTL = envutil.Duration("DISPATCH_LEADER_TTL", cfg.LeaderTTL)
 
 	// RECONCILER_ENDPOINT is only required in push mode.
 	reconcilerEndpoint := os.Getenv("RECONCILER_ENDPOINT")
@@ -84,17 +92,25 @@ func main() {
 		defer result.Pool.Close()
 	}
 
-	reconciler := client.NewReconcilerClient(reconcilerEndpoint)
+	var clientOpts []client.Option
+	if caCert := os.Getenv("RECONCILER_CA_CERT"); caCert != "" {
+		clientOpts = append(clientOpts, client.WithCACert(caCert))
+	}
+	reconciler, err := client.NewReconcilerClientE(reconcilerEndpoint, clientOpts...)
+	if err != nil {
+		slog.Error("failed to create reconciler client", "error", err)
+		os.Exit(1)
+	}
 
 	var cp compute.Provider
-	switch envOr("COMPUTE_BACKEND", "noop") {
+	switch envutil.Or("COMPUTE_BACKEND", "noop") {
 	case "noop":
 		cp = compute.NoopProvider{}
 	case "kubernetes":
 		var cpErr error
 		cp, cpErr = computek8s.New(computek8s.Config{
-			Namespace:        envOr("K8S_NAMESPACE", "factory"),
-			DeploymentPrefix: envOr("K8S_DEPLOYMENT_PREFIX", "factory"),
+			Namespace:        envutil.Or("K8S_NAMESPACE", "factory"),
+			DeploymentPrefix: envutil.Or("K8S_DEPLOYMENT_PREFIX", "factory"),
 			Kubeconfig:       os.Getenv("KUBECONFIG"),
 		})
 		if cpErr != nil {
@@ -104,7 +120,7 @@ func main() {
 	case "ec2":
 		var cpErr error
 		cp, cpErr = computeec2.New(ctx, computeec2.Config{
-			ASGPrefix: envOr("EC2_ASG_PREFIX", "factory"),
+			ASGPrefix: envutil.Or("EC2_ASG_PREFIX", "factory"),
 			Region:    os.Getenv("AWS_REGION"),
 		})
 		if cpErr != nil {
@@ -124,12 +140,23 @@ func main() {
 		w.Write([]byte("ok"))
 	})
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
+		if err := result.Store.Ping(r.Context()); err != nil {
+			http.Error(w, "store unhealthy", http.StatusServiceUnavailable)
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 	})
 	mux.Handle("GET /metrics", promhttp.Handler())
 
-	srv := &http.Server{Addr: listenAddr, Handler: mux}
+	srv := &http.Server{
+		Addr:              listenAddr,
+		Handler:           httputil.SecurityHeaders(mux),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 	go func() {
 		if err := srv.ListenAndServe(); err != http.ErrServerClosed {
 			slog.Error("health server error", "error", err)
@@ -144,46 +171,6 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	srv.Shutdown(shutdownCtx)
-}
-
-func requireEnv(key string) string {
-	v := os.Getenv(key)
-	if v == "" {
-		slog.Error("required environment variable not set", "key", key)
-		os.Exit(1)
-	}
-	return v
-}
-
-func envOr(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
-}
-
-func envInt(key string, fallback int) int {
-	v := os.Getenv(key)
-	if v == "" {
-		return fallback
-	}
-	n, err := strconv.Atoi(v)
-	if err != nil {
-		return fallback
-	}
-	return n
-}
-
-func envDuration(key string, fallback time.Duration) time.Duration {
-	v := os.Getenv(key)
-	if v == "" {
-		return fallback
-	}
-	d, err := time.ParseDuration(v)
-	if err != nil {
-		return fallback
-	}
-	return d
 }
 
 func hostname() string {

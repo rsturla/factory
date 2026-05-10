@@ -5,7 +5,10 @@ package storeutil
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
+	"strconv"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -32,11 +35,49 @@ func CreateFromEnv(ctx context.Context) (*Result, error) {
 
 	switch backend {
 	case "postgres":
-		databaseURL := os.Getenv("DATABASE_URL")
+		databaseURL := os.Getenv("PG_DATABASE_URL")
 		if databaseURL == "" {
-			return nil, fmt.Errorf("DATABASE_URL required for postgres backend")
+			return nil, fmt.Errorf("PG_DATABASE_URL required for postgres backend")
 		}
-		pool, err := pgxpool.New(ctx, databaseURL)
+		cfg, err := pgxpool.ParseConfig(databaseURL)
+		if err != nil {
+			return nil, fmt.Errorf("parse database URL: %w", err)
+		}
+		cfg.MaxConns = 20
+		cfg.MinConns = 2
+		cfg.MaxConnLifetime = 30 * time.Minute
+		cfg.MaxConnIdleTime = 5 * time.Minute
+		cfg.HealthCheckPeriod = 30 * time.Second
+
+		if v := os.Getenv("PG_MAX_CONNS"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil {
+				cfg.MaxConns = int32(n)
+			}
+		}
+		if v := os.Getenv("PG_MIN_CONNS"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil {
+				cfg.MinConns = int32(n)
+			}
+		}
+		if v := os.Getenv("PG_MAX_CONN_LIFETIME"); v != "" {
+			if d, err := time.ParseDuration(v); err == nil {
+				cfg.MaxConnLifetime = d
+			}
+		}
+		if v := os.Getenv("PG_HEALTH_CHECK_PERIOD"); v != "" {
+			if d, err := time.ParseDuration(v); err == nil {
+				cfg.HealthCheckPeriod = d
+			}
+		}
+
+		slog.Info("postgres pool configured",
+			"max_conns", cfg.MaxConns,
+			"min_conns", cfg.MinConns,
+			"max_conn_lifetime", cfg.MaxConnLifetime,
+			"health_check_period", cfg.HealthCheckPeriod,
+		)
+
+		pool, err := pgxpool.NewWithConfig(ctx, cfg)
 		if err != nil {
 			return nil, fmt.Errorf("connect to postgres: %w", err)
 		}

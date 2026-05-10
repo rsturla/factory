@@ -1,3 +1,4 @@
+# Development/testing only. Do not use these credentials in production.
 services:
   # DynamoDB+S3 backend — uses DynamoDB Local + rustfs for local development.
 
@@ -47,7 +48,7 @@ services:
     ports:
       - "8083:8083"
     environment:
-      QUEUE_NAME: echo
+      FACTORY_QUEUE_NAME: echo
       STORE_BACKEND: dynamodb
       DDB_TABLE: factory-echo
       DDB_ENDPOINT: http://dynamodb:8000
@@ -58,11 +59,11 @@ services:
       AWS_REGION: us-east-1
       RECONCILER_ENDPOINT: http://echo-reconciler:8082
       COMPUTE_BACKEND: noop
-      LISTEN_ADDR: ":8083"
-      MAX_CONCURRENCY: "5"
-      BATCH_SIZE: "5"
+      FACTORY_LISTEN_ADDR: ":8083"
+      DISPATCH_MAX_CONCURRENCY: "5"
+      DISPATCH_BATCH_SIZE: "5"
       DISPATCH_INTERVAL: 2s
-      LEASE_DURATION: 5m
+      DISPATCH_LEASE_DURATION: 5m
     depends_on:
       dynamodb:
         condition: service_healthy
@@ -80,7 +81,7 @@ services:
     ports:
       - "8081:8081"
     environment:
-      QUEUE_NAME: echo
+      FACTORY_QUEUE_NAME: echo
       STORE_BACKEND: dynamodb
       DDB_TABLE: factory-echo
       DDB_ENDPOINT: http://dynamodb:8000
@@ -89,7 +90,7 @@ services:
       AWS_ACCESS_KEY_ID: rustfsadmin
       AWS_SECRET_ACCESS_KEY: rustfsadmin
       AWS_REGION: us-east-1
-      LISTEN_ADDR: ":8081"
+      FACTORY_LISTEN_ADDR: ":8081"
     depends_on:
       dynamodb:
         condition: service_healthy
@@ -101,5 +102,5 @@ services:
       context: ..
       dockerfile: examples/echo-reconciler/Containerfile
     environment:
-      LISTEN_ADDR: ":8082"
+      FACTORY_LISTEN_ADDR: ":8082"
       PROCESS_DELAY: 2s

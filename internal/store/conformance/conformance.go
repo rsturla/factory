@@ -29,6 +29,7 @@ func Run(t *testing.T, setup func(t *testing.T) store.Interface) {
 	t.Run("Deadletter", func(t *testing.T) { testDeadletter(t, setup) })
 	t.Run("ExtendLease", func(t *testing.T) { testExtendLease(t, setup) })
 	t.Run("Transition", func(t *testing.T) { testTransition(t, setup) })
+	t.Run("TransitionInvalid", func(t *testing.T) { testTransitionInvalid(t, setup) })
 	t.Run("CountByStatus", func(t *testing.T) { testCountByStatus(t, setup) })
 	t.Run("List", func(t *testing.T) { testList(t, setup) })
 	t.Run("RepairCounter", func(t *testing.T) { testRepairCounter(t, setup) })
@@ -58,6 +59,10 @@ func Run(t *testing.T, setup func(t *testing.T) store.Interface) {
 	t.Run("EnqueueBatchReactivatesTerminal", func(t *testing.T) { testEnqueueBatchReactivatesTerminal(t, setup) })
 	t.Run("EnqueueBatchEmpty", func(t *testing.T) { testEnqueueBatchEmpty(t, setup) })
 	t.Run("EnqueueBatchLarge", func(t *testing.T) { testEnqueueBatchLarge(t, setup) })
+	t.Run("RequeueWithDelay", func(t *testing.T) { testRequeueWithDelay(t, setup) })
+	t.Run("CountByStatusFilter", func(t *testing.T) { testCountByStatusFilter(t, setup) })
+	t.Run("ListWithOffset", func(t *testing.T) { testListWithOffset(t, setup) })
+	t.Run("ListExpiredLeases", func(t *testing.T) { testListExpiredLeases(t, setup) })
 }
 
 func testEnqueue(t *testing.T, setup func(t *testing.T) store.Interface) {
@@ -245,6 +250,30 @@ func testTransition(t *testing.T, setup func(t *testing.T) store.Interface) {
 	err := s.Transition(ctx, "test", "key-1", store.StatusClaimed, store.StatusRunning)
 	if err != store.ErrConflict {
 		t.Fatalf("expected ErrConflict, got %v", err)
+	}
+}
+
+func testTransitionInvalid(t *testing.T, setup func(t *testing.T) store.Interface) {
+	ctx := context.Background()
+	s := setup(t)
+	s.Enqueue(ctx, "test", "key-1", 0)
+
+	// pending -> running is not valid (must go through claimed first).
+	err := s.Transition(ctx, "test", "key-1", store.StatusPending, store.StatusRunning)
+	if err != store.ErrInvalidTransition {
+		t.Errorf("expected ErrInvalidTransition for pending->running, got %v", err)
+	}
+
+	// pending -> succeeded is not valid.
+	err = s.Transition(ctx, "test", "key-1", store.StatusPending, store.StatusSucceeded)
+	if err != store.ErrInvalidTransition {
+		t.Errorf("expected ErrInvalidTransition for pending->succeeded, got %v", err)
+	}
+
+	// pending -> failed is valid (admin cancel).
+	err = s.Transition(ctx, "test", "key-1", store.StatusPending, store.StatusFailed)
+	if err != nil {
+		t.Errorf("pending->failed should be valid, got %v", err)
 	}
 }
 
@@ -825,13 +854,13 @@ func testTryLeaderExpireThenSteal(t *testing.T, setup func(t *testing.T) store.I
 	s := setup(t)
 
 	// Worker 1 acquires with a very short TTL.
-	ok, _ := s.TryLeader(ctx, "test", "dispatcher-1", 1*time.Millisecond)
+	ok, _ := s.TryLeader(ctx, "test", "dispatcher-1", 5*time.Millisecond)
 	if !ok {
 		t.Fatal("initial acquire failed")
 	}
 
 	// Wait for lease to expire.
-	time.Sleep(10 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 
 	// Worker 2 should now be able to acquire.
 	ok, err := s.TryLeader(ctx, "test", "dispatcher-2", 10*time.Second)
@@ -1023,5 +1052,103 @@ func testEnqueueBatchLarge(t *testing.T, setup func(t *testing.T) store.Interfac
 	counts, _ := s.CountByStatus(ctx, "test")
 	if counts[store.StatusPending] != 500 {
 		t.Fatalf("expected 500 pending, got %d", counts[store.StatusPending])
+	}
+}
+
+// testRequeueWithDelay verifies that Requeue with a future not_before
+// time prevents the item from being claimed until that time passes.
+func testRequeueWithDelay(t *testing.T, setup func(t *testing.T) store.Interface) {
+	ctx := context.Background()
+	s := setup(t)
+	s.Enqueue(ctx, "test", "key-1", 0)
+	items, _ := s.ClaimBatch(ctx, "test", 1, "w", time.Hour)
+	if len(items) == 0 {
+		t.Fatal("no items claimed")
+	}
+	s.Fail(ctx, "test", "key-1", "err")
+
+	notBefore := time.Now().Add(1 * time.Hour)
+	if err := s.Requeue(ctx, "test", "key-1", store.WithRequeueDelay(notBefore)); err != nil {
+		t.Fatalf("Requeue with delay: %v", err)
+	}
+
+	// Item should not be claimable (not_before is in the future).
+	claimed, _ := s.ClaimBatch(ctx, "test", 1, "w2", time.Hour)
+	if len(claimed) != 0 {
+		t.Error("item should not be claimable before not_before time")
+	}
+}
+
+// testCountByStatusFilter verifies that CountByStatus with a specific
+// status filter returns only that status.
+func testCountByStatusFilter(t *testing.T, setup func(t *testing.T) store.Interface) {
+	ctx := context.Background()
+	s := setup(t)
+	for i := range 5 {
+		s.Enqueue(ctx, "test", fmt.Sprintf("key-%d", i), 0)
+	}
+	s.ClaimBatch(ctx, "test", 2, "w", time.Hour)
+
+	// Count only pending.
+	counts, err := s.CountByStatus(ctx, "test", store.StatusPending)
+	if err != nil {
+		t.Fatalf("CountByStatus: %v", err)
+	}
+	if counts[store.StatusPending] != 3 {
+		t.Errorf("expected 3 pending, got %d", counts[store.StatusPending])
+	}
+	if _, ok := counts[store.StatusClaimed]; ok {
+		t.Error("should not include claimed when filtering for pending only")
+	}
+}
+
+// testListWithOffset verifies that List with an offset skips items.
+func testListWithOffset(t *testing.T, setup func(t *testing.T) store.Interface) {
+	ctx := context.Background()
+	s := setup(t)
+	for i := range 5 {
+		s.Enqueue(ctx, "test", fmt.Sprintf("key-%d", i), i)
+	}
+
+	items, _ := s.List(ctx, store.ListFilter{Queue: "test", Limit: 2, Offset: 2})
+	if len(items) != 2 {
+		t.Fatalf("expected 2 items with offset=2, got %d", len(items))
+	}
+}
+
+func testListExpiredLeases(t *testing.T, setup func(t *testing.T) store.Interface) {
+	ctx := context.Background()
+	s := setup(t)
+
+	// Enqueue and claim with very short lease.
+	s.Enqueue(ctx, "test", "exp-1", 0)
+	s.Enqueue(ctx, "test", "exp-2", 0)
+	s.Enqueue(ctx, "test", "fresh-1", 0)
+
+	items, _ := s.ClaimBatch(ctx, "test", 2, "w1", 1*time.Millisecond)
+	if len(items) != 2 {
+		t.Fatalf("expected 2 claimed, got %d", len(items))
+	}
+
+	// Claim the third with a long lease.
+	time.Sleep(5 * time.Millisecond) // Let first two expire.
+	items, _ = s.ClaimBatch(ctx, "test", 1, "w2", 1*time.Hour)
+	if len(items) != 1 {
+		t.Fatalf("expected 1 claimed, got %d", len(items))
+	}
+
+	// List expired — should return the first 2 but not the third.
+	expired, err := s.ListExpiredLeases(ctx, "test", 100)
+	if err != nil {
+		t.Fatalf("ListExpiredLeases: %v", err)
+	}
+	if len(expired) != 2 {
+		t.Errorf("expected 2 expired, got %d", len(expired))
+	}
+
+	// Empty queue should return empty.
+	expired, _ = s.ListExpiredLeases(ctx, "nonexistent", 100)
+	if len(expired) != 0 {
+		t.Errorf("expected 0 for nonexistent queue, got %d", len(expired))
 	}
 }

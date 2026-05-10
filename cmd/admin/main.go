@@ -2,16 +2,16 @@
 //
 // Environment variables:
 //
-//	STORE_BACKEND       - "postgres", "dynamodb", or "sqlite" (default: "postgres")
-//	DATABASE_URL        - PostgreSQL connection string (postgres backend)
-//	DDB_TABLE           - DynamoDB table name (dynamodb backend)
-//	S3_BUCKET           - S3 bucket for history (dynamodb backend)
-//	SQLITE_PATH         - SQLite database path (sqlite backend)
+//	STORE_BACKEND             - "postgres", "dynamodb", or "sqlite" (default: "postgres")
+//	PG_DATABASE_URL           - PostgreSQL connection string (postgres backend)
+//	DDB_TABLE                 - DynamoDB table name (dynamodb backend)
+//	S3_BUCKET                 - S3 bucket for history (dynamodb backend)
+//	SQLITE_PATH               - SQLite database path (sqlite backend)
 //	AUTHN_BACKEND             - "noop" or "openshift" (default: "noop")
 //	AUTHZ_BACKEND             - "noop", "cedar", or "opa" (default: "noop")
 //	AUTHZ_CEDAR_POLICY_PATH   - Cedar policy file or directory (cedar backend)
 //	AUTHZ_OPA_ENDPOINT        - OPA server URL (opa backend)
-//	LISTEN_ADDR         - HTTP listen address (default: ":8080")
+//	FACTORY_LISTEN_ADDR       - HTTP listen address (default: ":8080")
 package main
 
 import (
@@ -29,13 +29,18 @@ import (
 	"github.com/hummingbird-org/factory-workqueue/internal/authn"
 	"github.com/hummingbird-org/factory-workqueue/internal/authnutil"
 	"github.com/hummingbird-org/factory-workqueue/internal/authzutil"
+	"github.com/hummingbird-org/factory-workqueue/internal/envutil"
+	"github.com/hummingbird-org/factory-workqueue/internal/httputil"
+	"github.com/hummingbird-org/factory-workqueue/internal/logging"
 	"github.com/hummingbird-org/factory-workqueue/internal/metrics"
 	"github.com/hummingbird-org/factory-workqueue/internal/storeutil"
 	"github.com/hummingbird-org/factory-workqueue/internal/tracing"
 )
 
 func main() {
-	listenAddr := envOr("LISTEN_ADDR", ":8080")
+	logging.Init()
+
+	listenAddr := envutil.Or("FACTORY_LISTEN_ADDR", ":8080")
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
@@ -79,12 +84,23 @@ func main() {
 		w.Write([]byte("ok"))
 	})
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
+		if err := result.Store.Ping(r.Context()); err != nil {
+			http.Error(w, "store unhealthy", http.StatusServiceUnavailable)
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 	})
 	mux.Handle("GET /metrics", promhttp.Handler())
 
-	srv := &http.Server{Addr: listenAddr, Handler: mux}
+	srv := &http.Server{
+		Addr:              listenAddr,
+		Handler:           httputil.SecurityHeaders(mux),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -97,11 +113,4 @@ func main() {
 		slog.Error("server error", "error", err)
 		os.Exit(1)
 	}
-}
-
-func envOr(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
 }

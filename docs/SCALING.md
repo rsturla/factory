@@ -78,13 +78,13 @@ This scales up when pending items exceed 5 per pod, and scales down conservative
 | Parameter | Development | Production | Effect |
 |-----------|-------------|------------|--------|
 | `DISPATCH_INTERVAL` | 2s | 200ms | How often the dispatcher checks for work |
-| `BATCH_SIZE` | 5 | 100 | Items claimed per dispatch cycle |
-| `MAX_CONCURRENCY` | 5 | 500-2000 | Max items in-flight simultaneously |
-| `LEASE_DURATION` | 5m | 1h | How long before an uncompleted item is reclaimed |
+| `DISPATCH_BATCH_SIZE` | 5 | 100 | Items claimed per dispatch cycle |
+| `DISPATCH_MAX_CONCURRENCY` | 5 | 500-2000 | Max items in-flight simultaneously |
+| `DISPATCH_LEASE_DURATION` | 5m | 1h | How long before an uncompleted item is reclaimed |
 
-**`MAX_CONCURRENCY` is the most important setting.** It determines how many concurrent HTTP calls the dispatcher makes to the reconciler Service. Set it to the maximum number of reconciler pods you expect multiplied by the concurrency each pod can handle.
+**`DISPATCH_MAX_CONCURRENCY` is the most important setting.** It determines how many concurrent HTTP calls the dispatcher makes to the reconciler Service. Set it to the maximum number of reconciler pods you expect multiplied by the concurrency each pod can handle.
 
-Example: 100 reconciler pods, each handling 10 concurrent requests = `MAX_CONCURRENCY=1000`.
+Example: 100 reconciler pods, each handling 10 concurrent requests = `DISPATCH_MAX_CONCURRENCY=1000`.
 
 ### PostgreSQL tuning
 
@@ -162,7 +162,7 @@ To add a new work type, deploy a new 3-service stack (receiver + dispatcher + re
 
 Signs that you need to evolve:
 
-1. **Single dispatcher can't claim fast enough**: dispatch cycle takes >100ms consistently. Fix: reduce `DISPATCH_INTERVAL`, increase `BATCH_SIZE`, or split into sub-queues.
+1. **Single dispatcher can't claim fast enough**: dispatch cycle takes >100ms consistently. Fix: reduce `DISPATCH_INTERVAL`, increase `DISPATCH_BATCH_SIZE`, or split into sub-queues.
 
 2. **PostgreSQL write throughput saturated**: >5,000 txn/sec sustained. Fix: use CockroachDB (wire-compatible, auto-sharded) via the `store.Interface` abstraction.
 

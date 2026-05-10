@@ -10,7 +10,9 @@
 package wqapi
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -38,14 +40,14 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("POST /wq/enqueue-batch", h.withAuthz(authz.ActionEnqueue, h.enqueueBatch))
 
 	// Worker operations — used by standalone workers.
-	mux.Handle("POST /wq/claim", h.withAuthz(authz.ActionEnqueue, h.claim))
-	mux.Handle("POST /wq/complete", h.withAuthz(authz.ActionEnqueue, h.complete))
-	mux.Handle("POST /wq/fail", h.withAuthz(authz.ActionEnqueue, h.fail))
-	mux.Handle("POST /wq/heartbeat", h.withAuthz(authz.ActionEnqueue, h.heartbeat))
-	mux.Handle("POST /wq/transition", h.withAuthz(authz.ActionEnqueue, h.transition))
-	mux.Handle("POST /wq/requeue", h.withAuthz(authz.ActionEnqueue, h.requeue))
-	mux.Handle("POST /wq/requeue-undo", h.withAuthz(authz.ActionEnqueue, h.requeueUndo))
-	mux.Handle("POST /wq/deadletter", h.withAuthz(authz.ActionEnqueue, h.deadletter))
+	mux.Handle("POST /wq/claim", h.withAuthz(authz.ActionClaim, h.claim))
+	mux.Handle("POST /wq/complete", h.withAuthz(authz.ActionComplete, h.complete))
+	mux.Handle("POST /wq/fail", h.withAuthz(authz.ActionComplete, h.fail))
+	mux.Handle("POST /wq/heartbeat", h.withAuthz(authz.ActionComplete, h.heartbeat))
+	mux.Handle("POST /wq/transition", h.withAuthz(authz.ActionTransition, h.transition))
+	mux.Handle("POST /wq/requeue", h.withAuthz(authz.ActionRequeue, h.requeue))
+	mux.Handle("POST /wq/requeue-undo", h.withAuthz(authz.ActionRequeue, h.requeueUndo))
+	mux.Handle("POST /wq/deadletter", h.withAuthz(authz.ActionDeadletter, h.deadletter))
 
 	// Query operations.
 	mux.Handle("POST /wq/count", h.withAuthz(authz.ActionQueuesRead, h.count))
@@ -55,12 +57,13 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("POST /wq/list-workers", h.withAuthz(authz.ActionWorkersRead, h.listWorkers))
 	mux.Handle("POST /wq/get-history", h.withAuthz(authz.ActionItemsRead, h.getHistory))
 	mux.Handle("POST /wq/purge-dead-letters", h.withAuthz(authz.ActionDeadLetterPurge, h.purgeDeadLetters))
+	mux.Handle("POST /wq/list-expired-leases", h.withAuthz(authz.ActionQueuesRead, h.listExpiredLeases))
 
 	// Management operations.
-	mux.Handle("POST /wq/ensure-queue", h.withAuthz(authz.ActionEnqueue, h.ensureQueue))
-	mux.Handle("POST /wq/repair", h.withAuthz(authz.ActionEnqueue, h.repair))
-	mux.Handle("POST /wq/record-history", h.withAuthz(authz.ActionEnqueue, h.recordHistory))
-	mux.Handle("POST /wq/set-paused", h.withAuthz(authz.ActionItemsCancel, h.setPaused))
+	mux.Handle("POST /wq/ensure-queue", h.withAuthz(authz.ActionQueueAdmin, h.ensureQueue))
+	mux.Handle("POST /wq/repair", h.withAuthz(authz.ActionQueueAdmin, h.repair))
+	mux.Handle("POST /wq/record-history", h.withAuthz(authz.ActionQueueAdmin, h.recordHistory))
+	mux.Handle("POST /wq/set-paused", h.withAuthz(authz.ActionQueueAdmin, h.setPaused))
 	mux.Handle("POST /wq/is-paused", h.withAuthz(authz.ActionQueuesRead, h.isPaused))
 }
 
@@ -77,7 +80,7 @@ func (h *Handler) withAuthz(action authz.Action, handler http.HandlerFunc) http.
 			body, _ := readBody(r)
 			json.Unmarshal(body, &peek)
 			queue = peek.Queue
-			r.Body = newReadCloser(body)
+			r.Body = io.NopCloser(bytes.NewReader(body))
 		}
 		authz.Wrap(h.authz, action, queue, http.HandlerFunc(handler)).ServeHTTP(w, r)
 	})
@@ -375,6 +378,25 @@ func (h *Handler) purgeDeadLetters(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"count": count})
 }
 
+func (h *Handler) listExpiredLeases(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Queue string `json:"queue"`
+		Limit int    `json:"limit"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	items, err := h.store.ListExpiredLeases(r.Context(), req.Queue, req.Limit)
+	if err != nil {
+		serverError(w, err)
+		return
+	}
+	if items == nil {
+		items = []store.WorkItem{}
+	}
+	writeJSON(w, items)
+}
+
 func (h *Handler) ensureQueue(w http.ResponseWriter, r *http.Request) {
 	var req ensureQueueReq
 	if !decode(w, r, &req) {
@@ -455,42 +477,22 @@ func writeJSON(w http.ResponseWriter, v any) {
 }
 
 func serverError(w http.ResponseWriter, err error) {
+	if errors.Is(err, store.ErrNotFound) {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	if errors.Is(err, store.ErrConflict) {
+		http.Error(w, "conflict", http.StatusConflict)
+		return
+	}
+	if errors.Is(err, store.ErrInvalidTransition) {
+		http.Error(w, "invalid state transition", http.StatusBadRequest)
+		return
+	}
 	slog.Error("wqapi error", "error", err)
-	http.Error(w, err.Error(), http.StatusInternalServerError)
+	http.Error(w, "internal server error", http.StatusInternalServerError)
 }
 
 func readBody(r *http.Request) ([]byte, error) {
-	var buf [4096]byte
-	var result []byte
-	for {
-		n, err := r.Body.Read(buf[:])
-		result = append(result, buf[:n]...)
-		if err != nil {
-			break
-		}
-	}
-	return result, nil
+	return io.ReadAll(r.Body)
 }
-
-type readCloser struct {
-	data []byte
-	pos  int
-}
-
-func newReadCloser(data []byte) *readCloser {
-	return &readCloser{data: data}
-}
-
-func (r *readCloser) Read(p []byte) (int, error) {
-	if r.pos >= len(r.data) {
-		return 0, io.EOF
-	}
-	n := copy(p, r.data[r.pos:])
-	r.pos += n
-	if r.pos >= len(r.data) {
-		return n, io.EOF
-	}
-	return n, nil
-}
-
-func (r *readCloser) Close() error { return nil }

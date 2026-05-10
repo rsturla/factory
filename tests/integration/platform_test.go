@@ -822,3 +822,77 @@ func TestEndToEnd_PausedQueueDoesNotDispatch(t *testing.T) {
 		t.Errorf("expected 1 processed after resume, got %d", processed.Load())
 	}
 }
+
+// TestEndToEnd_FullHTTPPipeline verifies the complete flow through HTTP APIs:
+// 1. Enqueue via the wqapi HTTP endpoint (not direct store call)
+// 2. Dispatcher claims and dispatches to reconciler
+// 3. Reconciler processes and returns completed
+// 4. Verify item reaches succeeded status via HTTP query
+func TestEndToEnd_FullHTTPPipeline(t *testing.T) {
+	var processed sync.Map
+
+	p := newPlatform(t, func(req sdk.ProcessRequest) sdk.ProcessResponse {
+		processed.Store(req.Key, true)
+		return sdk.Completed()
+	})
+
+	// Use the workqueue HTTP client to enqueue via the wqapi endpoint
+	// (POST /wq/enqueue), just like a real receiver would.
+	wq := client.NewWorkqueueClient(p.receiver.URL)
+
+	// Enqueue three items via HTTP API with different priorities.
+	for _, item := range []struct {
+		key      string
+		priority int
+	}{
+		{"http-low", 0},
+		{"http-high", 100},
+		{"http-med", 50},
+	} {
+		err := wq.Enqueue(context.Background(), "test", item.key, item.priority)
+		if err != nil {
+			t.Fatalf("HTTP enqueue %s: %v", item.key, err)
+		}
+	}
+
+	// Verify items are visible via HTTP query before dispatch.
+	counts, err := wq.CountByStatus(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("CountByStatus: %v", err)
+	}
+	if counts[store.StatusPending] != 3 {
+		t.Fatalf("expected 3 pending after HTTP enqueue, got %d", counts[store.StatusPending])
+	}
+
+	// Run the dispatcher — it claims, dispatches to reconciler, and
+	// processes completion.
+	p.runFor(t, 1*time.Second)
+
+	// Verify all items reached succeeded via HTTP query.
+	counts, err = wq.CountByStatus(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("CountByStatus after dispatch: %v", err)
+	}
+	if counts[store.StatusSucceeded] != 3 {
+		t.Errorf("expected 3 succeeded, got %v", counts)
+	}
+
+	// Verify each item was processed by the reconciler.
+	for _, key := range []string{"http-low", "http-high", "http-med"} {
+		if _, ok := processed.Load(key); !ok {
+			t.Errorf("expected %s to be processed by reconciler", key)
+		}
+	}
+
+	// Verify individual item state via HTTP.
+	item, err := wq.GetItem(context.Background(), "test", "http-high")
+	if err != nil {
+		t.Fatalf("GetItem http-high: %v", err)
+	}
+	if item.Status != store.StatusSucceeded {
+		t.Errorf("expected http-high status succeeded, got %s", item.Status)
+	}
+	if item.Priority != 100 {
+		t.Errorf("expected http-high priority 100, got %d", item.Priority)
+	}
+}

@@ -12,7 +12,7 @@ import (
 
 func connectForMigrationTest(t *testing.T) (*pgxpool.Pool, *postgres.Store) {
 	t.Helper()
-	databaseURL := os.Getenv("DATABASE_URL")
+	databaseURL := os.Getenv("PG_DATABASE_URL")
 	if databaseURL == "" {
 		databaseURL = "postgres://factory:factory@localhost:5432/factory?sslmode=disable"
 	}
@@ -28,7 +28,7 @@ func connectForMigrationTest(t *testing.T) (*pgxpool.Pool, *postgres.Store) {
 	}
 
 	// Clean slate.
-	pool.Exec(ctx, "DROP TABLE IF EXISTS schema_migrations, work_item_history, claim_queue, work_items, worker_leases, queue_state CASCADE")
+	pool.Exec(ctx, "DROP TABLE IF EXISTS schema_migrations, work_item_history, claim_queue, active_leases, work_items, worker_leases, queue_state CASCADE")
 
 	s := postgres.New(pool)
 	return pool, s
@@ -48,8 +48,8 @@ func TestMigration_AppliesAll(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query schema_migrations: %v", err)
 	}
-	if count != 5 {
-		t.Errorf("expected 2 migrations applied, got %d", count)
+	if count != 6 {
+		t.Errorf("expected 6 migrations applied, got %d", count)
 	}
 }
 
@@ -68,8 +68,8 @@ func TestMigration_Idempotent(t *testing.T) {
 
 	var count int
 	pool.QueryRow(ctx, "SELECT COUNT(*) FROM schema_migrations").Scan(&count)
-	if count != 5 {
-		t.Errorf("expected 2 migrations after double run, got %d", count)
+	if count != 6 {
+		t.Errorf("expected 6 migrations after double run, got %d", count)
 	}
 }
 
@@ -97,6 +97,7 @@ func TestMigration_TracksVersionsInOrder(t *testing.T) {
 		{3, "003_add_queue_paused.sql"},
 		{4, "004_queue_performance_tuning.sql"},
 		{5, "005_claim_queue.sql"},
+		{6, "006_reaper_index.sql"},
 	}
 
 	i := 0
@@ -130,6 +131,7 @@ func TestMigration_TablesCreated(t *testing.T) {
 	for _, table := range []string{
 		"work_items", "work_item_history", "worker_leases",
 		"queue_state", "schema_migrations", "claim_queue",
+		"active_leases",
 	} {
 		var exists bool
 		pool.QueryRow(ctx,
@@ -153,6 +155,7 @@ func TestMigration_IndexesCreated(t *testing.T) {
 	for _, idx := range []string{
 		"idx_claim_queue_dispatch",
 		"idx_history_queue_key",
+		"idx_active_leases_expiry",
 	} {
 		var exists bool
 		pool.QueryRow(ctx,

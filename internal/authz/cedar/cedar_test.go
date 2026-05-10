@@ -60,6 +60,9 @@ func TestSREAllowedEverything(t *testing.T) {
 	for _, action := range []authz.Action{
 		authz.ActionQueuesRead, authz.ActionItemsRetry,
 		authz.ActionDeadLetterPurge, authz.ActionEnqueue,
+		authz.ActionClaim, authz.ActionComplete,
+		authz.ActionRequeue, authz.ActionDeadletter,
+		authz.ActionTransition, authz.ActionQueueAdmin,
 	} {
 		d := a.Authorize(ctx, authz.Request{
 			User: "alice", Groups: []string{"sre-team"}, Action: action, Queue: "any-queue",
@@ -129,6 +132,33 @@ func TestRPMTeamQueueScoped(t *testing.T) {
 	})
 	if !d.Allowed {
 		t.Errorf("rpm-team should be allowed to retry in rpm-update: %s", d.Reason)
+	}
+}
+
+func TestEnqueueOnlyDoesNotPermitClaim(t *testing.T) {
+	a := newAuthorizer(t)
+	ctx := context.Background()
+
+	// rpm-team has enqueue permission on rpm-update, but NOT claim.
+	d := a.Authorize(ctx, authz.Request{
+		User: "carol", Groups: []string{"rpm-team"}, Action: authz.ActionClaim, Queue: "rpm-update",
+	})
+	if d.Allowed {
+		t.Error("enqueue-only policy should NOT permit claim")
+	}
+
+	// Verify the other new actions are also denied.
+	for _, action := range []authz.Action{
+		authz.ActionComplete, authz.ActionRequeue,
+		authz.ActionDeadletter, authz.ActionTransition,
+		authz.ActionQueueAdmin,
+	} {
+		d := a.Authorize(ctx, authz.Request{
+			User: "carol", Groups: []string{"rpm-team"}, Action: action, Queue: "rpm-update",
+		})
+		if d.Allowed {
+			t.Errorf("enqueue-only policy should NOT permit %s", action)
+		}
 	}
 }
 

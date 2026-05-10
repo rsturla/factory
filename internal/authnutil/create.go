@@ -4,6 +4,7 @@ package authnutil
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 
 	"github.com/hummingbird-org/factory-workqueue/internal/authn"
@@ -24,6 +25,7 @@ func CreateFromEnv() (authn.Authenticator, error) {
 
 	switch backend {
 	case "noop":
+		slog.Warn("using noop authentication: all X-Forwarded-User headers are trusted without verification; set AUTHN_BACKEND for production")
 		return noop.Authenticator{}, nil
 
 	case "openshift":

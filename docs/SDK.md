@@ -203,7 +203,7 @@ Understanding how the dispatcher manages your item:
    - `requeue` -- item re-enqueued after the specified delay (no retry budget cost).
    - `fan_out` -- item marked done, child keys enqueued.
    - `error` -- item requeued with exponential backoff (consumes retry budget).
-5. **Dead-letter** -- after `MAX_RETRY` failures (default 5), the item is dead-lettered.
+5. **Dead-letter** -- after `DISPATCH_MAX_RETRY` failures (default 5), the item is dead-lettered.
 6. **Reaper** -- if a worker dies and the lease expires, the reaper reclaims the item.
 
 ## Tips

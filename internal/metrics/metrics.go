@@ -30,11 +30,11 @@ var (
 		Help:      "Total number of items reclaimed by the reaper (expired leases).",
 	}, []string{"queue"})
 
-	ItemsDeduped = prometheus.NewCounterVec(prometheus.CounterOpts{
+	StoreErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "factory",
-		Name:      "items_deduped_total",
-		Help:      "Total number of enqueue requests that hit an existing pending key.",
-	}, []string{"queue"})
+		Name:      "store_errors_total",
+		Help:      "Total store operation errors.",
+	}, []string{"queue", "operation"})
 
 	// Gauges
 
@@ -43,12 +43,6 @@ var (
 		Name:      "queue_depth",
 		Help:      "Current number of items in a queue by status.",
 	}, []string{"queue", "status"})
-
-	WorkerCount = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: "factory",
-		Name:      "worker_count",
-		Help:      "Number of registered workers.",
-	}, []string{"queue", "compute_backend", "status"})
 
 	InProgress = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "factory",
@@ -66,6 +60,12 @@ var (
 		Namespace: "factory",
 		Name:      "oldest_pending_age_seconds",
 		Help:      "Age in seconds of the oldest pending item. 0 if queue is empty.",
+	}, []string{"queue"})
+
+	LeaderStatus = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "factory",
+		Name:      "leader_status",
+		Help:      "Whether this instance holds leadership for a queue (1=leader, 0=not).",
 	}, []string{"queue"})
 
 	// Histograms
@@ -113,12 +113,12 @@ func Register(reg prometheus.Registerer) {
 		ItemsDispatched,
 		ItemsCompleted,
 		ItemsReaped,
-		ItemsDeduped,
+		StoreErrors,
 		QueueDepth,
-		WorkerCount,
 		InProgress,
 		MaxConcurrency,
 		OldestPendingAge,
+		LeaderStatus,
 		ClaimDuration,
 		ReconcileDuration,
 		WaitLatency,

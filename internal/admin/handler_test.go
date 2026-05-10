@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -346,10 +347,15 @@ func TestStreamEvents(t *testing.T) {
 	srv, s := newServer(t)
 	defer srv.Close()
 
-	// Start SSE client in background.
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	// Channel to receive SSE data from the background reader.
+	dataCh := make(chan string, 1)
+	errCh := make(chan error, 1)
+
+	// Start SSE connection in a goroutine so we can control the
+	// ordering: connect first, then enqueue.
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/admin/queues/build/events", nil)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -361,17 +367,40 @@ func TestStreamEvents(t *testing.T) {
 		t.Errorf("expected text/event-stream, got %s", resp.Header.Get("Content-Type"))
 	}
 
-	// Enqueue an item to trigger an event.
+	// Start reading SSE data in the background.
+	go func() {
+		buf := make([]byte, 4096)
+		n, readErr := resp.Body.Read(buf)
+		if readErr != nil {
+			errCh <- readErr
+			return
+		}
+		dataCh <- string(buf[:n])
+	}()
+
+	// Give the SSE handler time to call Subscribe and start
+	// listening on the channel before we enqueue.
+	time.Sleep(50 * time.Millisecond)
+
+	// Enqueue an item — this triggers an event via the inmem store.
 	s.Enqueue(context.Background(), "build", "sse-test", 0)
 
-	// Read at least one event.
-	buf := make([]byte, 4096)
-	n, _ := resp.Body.Read(buf)
-	if n == 0 {
-		t.Skip("no SSE data received (timing-dependent)")
+	// Wait for the event or timeout.
+	select {
+	case data := <-dataCh:
+		if len(data) == 0 {
+			t.Fatal("received empty SSE data")
+		}
+		if !contains(data, "sse-test") {
+			t.Errorf("expected SSE data to contain sse-test, got %q", data)
+		}
+	case err := <-errCh:
+		t.Fatalf("SSE read error: %v", err)
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for SSE event")
 	}
-	data := string(buf[:n])
-	if len(data) == 0 {
-		t.Skip("empty SSE response")
-	}
+}
+
+func contains(s, substr string) bool {
+	return strings.Contains(s, substr)
 }

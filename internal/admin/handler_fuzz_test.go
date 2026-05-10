@@ -17,7 +17,7 @@ import (
 func newAdminMux(t *testing.T) *http.ServeMux {
 	t.Helper()
 	s := inmem.New()
-	s.EnsureQueue(nil, "test", store.QueueConfig{MaxConcurrency: 10, MaxRetry: 5})
+	s.EnsureQueue(context.Background(), "test", store.QueueConfig{MaxConcurrency: 10, MaxRetry: 5})
 	mux := http.NewServeMux()
 	admin.NewHandler(s, noop.Authorizer{}).Register(mux)
 	return mux

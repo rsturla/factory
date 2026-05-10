@@ -139,45 +139,88 @@ mux.Handle("POST /process", sdk.ReconcilerHandler(func(ctx context.Context, req 
 
 ## Environment variables
 
-### All binaries
+> **Backward compatibility**: old names without prefixes (e.g., `QUEUE_NAME`, `DATABASE_URL`, `LISTEN_ADDR`) are accepted with a deprecation warning. Migrate to the new names below.
+
+### FACTORY_ (shared)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FACTORY_QUEUE_NAME` | (required) | Queue to operate on (required for receiver, dispatcher) |
+| `FACTORY_WORKER_ID` | hostname | Worker identifier |
+| `FACTORY_LISTEN_ADDR` | `:8080` or `:8081` | HTTP listen address |
+| `FACTORY_LOG_FORMAT` | `json` | Log format: `json` or `text` |
+
+### STORE_ (backend selection)
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `STORE_BACKEND` | `postgres` | `postgres`, `dynamodb`, or `sqlite` |
-| `DATABASE_URL` | | PostgreSQL connection string (postgres backend) |
-| `DDB_TABLE` | | DynamoDB table name (dynamodb backend) |
-| `S3_BUCKET` | | S3 bucket for history (dynamodb backend) |
-| `SQLITE_PATH` | | SQLite database path (sqlite backend) |
+
+### PG_ (PostgreSQL)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PG_DATABASE_URL` | | PostgreSQL connection string (required for postgres backend) |
+| `PG_MAX_CONNS` | `20` | Max pool connections |
+| `PG_MIN_CONNS` | `2` | Min pool connections |
+| `PG_MAX_CONN_LIFETIME` | `30m` | Max connection lifetime |
+| `PG_HEALTH_CHECK_PERIOD` | `30s` | Health check interval |
+
+### DDB_ / S3_ (DynamoDB)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DDB_TABLE` | | DynamoDB table name |
+| `S3_BUCKET` | | S3 bucket for history |
+
+### SQLITE_ (SQLite)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SQLITE_PATH` | | SQLite database path |
+
+### DISPATCH_ (dispatcher)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DISPATCH_MODE` | `push` | `push` or `scale-only` |
+| `DISPATCH_INTERVAL` | `2s` | How often the dispatcher checks for work |
+| `DISPATCH_BATCH_SIZE` | `10` | Items claimed per dispatch cycle |
+| `DISPATCH_MAX_CONCURRENCY` | `10` | Max items in-flight simultaneously |
+| `DISPATCH_MAX_RETRY` | `5` | Attempts before dead-lettering |
+| `DISPATCH_LEASE_DURATION` | `1h` | Lease granted to claimed items |
+| `DISPATCH_SWEEP_INTERVAL` | `30s` | How often the sweep loop runs |
+| `DISPATCH_LEADER_INTERVAL` | `10s` | Leader election heartbeat interval |
+| `DISPATCH_LEADER_TTL` | `30s` | Leader election TTL |
+
+### RECEIVER_ (receiver)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RECEIVER_MAX_QUEUE_DEPTH` | | Max pending items before rejecting enqueue |
+
+### RECONCILER_ (reconciler connection)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RECONCILER_ENDPOINT` | (required in push mode) | Base URL of reconciler service |
+| `RECONCILER_CA_CERT` | | PEM CA cert for reconciler TLS |
+
+### COMPUTE_ (compute provider)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `COMPUTE_BACKEND` | `noop` | `noop`, `kubernetes`, or `ec2` |
+
+### AUTHN_ / AUTHZ_ (authentication & authorization)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AUTHN_BACKEND` | `noop` | `noop` or `openshift` |
 | `AUTHZ_BACKEND` | `noop` | `noop`, `cedar`, or `opa` |
 | `AUTHZ_CEDAR_POLICY_PATH` | | Cedar policy file or directory (cedar backend) |
 | `AUTHZ_OPA_ENDPOINT` | | OPA server URL (opa backend) |
-
-### Receiver
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `QUEUE_NAME` | (required) | Queue to enqueue into |
-| `LISTEN_ADDR` | `:8081` | HTTP listen address |
-
-### Dispatcher
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `QUEUE_NAME` | (required) | Queue to dispatch |
-| `RECONCILER_ENDPOINT` | (required) | Base URL of reconciler service |
-| `WORKER_ID` | hostname | Unique dispatcher identifier |
-| `COMPUTE_BACKEND` | `noop` | `noop`, `kubernetes`, or `ec2` |
-| `MAX_CONCURRENCY` | `10` | Max items in-flight simultaneously |
-| `BATCH_SIZE` | `10` | Items claimed per dispatch cycle |
-| `DISPATCH_INTERVAL` | `2s` | How often the dispatcher checks for work |
-| `MAX_RETRY` | `5` | Attempts before dead-lettering |
-| `LEASE_DURATION` | `1h` | Lease granted to claimed items |
-
-### Admin API
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `LISTEN_ADDR` | `:8080` | HTTP listen address |
+| `AUTHZ_OPA_CA_CERT` | | PEM CA cert for OPA TLS (opa backend) |
 
 ## Admin API
 
@@ -219,7 +262,7 @@ factoryctl events <queue>                Stream real-time events
 go test ./...
 
 # Run PostgreSQL conformance (requires running PostgreSQL)
-DATABASE_URL="postgres://..." go test ./internal/store/postgres/ -v
+PG_DATABASE_URL="postgres://..." go test ./internal/store/postgres/ -v
 
 # Run DynamoDB conformance (requires DynamoDB Local + rustfs)
 DDB_TEST_ENDPOINT=http://localhost:8000 S3_TEST_ENDPOINT=http://localhost:9000 \

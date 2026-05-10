@@ -1,3 +1,4 @@
+# Development/testing only. Do not use these credentials in production.
 services:
   postgres:
     image: quay.io/hummingbird/postgresql:18
@@ -62,7 +63,7 @@ services:
     ports:
       - "18080:8080"
     environment:
-      DATABASE_URL: postgres://factory:factory@postgres:5432/factory?sslmode=disable
+      PG_DATABASE_URL: postgres://factory:factory@postgres:5432/factory?sslmode=disable  # sslmode=disable: dev only
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
       OTEL_SERVICE_NAME: factory-admin
     depends_on:
@@ -81,9 +82,9 @@ services:
     ports:
       - "8081:8081"
     environment:
-      QUEUE_NAME: echo
-      DATABASE_URL: postgres://factory:factory@postgres:5432/factory?sslmode=disable
-      LISTEN_ADDR: ":8081"
+      FACTORY_QUEUE_NAME: echo
+      PG_DATABASE_URL: postgres://factory:factory@postgres:5432/factory?sslmode=disable  # sslmode=disable: dev only
+      FACTORY_LISTEN_ADDR: ":8081"
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
       OTEL_SERVICE_NAME: factory-receiver
     depends_on:
@@ -100,17 +101,17 @@ services:
       factory.queue: echo
       factory.component: dispatcher
     environment:
-      QUEUE_NAME: echo
-      DATABASE_URL: postgres://factory:factory@postgres:5432/factory?sslmode=disable
+      FACTORY_QUEUE_NAME: echo
+      PG_DATABASE_URL: postgres://factory:factory@postgres:5432/factory?sslmode=disable  # sslmode=disable: dev only
       RECONCILER_ENDPOINT: http://echo-reconciler:8082
       STORE_BACKEND: postgres
       COMPUTE_BACKEND: noop
-      MAX_CONCURRENCY: "100"
-      BATCH_SIZE: "100"
+      DISPATCH_MAX_CONCURRENCY: "100"
+      DISPATCH_BATCH_SIZE: "100"
       DISPATCH_INTERVAL: 1s
-      SWEEP_INTERVAL: 15s
-      LEASE_DURATION: 5m
-      LISTEN_ADDR: ":8083"
+      DISPATCH_SWEEP_INTERVAL: 15s
+      DISPATCH_LEASE_DURATION: 5m
+      FACTORY_LISTEN_ADDR: ":8083"
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
       OTEL_SERVICE_NAME: factory-dispatcher
     depends_on:
@@ -127,5 +128,5 @@ services:
       factory.queue: echo
       factory.component: reconciler
     environment:
-      LISTEN_ADDR: ":8082"
+      FACTORY_LISTEN_ADDR: ":8082"
       PROCESS_DELAY: 500ms

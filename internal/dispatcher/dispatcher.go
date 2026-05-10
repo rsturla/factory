@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"strings"
 	"sync"
 	"time"
@@ -89,16 +90,17 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 
 	g, gctx := errgroup.WithContext(ctx)
 
-	g.Go(func() error { return d.loop(gctx, "leader", leaderInterval, d.leaderTick) })
+	// Leader loop runs without jitter — must acquire leadership immediately.
+	g.Go(func() error { return d.loop(gctx, "leader", leaderInterval, d.leaderTick, false) })
 
 	if mode == ModePush {
-		g.Go(func() error { return d.loop(gctx, "dispatch", d.cfg.DispatchInterval, d.dispatchTick) })
+		g.Go(func() error { return d.loop(gctx, "dispatch", d.cfg.DispatchInterval, d.dispatchTick, true) })
 	}
 
 	// Sweep, reaper, and scale run in all modes.
-	g.Go(func() error { return d.loop(gctx, "sweep", d.cfg.SweepInterval, d.sweepTick) })
-	g.Go(func() error { return d.loop(gctx, "reaper", d.cfg.ReaperInterval, d.reaperTick) })
-	g.Go(func() error { return d.loop(gctx, "scale", d.cfg.ScaleInterval, d.scaleTick) })
+	g.Go(func() error { return d.loop(gctx, "sweep", d.cfg.SweepInterval, d.sweepTick, true) })
+	g.Go(func() error { return d.loop(gctx, "reaper", d.cfg.ReaperInterval, d.reaperTick, true) })
+	g.Go(func() error { return d.loop(gctx, "scale", d.cfg.ScaleInterval, d.scaleTick, true) })
 	err := g.Wait()
 
 	slog.Info("draining in-flight work", "queue", d.cfg.QueueName)
@@ -107,7 +109,15 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 	return err
 }
 
-func (d *Dispatcher) loop(ctx context.Context, name string, interval time.Duration, tick func(context.Context)) error {
+func (d *Dispatcher) loop(ctx context.Context, name string, interval time.Duration, tick func(context.Context), jitterEnabled bool) error {
+	if jitterEnabled {
+		jitter := time.Duration(rand.Int64N(int64(interval)))
+		select {
+		case <-time.After(jitter):
+		case <-ctx.Done():
+			return nil
+		}
+	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	tick(ctx)
@@ -135,12 +145,18 @@ func (d *Dispatcher) leaderTick(ctx context.Context) {
 
 	if ok && !wasLeader {
 		slog.Info("acquired leadership", "queue", d.cfg.QueueName, "worker_id", d.cfg.WorkerID)
+		metrics.LeaderStatus.WithLabelValues(d.cfg.QueueName).Set(1)
 	} else if !ok && wasLeader {
 		slog.Warn("lost leadership", "queue", d.cfg.QueueName, "worker_id", d.cfg.WorkerID)
+		metrics.LeaderStatus.WithLabelValues(d.cfg.QueueName).Set(0)
 	}
 }
 
 func (d *Dispatcher) dispatchTick(ctx context.Context) {
+	if ctx.Err() != nil {
+		return
+	}
+
 	d.leaderMu.RLock()
 	leader := d.isLeader
 	d.leaderMu.RUnlock()
@@ -156,6 +172,7 @@ func (d *Dispatcher) dispatchTick(ctx context.Context) {
 	items, err := d.store.ClaimBatch(ctx, d.cfg.QueueName, d.cfg.BatchSize, d.cfg.WorkerID, d.cfg.LeaseDuration)
 	if err != nil {
 		slog.Error("claim batch failed", "queue", d.cfg.QueueName, "error", err)
+		metrics.StoreErrors.WithLabelValues(d.cfg.QueueName, "claim").Inc()
 		return
 	}
 
@@ -170,7 +187,11 @@ func (d *Dispatcher) dispatchTick(ctx context.Context) {
 
 	for _, item := range items {
 		d.inFlight.Add(1)
-		go d.processItem(ctx, item)
+		itemCtx, itemCancel := context.WithTimeout(context.Background(), d.cfg.LeaseDuration)
+		go func(item store.WorkItem, cancel context.CancelFunc) {
+			defer cancel()
+			d.processItem(itemCtx, item)
+		}(item, itemCancel)
 	}
 }
 
@@ -219,7 +240,8 @@ func (d *Dispatcher) processItem(ctx context.Context, item store.WorkItem) {
 			transitionSpan.SetStatus(codes.Error, "transition failed")
 			span.RecordError(err)
 			span.SetStatus(codes.Error, "transition failed")
-			slog.Error("transition to running failed", "queue", item.Queue, "key", item.Key, "error", err)
+			slog.Error("transition to running failed", "queue", item.Queue, "key", item.Key, "error", err, "trace_id", traceID)
+			metrics.StoreErrors.WithLabelValues(d.cfg.QueueName, "transition").Inc()
 		}
 	}()
 
@@ -277,7 +299,7 @@ func (d *Dispatcher) processItem(ctx context.Context, item store.WorkItem) {
 			defer infraSpan.End()
 			if err := d.completion.HandleInfraFailure(ctx, item.Queue, item.Key); err != nil {
 				infraSpan.RecordError(err)
-				slog.Error("handle infra failure failed", "queue", item.Queue, "key", item.Key, "error", err)
+				slog.Error("handle infra failure failed", "queue", item.Queue, "key", item.Key, "error", err, "trace_id", traceID)
 			}
 		}()
 		return
@@ -347,17 +369,20 @@ func (d *Dispatcher) handleResponse(ctx context.Context, item store.WorkItem, re
 		func() {
 			_, s := tracer.Start(ctx, "fanOut", trace.WithAttributes(attribute.Int("count", len(resp.FanOutKeys))))
 			defer s.End()
-			for _, fanKey := range resp.FanOutKeys {
-				if err := d.store.Enqueue(ctx, queue, fanKey, item.Priority); err != nil {
-					slog.Error("fan-out enqueue failed", "queue", queue, "key", fanKey, "error", err)
-				}
+			batch := make([]store.BatchEnqueueItem, len(resp.FanOutKeys))
+			for i, fanKey := range resp.FanOutKeys {
+				batch[i] = store.BatchEnqueueItem{Key: fanKey, Priority: item.Priority}
+			}
+			if _, err := d.store.EnqueueBatch(ctx, queue, batch); err != nil {
+				slog.Error("fan-out enqueue failed", "queue", queue, "error", err, "trace_id", traceID)
+				metrics.StoreErrors.WithLabelValues(queue, "enqueue_batch").Inc()
 			}
 			d.completion.HandleSuccess(ctx, queue, key)
 		}()
 
 	default:
 		span.SetStatus(codes.Error, "unknown action")
-		slog.Error("unknown reconciler action", "queue", queue, "key", key, "action", resp.Action)
+		slog.Error("unknown reconciler action", "queue", queue, "key", key, "action", resp.Action, "trace_id", traceID)
 		d.completion.HandleFailure(ctx, queue, key, item.Attempts, "unknown action: "+resp.Action)
 	}
 }
@@ -404,32 +429,45 @@ func (d *Dispatcher) sweepTick(ctx context.Context) {
 	}
 
 	// Repair the in_progress counter if it drifted (e.g., after a crash).
-	// Only the leader repairs — standbys just read metrics.
+	// Only the leader repairs, and only on full-sweep ticks (~every 10
+	// minutes) since drift is rare and the repair query is not free.
 	d.leaderMu.RLock()
 	leader := d.isLeader
 	d.leaderMu.RUnlock()
-	if leader {
+	if leader && fullSweep {
 		d.store.RepairCounter(ctx, d.cfg.QueueName)
 	}
 }
 
 func (d *Dispatcher) reaperTick(ctx context.Context) {
-	claimed := store.StatusClaimed
-	running := store.StatusRunning
-	items, _ := d.store.List(ctx, store.ListFilter{Queue: d.cfg.QueueName, Status: &claimed, Limit: 100})
-	runningItems, _ := d.store.List(ctx, store.ListFilter{Queue: d.cfg.QueueName, Status: &running, Limit: 100})
-	items = append(items, runningItems...)
+	d.leaderMu.RLock()
+	leader := d.isLeader
+	d.leaderMu.RUnlock()
+	if !leader {
+		return
+	}
 
-	now := time.Now()
 	reaped := 0
-	for _, item := range items {
-		if item.LeaseExpires != nil && item.LeaseExpires.Before(now) {
+	for {
+		items, err := d.store.ListExpiredLeases(ctx, d.cfg.QueueName, 100)
+		if err != nil {
+			slog.Error("list expired leases failed", "queue", d.cfg.QueueName, "error", err)
+			break
+		}
+		if len(items) == 0 {
+			break
+		}
+		for _, item := range items {
 			slog.Warn("reaping expired item", "queue", item.Queue, "key", item.Key)
 			if err := d.store.Requeue(ctx, item.Queue, item.Key); err == nil {
 				reaped++
 			}
 		}
+		if len(items) < 100 {
+			break
+		}
 	}
+
 	if reaped > 0 {
 		metrics.ItemsReaped.WithLabelValues(d.cfg.QueueName).Add(float64(reaped))
 	}

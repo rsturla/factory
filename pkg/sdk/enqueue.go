@@ -14,6 +14,20 @@ import (
 type EnqueueClient struct {
 	endpoint   string
 	httpClient *http.Client
+	headers    http.Header
+}
+
+// EnqueueClientOption configures an EnqueueClient.
+type EnqueueClientOption func(*EnqueueClient)
+
+// WithHTTPClient sets a custom HTTP client.
+func WithHTTPClient(c *http.Client) EnqueueClientOption {
+	return func(ec *EnqueueClient) { ec.httpClient = c }
+}
+
+// WithHeaders sets additional HTTP headers sent with every request.
+func WithHeaders(headers http.Header) EnqueueClientOption {
+	return func(ec *EnqueueClient) { ec.headers = headers }
 }
 
 // EnqueueRequest is the payload sent to the receiver's /enqueue endpoint.
@@ -24,13 +38,17 @@ type EnqueueRequest struct {
 }
 
 // NewEnqueueClient creates a client that connects to a factory receiver endpoint.
-func NewEnqueueClient(endpoint string) *EnqueueClient {
-	return &EnqueueClient{
+func NewEnqueueClient(endpoint string, opts ...EnqueueClientOption) *EnqueueClient {
+	ec := &EnqueueClient{
 		endpoint: endpoint,
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
 	}
+	for _, opt := range opts {
+		opt(ec)
+	}
+	return ec
 }
 
 // Enqueue submits a key to the given queue with the specified priority.
@@ -49,6 +67,11 @@ func (c *EnqueueClient) Enqueue(ctx context.Context, queue, key string, priority
 		return fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	for key, vals := range c.headers {
+		for _, v := range vals {
+			req.Header.Add(key, v)
+		}
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

@@ -43,9 +43,12 @@ package opa
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/hummingbird-org/factory-workqueue/internal/authz"
@@ -59,6 +62,11 @@ type Config struct {
 	// PolicyPath is the OPA document path to query,
 	// e.g. "v1/data/factory/authz".
 	PolicyPath string
+
+	// CACertPath is an optional path to a PEM-encoded CA certificate
+	// for verifying the OPA server's TLS certificate. If empty, the
+	// system default CA pool is used.
+	CACertPath string
 }
 
 // Authorizer queries OPA for authorization decisions.
@@ -67,16 +75,34 @@ type Authorizer struct {
 	client   *http.Client
 }
 
-// New creates an OPA authorizer.
-func New(cfg Config) *Authorizer {
+// New creates an OPA authorizer. It returns an error if CACertPath is set but
+// cannot be read or parsed.
+func New(cfg Config) (*Authorizer, error) {
 	path := cfg.PolicyPath
 	if path == "" {
 		path = "v1/data/factory/authz"
 	}
+
+	client := &http.Client{Timeout: 5 * time.Second}
+
+	if cfg.CACertPath != "" {
+		caCert, err := os.ReadFile(cfg.CACertPath)
+		if err != nil {
+			return nil, fmt.Errorf("read OPA CA cert: %w", err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(caCert) {
+			return nil, fmt.Errorf("OPA CA cert file contains no valid PEM certificates: %s", cfg.CACertPath)
+		}
+		client.Transport = &http.Transport{
+			TLSClientConfig: &tls.Config{RootCAs: pool},
+		}
+	}
+
 	return &Authorizer{
 		endpoint: cfg.Endpoint + "/" + path,
-		client:   &http.Client{Timeout: 5 * time.Second},
-	}
+		client:   client,
+	}, nil
 }
 
 type opaInput struct {

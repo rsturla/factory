@@ -4,6 +4,7 @@ package authzutil
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 
 	"github.com/hummingbird-org/factory-workqueue/internal/authz"
@@ -26,6 +27,7 @@ func CreateFromEnv() (authz.Authorizer, error) {
 
 	switch backend {
 	case "noop":
+		slog.Warn("using noop authorization: all requests are allowed without policy checks; set AUTHZ_BACKEND for production")
 		return noop.Authorizer{}, nil
 
 	case "opa":
@@ -36,14 +38,11 @@ func CreateFromEnv() (authz.Authorizer, error) {
 		return opa.New(opa.Config{
 			Endpoint:   endpoint,
 			PolicyPath: os.Getenv("AUTHZ_OPA_POLICY_PATH"),
-		}), nil
+			CACertPath: os.Getenv("AUTHZ_OPA_CA_CERT"),
+		})
 
 	case "cedar":
 		path := os.Getenv("AUTHZ_CEDAR_POLICY_PATH")
-		if path == "" {
-			// Fall back to AUTHZ_CEDAR_POLICY_PATH for backward compatibility.
-			path = os.Getenv("AUTHZ_CEDAR_POLICY_PATH")
-		}
 		if path == "" {
 			return nil, fmt.Errorf("cedar backend requires AUTHZ_CEDAR_POLICY_PATH (file or directory)")
 		}

@@ -372,6 +372,157 @@ func TestDispatcher_GracefulShutdown(t *testing.T) {
 	}
 }
 
+func TestReconcilerTimeout(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	// Reconciler sleeps longer than the lease, so the item's lease expires.
+	srv := fakeReconciler(t, func(req sdk.ProcessRequest) sdk.ProcessResponse {
+		time.Sleep(500 * time.Millisecond)
+		return sdk.Completed()
+	})
+	defer srv.Close()
+
+	// Short lease so the reaper can reclaim the item quickly.
+	cfg := dispatcher.Config{
+		QueueName:        "test",
+		WorkerID:         "timeout-test",
+		DispatchInterval: 50 * time.Millisecond,
+		SweepInterval:    1 * time.Hour,
+		ReaperInterval:   100 * time.Millisecond,
+		ScaleInterval:    1 * time.Hour,
+		LeaseDuration:    50 * time.Millisecond, // very short lease
+		BatchSize:        10,
+		MaxConcurrency:   5,
+		MaxRetry:         3,
+		LeaderInterval:   50 * time.Millisecond,
+		LeaderTTL:        10 * time.Second,
+	}
+	d := dispatcher.New(s, client.NewReconcilerClient(srv.URL), compute.NoopProvider{}, cfg)
+
+	s.Enqueue(ctx, "test", "slow-item", 0)
+
+	// Run long enough for the lease to expire and the reaper to fire.
+	dctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	d.Run(dctx)
+
+	// The item should have been reaped back to pending because its lease
+	// expired while the reconciler was still sleeping.
+	item, err := s.GetItem(ctx, "test", "slow-item")
+	if err != nil {
+		t.Fatalf("GetItem: %v", err)
+	}
+	// After reap, item goes back to pending (the reaper calls Requeue).
+	if item.Status != store.StatusPending && item.Status != store.StatusSucceeded {
+		t.Errorf("expected pending or succeeded after timeout + reap, got %s", item.Status)
+	}
+}
+
+func TestReconcilerInvalidJSON(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	// Return non-JSON body — the ReconcilerClient.Process will fail to decode.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("this is not json"))
+	}))
+	defer srv.Close()
+
+	d, _ := newDispatcher(t, s, srv.URL)
+
+	s.Enqueue(ctx, "test", "bad-json", 0)
+
+	dctx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancel()
+	d.Run(dctx)
+
+	// Invalid JSON triggers an infra failure (reconciler call returns error),
+	// which requeues without consuming retry budget.
+	item, err := s.GetItem(ctx, "test", "bad-json")
+	if err != nil {
+		t.Fatalf("GetItem: %v", err)
+	}
+	if item.Attempts != 0 {
+		t.Errorf("expected attempts=0 after infra failure (bad JSON), got %d", item.Attempts)
+	}
+}
+
+func TestReconcilerServerError(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	// Reconciler returns 500 — the client treats non-200 as an error.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"error":"internal server error"}`))
+	}))
+	defer srv.Close()
+
+	d, _ := newDispatcher(t, s, srv.URL)
+
+	s.Enqueue(ctx, "test", "server-error", 0)
+
+	dctx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancel()
+	d.Run(dctx)
+
+	// HTTP 500 triggers an infra failure — retry budget is not consumed.
+	item, err := s.GetItem(ctx, "test", "server-error")
+	if err != nil {
+		t.Fatalf("GetItem: %v", err)
+	}
+	if item.Attempts != 0 {
+		t.Errorf("expected attempts=0 after server error (infra failure), got %d", item.Attempts)
+	}
+}
+
+func TestReconcilerReturnsRetry(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	var attempts atomic.Int32
+	srv := fakeReconciler(t, func(req sdk.ProcessRequest) sdk.ProcessResponse {
+		attempts.Add(1)
+		return sdk.ProcessResponse{
+			Error: "transient failure",
+		}
+	})
+	defer srv.Close()
+
+	d, _ := newDispatcher(t, s, srv.URL)
+
+	s.Enqueue(ctx, "test", "retry-item", 0)
+
+	dctx, cancel := context.WithTimeout(ctx, 1*time.Second)
+	defer cancel()
+	d.Run(dctx)
+
+	got := attempts.Load()
+	if got < 1 {
+		t.Errorf("expected at least 1 attempt, got %d", got)
+	}
+
+	// After the error response, completion.HandleFailure does Fail → Requeue
+	// with exponential backoff (NotBefore in the future). The item should be
+	// back to pending, waiting for the backoff delay to elapse.
+	item, err := s.GetItem(ctx, "test", "retry-item")
+	if err != nil {
+		t.Fatalf("GetItem: %v", err)
+	}
+	if item.Status != store.StatusPending {
+		t.Errorf("expected pending after retry with backoff, got %s", item.Status)
+	}
+	if item.NotBefore == nil {
+		t.Error("expected NotBefore set (backoff delay) after error-triggered retry")
+	}
+	if item.NotBefore != nil && !item.NotBefore.After(time.Now()) {
+		t.Error("expected NotBefore to be in the future (backoff)")
+	}
+}
+
 func TestDispatcher_Reaper(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()

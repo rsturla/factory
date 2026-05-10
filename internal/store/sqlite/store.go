@@ -237,7 +237,13 @@ func (s *Store) Enqueue(ctx context.Context, queue, key string, priority int, op
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	_, err := s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	_, err = tx.ExecContext(ctx, `
 		INSERT INTO work_items (queue, key, priority, not_before, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?)
 		ON CONFLICT (queue, key) DO UPDATE SET
@@ -257,9 +263,17 @@ func (s *Store) Enqueue(ctx context.Context, queue, key string, priority int, op
 			updated_at = ?
 		WHERE work_items.status IN ('pending', 'succeeded', 'failed', 'dead_letter')
 	`, queue, key, priority, timePtrStr(o.NotBefore), now, now, now)
+	if err != nil {
+		return err
+	}
+
+	// Clean up active_leases for re-enqueue case.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM active_leases WHERE queue = ? AND key = ?`, queue, key); err != nil {
+		return fmt.Errorf("delete active_lease: %w", err)
+	}
 
 	s.emit(store.Event{Queue: queue, Key: key, Status: "pending", Priority: priority})
-	return err
+	return tx.Commit()
 }
 
 func (s *Store) EnqueueBatch(ctx context.Context, queue string, items []store.BatchEnqueueItem) (int, error) {
@@ -303,6 +317,12 @@ func (s *Store) EnqueueBatch(ctx context.Context, queue string, items []store.Ba
 	}
 	defer stmt.Close()
 
+	delStmt, err := tx.PrepareContext(ctx, `DELETE FROM active_leases WHERE queue = ? AND key = ?`)
+	if err != nil {
+		return 0, fmt.Errorf("prepare active_leases delete: %w", err)
+	}
+	defer delStmt.Close()
+
 	count := 0
 	for _, bi := range items {
 		result, err := stmt.ExecContext(ctx, queue, bi.Key, bi.Priority, timePtrStr(bi.NotBefore), now, now, now)
@@ -311,6 +331,11 @@ func (s *Store) EnqueueBatch(ctx context.Context, queue string, items []store.Ba
 		}
 		n, _ := result.RowsAffected()
 		count += int(n)
+
+		// Clean up active_leases for re-enqueue case.
+		if _, err := delStmt.ExecContext(ctx, queue, bi.Key); err != nil {
+			return count, fmt.Errorf("delete active_lease %q: %w", bi.Key, err)
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -398,6 +423,17 @@ func (s *Store) ClaimBatch(ctx context.Context, queue string, batchSize int, wor
 		}
 
 		_, err = tx.ExecContext(ctx, `
+			INSERT INTO active_leases (queue, key, worker_id, lease_expires)
+			VALUES (?, ?, ?, ?)
+			ON CONFLICT (queue, key) DO UPDATE SET
+				worker_id = excluded.worker_id,
+				lease_expires = excluded.lease_expires
+		`, queue, item.Key, workerID, leaseExp)
+		if err != nil {
+			return nil, fmt.Errorf("insert active_lease: %w", err)
+		}
+
+		_, err = tx.ExecContext(ctx, `
 			INSERT INTO work_item_history (queue, key, from_status, to_status, worker_id, attempt, created_at)
 			VALUES (?, ?, 'pending', 'claimed', ?, ?, ?)
 		`, queue, item.Key, workerID, item.Attempts, nowStr)
@@ -417,14 +453,52 @@ func (s *Store) ClaimBatch(ctx context.Context, queue string, batchSize int, wor
 }
 
 func (s *Store) Complete(ctx context.Context, queue, key string) error {
-	return s.setTerminal(ctx, queue, key, "succeeded", "")
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := timeStr(time.Now())
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	result, err := tx.ExecContext(ctx, `
+		UPDATE work_items
+		SET status = 'succeeded', completed_at = ?, updated_at = ?, lease_expires = NULL
+		WHERE queue = ? AND key = ? AND status IN ('claimed', 'running')
+	`, now, now, queue, key)
+	if err != nil {
+		return err
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return store.ErrNotFound
+	}
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM active_leases WHERE queue = ? AND key = ?`, queue, key); err != nil {
+		return fmt.Errorf("delete active_lease: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE queue_state SET in_progress = MAX(in_progress - 1, 0) WHERE queue = ?
+	`, queue); err != nil {
+		return fmt.Errorf("decrement in_progress: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO work_item_history (queue, key, from_status, to_status, created_at)
+		VALUES (?, ?, 'running', 'succeeded', ?)
+	`, queue, key, now); err != nil {
+		return fmt.Errorf("record history: %w", err)
+	}
+
+	s.emit(store.Event{Queue: queue, Key: key, Status: "succeeded"})
+	return tx.Commit()
 }
 
 func (s *Store) Fail(ctx context.Context, queue, key string, errMsg string) error {
-	return s.setTerminal(ctx, queue, key, "failed", errMsg)
-}
-
-func (s *Store) setTerminal(ctx context.Context, queue, key, status, errMsg string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -443,9 +517,9 @@ func (s *Store) setTerminal(ctx context.Context, queue, key, status, errMsg stri
 
 	result, err := tx.ExecContext(ctx, `
 		UPDATE work_items
-		SET status = ?, error_message = ?, completed_at = ?, updated_at = ?, lease_expires = NULL
+		SET status = 'failed', error_message = ?, completed_at = ?, updated_at = ?, lease_expires = NULL
 		WHERE queue = ? AND key = ? AND status IN ('claimed', 'running')
-	`, status, errMsgPtr, now, now, queue, key)
+	`, errMsgPtr, now, now, queue, key)
 	if err != nil {
 		return err
 	}
@@ -454,16 +528,22 @@ func (s *Store) setTerminal(ctx context.Context, queue, key, status, errMsg stri
 		return store.ErrNotFound
 	}
 
-	tx.ExecContext(ctx, `
-		UPDATE queue_state SET in_progress = MAX(in_progress - 1, 0) WHERE queue = ?
-	`, queue)
+	if _, err := tx.ExecContext(ctx, `DELETE FROM active_leases WHERE queue = ? AND key = ?`, queue, key); err != nil {
+		return fmt.Errorf("delete active_lease: %w", err)
+	}
 
-	tx.ExecContext(ctx, `
+	// Do NOT decrement in_progress here. Fail() is always followed by
+	// Requeue() or Deadletter(), which handle the decrement. Decrementing
+	// in both places would double-decrement the counter.
+
+	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO work_item_history (queue, key, from_status, to_status, error_message, created_at)
-		VALUES (?, ?, 'running', ?, ?, ?)
-	`, queue, key, status, errMsgPtr, now)
+		VALUES (?, ?, 'running', 'failed', ?, ?)
+	`, queue, key, errMsgPtr, now); err != nil {
+		return fmt.Errorf("record history: %w", err)
+	}
 
-	s.emit(store.Event{Queue: queue, Key: key, Status: status})
+	s.emit(store.Event{Queue: queue, Key: key, Status: "failed"})
 	return tx.Commit()
 }
 
@@ -494,8 +574,15 @@ func (s *Store) Requeue(ctx context.Context, queue, key string, opts ...store.Re
 		return store.ErrNotFound
 	}
 
-	tx.ExecContext(ctx, `UPDATE queue_state SET in_progress = MAX(in_progress - 1, 0) WHERE queue = ?`, queue)
-	tx.ExecContext(ctx, `INSERT INTO work_item_history (queue, key, from_status, to_status, created_at) VALUES (?, ?, 'running', 'pending', ?)`, queue, key, now)
+	if _, err := tx.ExecContext(ctx, `DELETE FROM active_leases WHERE queue = ? AND key = ?`, queue, key); err != nil {
+		return fmt.Errorf("delete active_lease: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE queue_state SET in_progress = MAX(in_progress - 1, 0) WHERE queue = ?`, queue); err != nil {
+		return fmt.Errorf("decrement in_progress: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO work_item_history (queue, key, from_status, to_status, created_at) VALUES (?, ?, 'running', 'pending', ?)`, queue, key, now); err != nil {
+		return fmt.Errorf("record history: %w", err)
+	}
 
 	return tx.Commit()
 }
@@ -528,8 +615,15 @@ func (s *Store) RequeueUndoAttempt(ctx context.Context, queue, key string, notBe
 		return store.ErrNotFound
 	}
 
-	tx.ExecContext(ctx, `UPDATE queue_state SET in_progress = MAX(in_progress - 1, 0) WHERE queue = ?`, queue)
-	tx.ExecContext(ctx, `INSERT INTO work_item_history (queue, key, from_status, to_status, created_at) VALUES (?, ?, 'claimed', 'pending', ?)`, queue, key, now)
+	if _, err := tx.ExecContext(ctx, `DELETE FROM active_leases WHERE queue = ? AND key = ?`, queue, key); err != nil {
+		return fmt.Errorf("delete active_lease: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE queue_state SET in_progress = MAX(in_progress - 1, 0) WHERE queue = ?`, queue); err != nil {
+		return fmt.Errorf("decrement in_progress: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO work_item_history (queue, key, from_status, to_status, created_at) VALUES (?, ?, 'claimed', 'pending', ?)`, queue, key, now); err != nil {
+		return fmt.Errorf("record history: %w", err)
+	}
 
 	return tx.Commit()
 }
@@ -559,8 +653,15 @@ func (s *Store) Deadletter(ctx context.Context, queue, key string) error {
 		return store.ErrNotFound
 	}
 
-	tx.ExecContext(ctx, `UPDATE queue_state SET in_progress = MAX(in_progress - 1, 0) WHERE queue = ?`, queue)
-	tx.ExecContext(ctx, `INSERT INTO work_item_history (queue, key, from_status, to_status, created_at) VALUES (?, ?, 'failed', 'dead_letter', ?)`, queue, key, now)
+	if _, err := tx.ExecContext(ctx, `DELETE FROM active_leases WHERE queue = ? AND key = ?`, queue, key); err != nil {
+		return fmt.Errorf("delete active_lease: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE queue_state SET in_progress = MAX(in_progress - 1, 0) WHERE queue = ?`, queue); err != nil {
+		return fmt.Errorf("decrement in_progress: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO work_item_history (queue, key, from_status, to_status, created_at) VALUES (?, ?, 'failed', 'dead_letter', ?)`, queue, key, now); err != nil {
+		return fmt.Errorf("record history: %w", err)
+	}
 
 	s.emit(store.Event{Queue: queue, Key: key, Status: "dead_letter"})
 	return tx.Commit()
@@ -573,7 +674,13 @@ func (s *Store) ExtendLease(ctx context.Context, queue, key string, duration tim
 	exp := timeStr(time.Now().Add(duration))
 	now := timeStr(time.Now())
 
-	result, err := s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	result, err := tx.ExecContext(ctx, `
 		UPDATE work_items SET lease_expires = ?, updated_at = ?
 		WHERE queue = ? AND key = ? AND status IN ('claimed', 'running')
 	`, exp, now, queue, key)
@@ -584,11 +691,19 @@ func (s *Store) ExtendLease(ctx context.Context, queue, key string, duration tim
 	if n == 0 {
 		return store.ErrNotFound
 	}
-	return nil
+
+	if _, err := tx.ExecContext(ctx, `UPDATE active_leases SET lease_expires = ? WHERE queue = ? AND key = ?`, exp, queue, key); err != nil {
+		return fmt.Errorf("update active_lease: %w", err)
+	}
+
+	return tx.Commit()
 }
 
 func (s *Store) Transition(ctx context.Context, queue, key string, from, to store.Status, opts ...store.TransitionOption) error {
 	o := store.ApplyTransitionOptions(opts)
+	if !store.ValidTransition(from, to) {
+		return store.ErrInvalidTransition
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -618,19 +733,23 @@ func (s *Store) Transition(ctx context.Context, queue, key string, from, to stor
 	workerID := o.WorkerID
 	errMsg := o.ErrorMessage
 
-	tx.ExecContext(ctx, `
+	if _, err := tx.ExecContext(ctx, `
 		UPDATE work_items
 		SET status = ?,
 			worker_id = COALESCE(NULLIF(?, ''), worker_id),
 			error_message = COALESCE(NULLIF(?, ''), error_message),
 			updated_at = ?
 		WHERE queue = ? AND key = ?
-	`, to, workerID, errMsg, now, queue, key)
+	`, to, workerID, errMsg, now, queue, key); err != nil {
+		return fmt.Errorf("transition: %w", err)
+	}
 
-	tx.ExecContext(ctx, `
+	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO work_item_history (queue, key, from_status, to_status, worker_id, error_message, created_at)
 		VALUES (?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?)
-	`, queue, key, from, to, workerID, errMsg, now)
+	`, queue, key, from, to, workerID, errMsg, now); err != nil {
+		return fmt.Errorf("record history: %w", err)
+	}
 
 	s.emit(store.Event{Queue: queue, Key: key, Status: string(to)})
 	return tx.Commit()
@@ -760,6 +879,37 @@ func (s *Store) List(ctx context.Context, filter store.ListFilter) ([]store.Work
 	return items, nil
 }
 
+func (s *Store) ListExpiredLeases(ctx context.Context, queue string, limit int) ([]store.WorkItem, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	nowStr := timeStr(time.Now())
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT wi.queue, wi.key, wi.status, wi.priority, wi.attempts, wi.max_attempts,
+			wi.not_before, wi.lease_expires, wi.worker_id, wi.error_message,
+			wi.created_at, wi.updated_at, wi.claimed_at, wi.completed_at
+		FROM active_leases al
+		JOIN work_items wi ON wi.queue = al.queue AND wi.key = al.key
+		WHERE al.queue = ? AND al.lease_expires < ?
+		ORDER BY al.lease_expires
+		LIMIT ?
+	`, queue, nowStr, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list expired leases: %w", err)
+	}
+	defer rows.Close()
+
+	var items []store.WorkItem
+	for rows.Next() {
+		item, err := scanWorkItem(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan expired item: %w", err)
+		}
+		items = append(items, item)
+	}
+	return items, nil
+}
+
 func (s *Store) GetItem(ctx context.Context, queue, key string) (*store.WorkItem, error) {
 	row := s.db.QueryRowContext(ctx, "SELECT "+selectCols+" FROM work_items WHERE queue = ? AND key = ?", queue, key)
 	item, err := scanWorkItem(row)
@@ -796,18 +946,30 @@ func (s *Store) ListQueues(ctx context.Context) ([]store.QueueInfo, error) {
 		queues = append(queues, qi)
 	}
 
+	crows, err := s.db.QueryContext(ctx, `
+		SELECT queue, status, COUNT(*) FROM work_items GROUP BY queue, status
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("count items: %w", err)
+	}
+	defer crows.Close()
+
+	countMap := make(map[string]map[string]int)
+	for crows.Next() {
+		var queue, status string
+		var count int
+		if err := crows.Scan(&queue, &status, &count); err != nil {
+			return nil, err
+		}
+		if countMap[queue] == nil {
+			countMap[queue] = make(map[string]int)
+		}
+		countMap[queue][status] = count
+	}
+
 	for i := range queues {
-		crows, _ := s.db.QueryContext(ctx, `
-			SELECT status, COUNT(*) FROM work_items WHERE queue = ? GROUP BY status
-		`, queues[i].Name)
-		if crows != nil {
-			for crows.Next() {
-				var status string
-				var count int
-				crows.Scan(&status, &count)
-				queues[i].Counts[status] = count
-			}
-			crows.Close()
+		if counts, ok := countMap[queues[i].Name]; ok {
+			queues[i].Counts = counts
 		}
 	}
 
@@ -962,6 +1124,12 @@ func (s *Store) emit(event store.Event) {
 		default:
 		}
 	}
+}
+
+// --- Health ---
+
+func (s *Store) Ping(ctx context.Context) error {
+	return s.db.PingContext(ctx)
 }
 
 // Verify interface compliance.

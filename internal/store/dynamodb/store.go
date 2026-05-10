@@ -56,12 +56,21 @@ type Config struct {
 	S3Endpoint    string // optional, for MinIO/rustfs
 }
 
+// countCacheEntry holds cached CountByStatus results with an expiry time.
+type countCacheEntry struct {
+	counts map[store.Status]int64
+	expiry time.Time
+}
+
 // Store implements store.Interface using DynamoDB + S3.
 type Store struct {
 	ddb        *dynamodb.Client
 	s3client   *s3.Client
 	table      string
 	histBucket string
+
+	countCache   map[string]countCacheEntry
+	countCacheMu sync.Mutex
 }
 
 // New creates a new DynamoDB+S3 store.
@@ -95,6 +104,7 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 		s3client:   s3.NewFromConfig(awsCfg, s3Opts...),
 		table:      cfg.TableName,
 		histBucket: cfg.HistoryBucket,
+		countCache: make(map[string]countCacheEntry),
 	}, nil
 }
 
@@ -105,6 +115,7 @@ func NewWithClients(ddb *dynamodb.Client, s3client *s3.Client, tableName, histor
 		s3client:   s3client,
 		table:      tableName,
 		histBucket: historyBucket,
+		countCache: make(map[string]countCacheEntry),
 	}
 }
 
@@ -543,19 +554,55 @@ func (s *Store) ClaimBatch(ctx context.Context, queue string, batchSize int, wor
 }
 
 func (s *Store) Complete(ctx context.Context, queue, key string) error {
-	return s.setTerminalStatus(ctx, queue, key, store.StatusSucceeded, "")
-}
-
-func (s *Store) Fail(ctx context.Context, queue, key string, errMsg string) error {
-	return s.setTerminalStatus(ctx, queue, key, store.StatusFailed, errMsg)
-}
-
-func (s *Store) setTerminalStatus(ctx context.Context, queue, key string, status store.Status, errMsg string) error {
 	now := time.Now()
 	pk := itemPK(queue, key)
 
-	updateExpr := "SET #status = :status, #gsi1pk = :gsi1pk, #completed = :now, #updated = :now" +
-		", #lease = :empty"
+	_, err := s.ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: &s.table,
+		Key: map[string]dyntypes.AttributeValue{
+			"PK": &dyntypes.AttributeValueMemberS{Value: pk},
+			"SK": &dyntypes.AttributeValueMemberS{Value: itemSK},
+		},
+		ConditionExpression: aws.String("#status = :claimed OR #status = :running"),
+		UpdateExpression: aws.String(
+			"SET #status = :status, #gsi1pk = :gsi1pk, #completed = :now, #updated = :now, #lease = :empty"),
+		ExpressionAttributeNames: map[string]string{
+			"#status":    "status",
+			"#gsi1pk":    "GSI1PK",
+			"#completed": "completed_at",
+			"#updated":   "updated_at",
+			"#lease":     "lease_expires",
+		},
+		ExpressionAttributeValues: map[string]dyntypes.AttributeValue{
+			":claimed": &dyntypes.AttributeValueMemberS{Value: "claimed"},
+			":running": &dyntypes.AttributeValueMemberS{Value: "running"},
+			":status":  &dyntypes.AttributeValueMemberS{Value: string(store.StatusSucceeded)},
+			":gsi1pk":  &dyntypes.AttributeValueMemberS{Value: gsi1PK(queue, store.StatusSucceeded)},
+			":now":     &dyntypes.AttributeValueMemberS{Value: timeStr(now)},
+			":empty":   &dyntypes.AttributeValueMemberS{Value: ""},
+		},
+	})
+	if err != nil {
+		var condFail *dyntypes.ConditionalCheckFailedException
+		if ok := errors.As(err, &condFail); ok {
+			return store.ErrNotFound
+		}
+		return fmt.Errorf("complete: %w", err)
+	}
+
+	s.decrementInProgress(ctx, queue)
+	s.writeHistory(ctx, queue, key, store.HistoryEntry{
+		Queue: queue, Key: key, FromStatus: "running", ToStatus: "succeeded",
+		CreatedAt: now,
+	})
+	return nil
+}
+
+func (s *Store) Fail(ctx context.Context, queue, key string, errMsg string) error {
+	now := time.Now()
+	pk := itemPK(queue, key)
+
+	updateExpr := "SET #status = :status, #gsi1pk = :gsi1pk, #completed = :now, #updated = :now, #lease = :empty"
 	exprNames := map[string]string{
 		"#status":    "status",
 		"#gsi1pk":    "GSI1PK",
@@ -566,8 +613,8 @@ func (s *Store) setTerminalStatus(ctx context.Context, queue, key string, status
 	exprValues := map[string]dyntypes.AttributeValue{
 		":claimed": &dyntypes.AttributeValueMemberS{Value: "claimed"},
 		":running": &dyntypes.AttributeValueMemberS{Value: "running"},
-		":status":  &dyntypes.AttributeValueMemberS{Value: string(status)},
-		":gsi1pk":  &dyntypes.AttributeValueMemberS{Value: gsi1PK(queue, status)},
+		":status":  &dyntypes.AttributeValueMemberS{Value: string(store.StatusFailed)},
+		":gsi1pk":  &dyntypes.AttributeValueMemberS{Value: gsi1PK(queue, store.StatusFailed)},
 		":now":     &dyntypes.AttributeValueMemberS{Value: timeStr(now)},
 		":empty":   &dyntypes.AttributeValueMemberS{Value: ""},
 	}
@@ -594,12 +641,15 @@ func (s *Store) setTerminalStatus(ctx context.Context, queue, key string, status
 		if ok := errors.As(err, &condFail); ok {
 			return store.ErrNotFound
 		}
-		return fmt.Errorf("set terminal status: %w", err)
+		return fmt.Errorf("fail: %w", err)
 	}
 
-	s.decrementInProgress(ctx, queue)
+	// Do NOT decrement in_progress here. Fail() is always followed by
+	// Requeue() or Deadletter(), which handle the decrement. Decrementing
+	// in both places would double-decrement the counter.
+
 	s.writeHistory(ctx, queue, key, store.HistoryEntry{
-		Queue: queue, Key: key, FromStatus: "running", ToStatus: string(status),
+		Queue: queue, Key: key, FromStatus: "running", ToStatus: "failed",
 		ErrorMessage: errMsg, CreatedAt: now,
 	})
 	return nil
@@ -813,6 +863,9 @@ func (s *Store) ExtendLease(ctx context.Context, queue, key string, duration tim
 
 func (s *Store) Transition(ctx context.Context, queue, key string, from, to store.Status, opts ...store.TransitionOption) error {
 	o := store.ApplyTransitionOptions(opts)
+	if !store.ValidTransition(from, to) {
+		return store.ErrInvalidTransition
+	}
 	now := time.Now()
 	pk := itemPK(queue, key)
 
@@ -864,7 +917,7 @@ func (s *Store) Transition(ctx context.Context, queue, key string, from, to stor
 	}
 
 	s.writeHistory(ctx, queue, key, store.HistoryEntry{
-		Queue: queue, Key: key, FromStatus: string(from), ToStatus: string(to),
+		Queue: queue, Key: key, FromStatus: from, ToStatus: to,
 		WorkerID: o.WorkerID, CreatedAt: now,
 	})
 	return nil
@@ -956,7 +1009,17 @@ func (s *Store) getQueueConfig(ctx context.Context, queue string) store.QueueCon
 // --- Query Operations ---
 
 func (s *Store) CountByStatus(ctx context.Context, queue string, statuses ...store.Status) (map[store.Status]int64, error) {
-	if len(statuses) == 0 {
+	fullQuery := len(statuses) == 0
+
+	// Check cache for full (unfiltered) counts.
+	if fullQuery {
+		s.countCacheMu.Lock()
+		if entry, ok := s.countCache[queue]; ok && time.Now().Before(entry.expiry) {
+			s.countCacheMu.Unlock()
+			return entry.counts, nil
+		}
+		s.countCacheMu.Unlock()
+
 		statuses = []store.Status{
 			store.StatusPending, store.StatusClaimed, store.StatusRunning,
 			store.StatusSucceeded, store.StatusFailed, store.StatusDeadLetter,
@@ -973,6 +1036,14 @@ func (s *Store) CountByStatus(ctx context.Context, queue string, statuses ...sto
 			counts[status] = n
 		}
 	}
+
+	// Cache full results.
+	if fullQuery {
+		s.countCacheMu.Lock()
+		s.countCache[queue] = countCacheEntry{counts: counts, expiry: time.Now().Add(5 * time.Second)}
+		s.countCacheMu.Unlock()
+	}
+
 	return counts, nil
 }
 
@@ -997,6 +1068,7 @@ func (s *Store) tryIncrementInProgress(ctx context.Context, queue string, maxCon
 }
 
 // decrementInProgress atomically decrements the in_progress counter.
+// Uses a condition expression to prevent the counter from going below zero.
 func (s *Store) decrementInProgress(ctx context.Context, queue string) {
 	pk := "_queue#" + queue
 	s.ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
@@ -1005,9 +1077,11 @@ func (s *Store) decrementInProgress(ctx context.Context, queue string) {
 			"PK": &dyntypes.AttributeValueMemberS{Value: pk},
 			"SK": &dyntypes.AttributeValueMemberS{Value: cfgSK},
 		},
-		UpdateExpression: aws.String("ADD in_progress :neg"),
+		ConditionExpression: aws.String("attribute_exists(in_progress) AND in_progress > :zero"),
+		UpdateExpression:    aws.String("ADD in_progress :neg"),
 		ExpressionAttributeValues: map[string]dyntypes.AttributeValue{
-			":neg": &dyntypes.AttributeValueMemberN{Value: "-1"},
+			":neg":  &dyntypes.AttributeValueMemberN{Value: "-1"},
+			":zero": &dyntypes.AttributeValueMemberN{Value: "0"},
 		},
 	})
 }
@@ -1059,16 +1133,37 @@ func (s *Store) List(ctx context.Context, filter store.ListFilter) ([]store.Work
 	}
 
 	if filter.Status != nil {
-		return s.listByStatus(ctx, filter.Queue, *filter.Status, limit)
+		fetchLimit := limit
+		if filter.Offset > 0 {
+			fetchLimit += filter.Offset
+		}
+		items, err := s.listByStatus(ctx, filter.Queue, *filter.Status, fetchLimit)
+		if err != nil {
+			return nil, err
+		}
+		if filter.Offset > 0 {
+			if filter.Offset >= len(items) {
+				return nil, nil
+			}
+			items = items[filter.Offset:]
+		}
+		if limit > len(items) {
+			limit = len(items)
+		}
+		return items[:limit], nil
 	}
 
 	// List all statuses and merge.
+	fetchLimit := limit
+	if filter.Offset > 0 {
+		fetchLimit += filter.Offset
+	}
 	var all []store.WorkItem
 	for _, status := range []store.Status{
 		store.StatusPending, store.StatusClaimed, store.StatusRunning,
 		store.StatusSucceeded, store.StatusFailed, store.StatusDeadLetter,
 	} {
-		items, _ := s.listByStatus(ctx, filter.Queue, status, limit)
+		items, _ := s.listByStatus(ctx, filter.Queue, status, fetchLimit)
 		all = append(all, items...)
 	}
 
@@ -1078,6 +1173,14 @@ func (s *Store) List(ctx context.Context, filter store.ListFilter) ([]store.Work
 		}
 		return all[i].CreatedAt.Before(all[j].CreatedAt)
 	})
+
+	// Apply offset.
+	if filter.Offset > 0 {
+		if filter.Offset >= len(all) {
+			return nil, nil
+		}
+		all = all[filter.Offset:]
+	}
 
 	if limit > len(all) {
 		limit = len(all)
@@ -1108,6 +1211,32 @@ func (s *Store) listByStatus(ctx context.Context, queue string, status store.Sta
 		items = append(items, item.toWorkItem())
 	}
 	return items, nil
+}
+
+func (s *Store) ListExpiredLeases(ctx context.Context, queue string, limit int) ([]store.WorkItem, error) {
+	now := time.Now()
+	var expired []store.WorkItem
+
+	for _, status := range []store.Status{store.StatusClaimed, store.StatusRunning} {
+		items, err := s.listByStatus(ctx, queue, status, 1000)
+		if err != nil {
+			return nil, fmt.Errorf("list %s items: %w", status, err)
+		}
+		for _, item := range items {
+			if item.LeaseExpires != nil && item.LeaseExpires.Before(now) {
+				expired = append(expired, item)
+			}
+		}
+	}
+
+	sort.Slice(expired, func(i, j int) bool {
+		return expired[i].LeaseExpires.Before(*expired[j].LeaseExpires)
+	})
+
+	if limit > 0 && len(expired) > limit {
+		expired = expired[:limit]
+	}
+	return expired, nil
 }
 
 func (s *Store) GetItem(ctx context.Context, queue, key string) (*store.WorkItem, error) {
@@ -1163,9 +1292,19 @@ func (s *Store) ListQueues(ctx context.Context) ([]store.QueueInfo, error) {
 			continue
 		}
 		queueName := strings.TrimPrefix(pkAttr.Value, "_queue#")
-		cfg := s.getQueueConfig(ctx, queueName)
 
-		paused, _ := s.IsQueuePaused(ctx, queueName)
+		// Parse config directly from scan result instead of re-fetching.
+		cfg := store.QueueConfig{MaxConcurrency: 10, MaxRetry: 5}
+		if v, ok := item["config"].(*dyntypes.AttributeValueMemberS); ok {
+			json.Unmarshal([]byte(v.Value), &cfg)
+		}
+
+		// Check paused state from the same scan item.
+		paused := false
+		if v, ok := item["paused"].(*dyntypes.AttributeValueMemberBOOL); ok {
+			paused = v.Value
+		}
+
 		counts, _ := s.CountByStatus(ctx, queueName)
 		qi := store.QueueInfo{
 			Name:           queueName,
@@ -1322,7 +1461,7 @@ func (s *Store) Subscribe(ctx context.Context, queue string) (<-chan store.Event
 	ch := make(chan store.Event, 64)
 	go func() {
 		defer close(ch)
-		ticker := time.NewTicker(2 * time.Second)
+		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
 
 		var lastPending, lastClaimed int64
@@ -1331,7 +1470,7 @@ func (s *Store) Subscribe(ctx context.Context, queue string) (<-chan store.Event
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				counts, _ := s.CountByStatus(ctx, queue)
+				counts, _ := s.CountByStatus(ctx, queue, store.StatusPending, store.StatusClaimed)
 				pending := counts[store.StatusPending]
 				claimed := counts[store.StatusClaimed]
 				if pending != lastPending || claimed != lastClaimed {
@@ -1347,6 +1486,15 @@ func (s *Store) Subscribe(ctx context.Context, queue string) (<-chan store.Event
 		}
 	}()
 	return ch, nil
+}
+
+// --- Health ---
+
+func (s *Store) Ping(ctx context.Context) error {
+	_, err := s.ddb.DescribeTable(ctx, &dynamodb.DescribeTableInput{
+		TableName: &s.table,
+	})
+	return err
 }
 
 // Verify interface compliance.

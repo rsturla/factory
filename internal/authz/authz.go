@@ -32,6 +32,12 @@ const (
 	ActionWorkersRead     Action = "workers:read"
 	ActionEventsStream    Action = "events:stream"
 	ActionEnqueue         Action = "enqueue"
+	ActionClaim           Action = "claim"
+	ActionComplete        Action = "complete"
+	ActionRequeue         Action = "requeue"
+	ActionDeadletter      Action = "deadletter"
+	ActionTransition      Action = "transition"
+	ActionQueueAdmin      Action = "queue:admin"
 )
 
 // Request describes an authorization check.

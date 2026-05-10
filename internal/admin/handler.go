@@ -3,11 +3,13 @@ package admin
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 
 	"github.com/hummingbird-org/factory-workqueue/internal/authz"
+	"github.com/hummingbird-org/factory-workqueue/internal/httputil"
 	"github.com/hummingbird-org/factory-workqueue/internal/store"
 )
 
@@ -32,6 +34,10 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	wrapQueue := func(action authz.Action, handler http.HandlerFunc) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			queue := r.PathValue("name")
+			if !httputil.ValidQueueName(queue) {
+				http.Error(w, "invalid queue name", http.StatusBadRequest)
+				return
+			}
 			authz.Wrap(h.authz, action, queue, http.HandlerFunc(handler)).ServeHTTP(w, r)
 		})
 	}
@@ -43,8 +49,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("POST /admin/queues/{name}/items/{key}/retry", wrapQueue(authz.ActionItemsRetry, h.retryItem))
 	mux.Handle("POST /admin/queues/{name}/items/{key}/cancel", wrapQueue(authz.ActionItemsCancel, h.cancelItem))
 	mux.Handle("DELETE /admin/queues/{name}/dead-letters", wrapQueue(authz.ActionDeadLetterPurge, h.purgeDeadLetters))
-	mux.Handle("POST /admin/queues/{name}/pause", wrapQueue(authz.ActionItemsCancel, h.pauseQueue))
-	mux.Handle("POST /admin/queues/{name}/resume", wrapQueue(authz.ActionItemsCancel, h.resumeQueue))
+	mux.Handle("POST /admin/queues/{name}/pause", wrapQueue(authz.ActionQueueAdmin, h.pauseQueue))
+	mux.Handle("POST /admin/queues/{name}/resume", wrapQueue(authz.ActionQueueAdmin, h.resumeQueue))
 	mux.Handle("GET /admin/workers", wrap(authz.ActionWorkersRead, h.listWorkers))
 	mux.Handle("GET /admin/queues/{name}/events", wrapQueue(authz.ActionEventsStream, h.streamEvents))
 }
@@ -214,6 +220,18 @@ func writeJSON(w http.ResponseWriter, v any) {
 }
 
 func serverError(w http.ResponseWriter, op string, err error) {
+	if errors.Is(err, store.ErrNotFound) {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	if errors.Is(err, store.ErrConflict) {
+		http.Error(w, "conflict", http.StatusConflict)
+		return
+	}
+	if errors.Is(err, store.ErrInvalidTransition) {
+		http.Error(w, "invalid state transition", http.StatusBadRequest)
+		return
+	}
 	slog.Error("admin api error", "op", op, "error", err)
-	http.Error(w, err.Error(), http.StatusInternalServerError)
+	http.Error(w, "internal server error", http.StatusInternalServerError)
 }

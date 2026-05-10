@@ -2,6 +2,7 @@ package wqapi_test
 
 import (
 	"bytes"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -15,7 +16,7 @@ import (
 func newFuzzMux(t *testing.T) (*http.ServeMux, store.Interface) {
 	t.Helper()
 	s := inmem.New()
-	s.EnsureQueue(nil, "q", store.QueueConfig{MaxConcurrency: 10, MaxRetry: 5})
+	s.EnsureQueue(context.Background(), "q", store.QueueConfig{MaxConcurrency: 10, MaxRetry: 5})
 	mux := http.NewServeMux()
 	wqapi.NewHandler(s, noop.Authorizer{}).Register(mux)
 	return mux, s

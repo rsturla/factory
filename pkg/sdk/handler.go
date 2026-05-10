@@ -24,9 +24,10 @@ func ReconcilerHandler(fn ReconcileFunc) http.Handler {
 		resp, err := fn(r.Context(), req)
 		if err != nil {
 			// Reconciler returned an error — treat as retriable failure.
+			// Leave Action empty; the dispatcher checks Error first and
+			// routes to HandleFailure, so Action is not inspected.
 			resp = ProcessResponse{
-				Action: ActionCompleted,
-				Error:  err.Error(),
+				Error: err.Error(),
 			}
 		}
 
