@@ -33,7 +33,7 @@ This repo is the **platform**. It must never contain domain-specific logic (RPM,
 - `internal/store/inmem/` — In-memory implementation (unit tests).
 - `internal/store/conformance/` — Conformance test suite. All store implementations must pass.
 - `internal/storeutil/` — Store creation from `STORE_BACKEND` env var. Used by all binaries.
-- `internal/dispatcher/` — Dispatch/sweep/reaper/scale loops.
+- `internal/dispatcher/` — Active-active dispatch/sweep/reaper/scale loops.
 - `internal/completion/` — Retry, backoff, dead-letter decisions.
 - `internal/compute/` — Compute provider abstraction (K8s, EC2, extensible).
 - `internal/admin/` — Admin API HTTP handlers.

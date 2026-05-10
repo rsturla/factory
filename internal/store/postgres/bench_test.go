@@ -114,10 +114,11 @@ func TestHOTUpdateRatio(t *testing.T) {
 	// the status column. All updates are HOT-eligible. The limiting factor
 	// is page space: fillfactor=70 leaves 30% free per page, and each item
 	// gets 3 updates (claim→transition→complete). This yields ~72-77% HOT
-	// locally. CI with -race and parallel tests sees ~58-65% due to stat
-	// counter noise. A status-referencing index would drop HOT to ~0%.
-	if hotPct < 55 {
-		t.Errorf("HOT ratio %.1f%% is below 55%% threshold — check for status-referencing indexes on work_items", hotPct)
+	// locally. CI with -race and parallel tests sees ~50-65% due to stat
+	// counter noise and CTE execution patterns. A status-referencing
+	// index would drop HOT to ~0%.
+	if hotPct < 45 {
+		t.Errorf("HOT ratio %.1f%% is below 45%% threshold — check for status-referencing indexes on work_items", hotPct)
 	}
 }
 

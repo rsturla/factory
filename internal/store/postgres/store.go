@@ -239,22 +239,34 @@ func (s *Store) ClaimBatch(ctx context.Context, queue string, batchSize int, wor
 	}
 	defer tx.Rollback(ctx)
 
-	var inProgress, maxConc int
+	// Lock the queue_state row to serialize concurrent ClaimBatch calls
+	// (~1-5ms hold time). Read max_concurrency from queue_state, then
+	// derive current concurrency from count(active_leases) instead of
+	// a driftable in_progress counter.
+	var maxConc int
 	err = tx.QueryRow(ctx, `
-		SELECT in_progress, max_concurrency FROM queue_state
+		SELECT max_concurrency FROM queue_state
 		WHERE queue = $1 FOR UPDATE
-	`, queue).Scan(&inProgress, &maxConc)
+	`, queue).Scan(&maxConc)
 	if err != nil {
 		return nil, fmt.Errorf("read queue_state: %w", err)
 	}
 
-	remaining := maxConc - inProgress
+	var activeCount int
+	err = tx.QueryRow(ctx, `
+		SELECT COUNT(*) FROM active_leases WHERE queue = $1
+	`, queue).Scan(&activeCount)
+	if err != nil {
+		return nil, fmt.Errorf("count active_leases: %w", err)
+	}
+
+	remaining := maxConc - activeCount
 	if remaining <= 0 {
 		return nil, nil
 	}
 	limit := min(batchSize, remaining)
 
-	// Single statement: claim items, insert leases, update counter, record history.
+	// Single CTE: claim items, insert leases, update counter, record history.
 	rows, err := tx.Query(ctx, `
 		WITH claimed_keys AS (
 			DELETE FROM claim_queue
@@ -284,10 +296,6 @@ func (s *Store) ClaimBatch(ctx context.Context, queue string, batchSize int, wor
 		insert_leases AS (
 			INSERT INTO active_leases (queue, key, worker_id, lease_expires)
 			SELECT queue, key, worker_id, lease_expires FROM claimed
-		),
-		update_counter AS (
-			UPDATE queue_state SET in_progress = in_progress + (SELECT count(*) FROM claimed)
-			WHERE queue = $3
 		),
 		insert_history AS (
 			INSERT INTO work_item_history (queue, key, from_status, to_status, worker_id, attempt)
@@ -350,11 +358,6 @@ func (s *Store) Complete(ctx context.Context, queue, key string) error {
 		delete_lease AS (
 			DELETE FROM active_leases
 			WHERE queue = $1 AND key = $2
-			  AND EXISTS (SELECT 1 FROM completed)
-		),
-		decrement AS (
-			UPDATE queue_state SET in_progress = GREATEST(in_progress - 1, 0)
-			WHERE queue = $1
 			  AND EXISTS (SELECT 1 FROM completed)
 		)
 		INSERT INTO work_item_history (queue, key, from_status, to_status)
@@ -425,11 +428,6 @@ func (s *Store) Requeue(ctx context.Context, queue, key string, opts ...store.Re
 			WHERE queue = $1 AND key = $2
 			  AND EXISTS (SELECT 1 FROM requeued)
 		),
-		decrement AS (
-			UPDATE queue_state SET in_progress = GREATEST(in_progress - 1, 0)
-			WHERE queue = $1
-			  AND EXISTS (SELECT 1 FROM requeued)
-		),
 		insert_claim AS (
 			INSERT INTO claim_queue (queue, key, priority, not_before, created_at)
 			SELECT queue, key, priority, not_before, created_at FROM requeued
@@ -469,11 +467,6 @@ func (s *Store) RequeueUndoAttempt(ctx context.Context, queue, key string, notBe
 			WHERE queue = $1 AND key = $2
 			  AND EXISTS (SELECT 1 FROM requeued)
 		),
-		decrement AS (
-			UPDATE queue_state SET in_progress = GREATEST(in_progress - 1, 0)
-			WHERE queue = $1
-			  AND EXISTS (SELECT 1 FROM requeued)
-		),
 		insert_claim AS (
 			INSERT INTO claim_queue (queue, key, priority, not_before, created_at)
 			SELECT queue, key, priority, not_before, created_at FROM requeued
@@ -506,11 +499,6 @@ func (s *Store) Deadletter(ctx context.Context, queue, key string) error {
 		delete_lease AS (
 			DELETE FROM active_leases
 			WHERE queue = $1 AND key = $2
-			  AND EXISTS (SELECT 1 FROM dead)
-		),
-		decrement AS (
-			UPDATE queue_state SET in_progress = GREATEST(in_progress - 1, 0)
-			WHERE queue = $1
 			  AND EXISTS (SELECT 1 FROM dead)
 		)
 		INSERT INTO work_item_history (queue, key, from_status, to_status)
@@ -654,11 +642,13 @@ func (s *Store) IsQueuePaused(ctx context.Context, queue string) (bool, error) {
 }
 
 func (s *Store) RepairCounter(ctx context.Context, queue string) error {
+	// Update the informational in_progress counter from active_leases,
+	// which is the authoritative source for concurrency.
 	_, err := s.pool.Exec(ctx, `
 		UPDATE queue_state
 		SET in_progress = (
-			SELECT COUNT(*) FROM work_items
-			WHERE queue = $1 AND status IN ('claimed', 'running')
+			SELECT COUNT(*) FROM active_leases
+			WHERE queue = $1
 		)
 		WHERE queue = $1
 	`, queue)

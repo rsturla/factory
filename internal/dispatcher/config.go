@@ -51,12 +51,6 @@ type Config struct {
 
 	// MaxRetry before dead-lettering.
 	MaxRetry int
-
-	// LeaderInterval is how often the leader election tick runs.
-	LeaderInterval time.Duration
-
-	// LeaderTTL is the leader lease duration. Must be > LeaderInterval.
-	LeaderTTL time.Duration
 }
 
 // DefaultConfig returns a Config with sensible production defaults.
@@ -71,7 +65,5 @@ func DefaultConfig(queueName string) Config {
 		BatchSize:        10,
 		MaxConcurrency:   10,
 		MaxRetry:         5,
-		LeaderInterval:   5 * time.Second,
-		LeaderTTL:        15 * time.Second,
 	}
 }

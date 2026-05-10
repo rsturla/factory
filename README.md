@@ -196,8 +196,6 @@ Python and Rust SDKs are also available — see [docs/SDK.md](docs/SDK.md).
 | `DISPATCH_MAX_RETRY` | `5` | Attempts before dead-lettering |
 | `DISPATCH_LEASE_DURATION` | `1h` | Lease granted to claimed items |
 | `DISPATCH_SWEEP_INTERVAL` | `30s` | How often the sweep loop runs |
-| `DISPATCH_LEADER_INTERVAL` | `10s` | Leader election heartbeat interval |
-| `DISPATCH_LEADER_TTL` | `30s` | Leader election TTL |
 
 ### RECEIVER_ (receiver)
 

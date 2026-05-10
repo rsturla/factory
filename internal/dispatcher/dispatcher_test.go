@@ -45,8 +45,6 @@ func newDispatcher(t *testing.T, s store.Interface, reconcilerURL string) (*disp
 		BatchSize:        10,
 		MaxConcurrency:   5,
 		MaxRetry:         3,
-		LeaderInterval:   50 * time.Millisecond,
-		LeaderTTL:        10 * time.Second,
 	}
 	d := dispatcher.New(s, client.NewReconcilerClient(reconcilerURL), compute.NoopProvider{}, cfg)
 	return d, cfg
@@ -267,8 +265,6 @@ func TestDispatcher_PriorityOrder(t *testing.T) {
 		BatchSize:        1,
 		MaxConcurrency:   1,
 		MaxRetry:         3,
-		LeaderInterval:   50 * time.Millisecond,
-		LeaderTTL:        10 * time.Second,
 	}
 	d := dispatcher.New(s, client.NewReconcilerClient(srv.URL), compute.NoopProvider{}, cfg)
 
@@ -395,8 +391,6 @@ func TestReconcilerTimeout(t *testing.T) {
 		BatchSize:        10,
 		MaxConcurrency:   5,
 		MaxRetry:         3,
-		LeaderInterval:   50 * time.Millisecond,
-		LeaderTTL:        10 * time.Second,
 	}
 	d := dispatcher.New(s, client.NewReconcilerClient(srv.URL), compute.NoopProvider{}, cfg)
 
@@ -555,8 +549,6 @@ func TestDispatcher_Reaper(t *testing.T) {
 		BatchSize:      10,
 		MaxConcurrency: 10,
 		MaxRetry:       5,
-		LeaderInterval: 50 * time.Millisecond,
-		LeaderTTL:      10 * time.Second,
 	}
 	d := dispatcher.New(s, client.NewReconcilerClient(srv.URL), compute.NoopProvider{}, cfg)
 

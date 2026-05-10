@@ -11,23 +11,23 @@ your service → receiver /enqueue → PostgreSQL → dispatcher → reconciler 
 ```
 
 - **Receiver**: stateless HTTP server, accepts enqueue requests, writes keys to the queue
-- **Dispatcher**: singleton per queue, claims items via SKIP LOCKED, invokes reconcilers
+- **Dispatcher**: active-active per queue (2+ replicas), claims items via SKIP LOCKED, invokes reconcilers
 - **Reconciler**: stateless HTTP server, does the actual work (builds, tests, etc.)
 - **PostgreSQL**: shared by all queues, handles all durable state
 
-The dispatcher claims batches of items and sends concurrent HTTP requests to the reconciler Kubernetes Service, which load-balances across reconciler pods.
+Each dispatcher replica claims batches of items using `SELECT FOR UPDATE SKIP LOCKED` to prevent double-claims. Max concurrency is enforced by counting rows in the `active_leases` table rather than maintaining a driftable counter. Multiple dispatcher replicas send concurrent HTTP requests to the reconciler Kubernetes Service, which load-balances across reconciler pods.
 
 ## What scales and what doesn't
 
 | Component | Scaling model | Replicas |
 |-----------|--------------|----------|
 | Receiver | Horizontal (stateless) | 2-5, behind a Service |
-| Dispatcher | Singleton per queue | 1 per queue |
+| Dispatcher | Active-active per queue | 2-3 per queue |
 | Reconciler | Horizontal via HPA | 2-200 per queue |
 | PostgreSQL | Vertical + read replicas | 1 primary + 2 replicas (PGO) |
 | Admin API | Horizontal (stateless) | 2-3, on read replica |
 
-**The reconciler fleet is the primary scaling lever.** Everything else is either a singleton (dispatcher) or lightweight enough that 2-3 replicas suffice (receiver, admin).
+**The reconciler fleet is the primary scaling lever.** Dispatchers run active-active (no leader election) and use SKIP LOCKED + active_leases counting for safe concurrent claiming. All other components are lightweight enough that 2-3 replicas suffice (receiver, admin).
 
 ## Scaling the reconciler fleet
 
@@ -145,13 +145,13 @@ You need enough reconciler pods to handle 1,800 concurrent reconciliations. At 1
 | mr-review | 20,000 | 5s | 15 | 5 |
 | **Total** | **500,000** | | **1,815** | **185 pods** |
 
-Plus 5 dispatchers (1 per queue), 5 receivers, 3 admin replicas, 3 PostgreSQL nodes = **~200 pods total**.
+Plus 10-15 dispatchers (2-3 per queue), 5 receivers, 3 admin replicas, 3 PostgreSQL nodes = **~210 pods total**.
 
 ## Queue isolation
 
 Each queue type is a completely independent pipeline. A burst of RPM rebuilds does not affect the codegen queue because:
 
-1. Different dispatcher pods (independent claim loops)
+1. Different dispatcher pods (independent active-active claim loops)
 2. Different reconciler Deployments (independent HPA)
 3. Different `max_concurrency` limits
 4. Same PostgreSQL, but SKIP LOCKED queries are partitioned by `WHERE queue = $1`
@@ -162,7 +162,7 @@ To add a new work type, deploy a new 3-service stack (receiver + dispatcher + re
 
 Signs that you need to evolve:
 
-1. **Single dispatcher can't claim fast enough**: dispatch cycle takes >100ms consistently. Fix: reduce `DISPATCH_INTERVAL`, increase `DISPATCH_BATCH_SIZE`, or split into sub-queues.
+1. **Dispatchers can't claim fast enough**: dispatch cycle takes >100ms consistently. Fix: add more dispatcher replicas, reduce `DISPATCH_INTERVAL`, increase `DISPATCH_BATCH_SIZE`, or split into sub-queues.
 
 2. **PostgreSQL write throughput saturated**: >5,000 txn/sec sustained. Fix: use CockroachDB (wire-compatible, auto-sharded) via the `store.Interface` abstraction.
 

@@ -69,7 +69,7 @@ Webhook/CI ──► Receiver ──► PostgreSQL ◄── Dispatcher ──�
 
 **Receiver** accepts enqueue requests over HTTP. Stateless, horizontally scalable. Writes keys to the store.
 
-**Dispatcher** claims keys from the store and dispatches them to reconcilers. Runs leader election per queue. Manages the full lifecycle: claim → dispatch → handle response → complete/retry/dead-letter.
+**Dispatcher** claims keys from the store and dispatches them to reconcilers. Runs active-active — all replicas claim concurrently via SKIP LOCKED. Manages the full lifecycle: claim → dispatch → handle response → complete/retry/dead-letter.
 
 **Reconciler** receives a key, fetches state, does work, returns a response. Lives in a separate repo with its own deployment. The workqueue platform knows nothing about RPMs, containers, or AI — it just manages keys.
 

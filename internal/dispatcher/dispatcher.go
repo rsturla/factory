@@ -25,6 +25,9 @@ import (
 )
 
 // Dispatcher manages the lifecycle of work items for a single queue.
+// All instances are active-active — there is no leader election.
+// SKIP LOCKED prevents double-claims, and active_leases count
+// enforces max_concurrency.
 type Dispatcher struct {
 	store      store.Interface
 	reconciler *client.ReconcilerClient
@@ -33,9 +36,6 @@ type Dispatcher struct {
 	cfg        Config
 	inFlight   sync.WaitGroup
 
-	leaderMu   sync.RWMutex
-	isLeader   bool
-	leaderTTL  time.Duration
 	sweepCount int
 }
 
@@ -78,20 +78,10 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 		"max_concurrency", d.cfg.MaxConcurrency,
 	)
 
-	leaderInterval := d.cfg.LeaderInterval
-	if leaderInterval <= 0 {
-		leaderInterval = 5 * time.Second
-	}
-	leaderTTL := d.cfg.LeaderTTL
-	if leaderTTL <= 0 {
-		leaderTTL = 15 * time.Second
-	}
-	d.leaderTTL = leaderTTL
+	// Active-active: all instances are always active. No leader election.
+	metrics.LeaderStatus.WithLabelValues(d.cfg.QueueName).Set(1)
 
 	g, gctx := errgroup.WithContext(ctx)
-
-	// Leader loop runs without jitter — must acquire leadership immediately.
-	g.Go(func() error { return d.loop(gctx, "leader", leaderInterval, d.leaderTick, false) })
 
 	if mode == ModePush {
 		g.Go(func() error { return d.loop(gctx, "dispatch", d.cfg.DispatchInterval, d.dispatchTick, true) })
@@ -131,36 +121,8 @@ func (d *Dispatcher) loop(ctx context.Context, name string, interval time.Durati
 	}
 }
 
-func (d *Dispatcher) leaderTick(ctx context.Context) {
-	ok, err := d.store.TryLeader(ctx, d.cfg.QueueName, d.cfg.WorkerID, d.leaderTTL)
-	if err != nil {
-		slog.Error("leader election failed", "queue", d.cfg.QueueName, "error", err)
-		return
-	}
-
-	d.leaderMu.Lock()
-	wasLeader := d.isLeader
-	d.isLeader = ok
-	d.leaderMu.Unlock()
-
-	if ok && !wasLeader {
-		slog.Info("acquired leadership", "queue", d.cfg.QueueName, "worker_id", d.cfg.WorkerID)
-		metrics.LeaderStatus.WithLabelValues(d.cfg.QueueName).Set(1)
-	} else if !ok && wasLeader {
-		slog.Warn("lost leadership", "queue", d.cfg.QueueName, "worker_id", d.cfg.WorkerID)
-		metrics.LeaderStatus.WithLabelValues(d.cfg.QueueName).Set(0)
-	}
-}
-
 func (d *Dispatcher) dispatchTick(ctx context.Context) {
 	if ctx.Err() != nil {
-		return
-	}
-
-	d.leaderMu.RLock()
-	leader := d.isLeader
-	d.leaderMu.RUnlock()
-	if !leader {
 		return
 	}
 
@@ -428,25 +390,14 @@ func (d *Dispatcher) sweepTick(ctx context.Context) {
 		metrics.OldestPendingAge.WithLabelValues(d.cfg.QueueName).Set(0)
 	}
 
-	// Repair the in_progress counter if it drifted (e.g., after a crash).
-	// Only the leader repairs, and only on full-sweep ticks (~every 10
-	// minutes) since drift is rare and the repair query is not free.
-	d.leaderMu.RLock()
-	leader := d.isLeader
-	d.leaderMu.RUnlock()
-	if leader && fullSweep {
+	// Repair the informational in_progress counter from active_leases
+	// every 5th sweep tick. All instances run this — it's idempotent.
+	if d.sweepCount%5 == 0 {
 		d.store.RepairCounter(ctx, d.cfg.QueueName)
 	}
 }
 
 func (d *Dispatcher) reaperTick(ctx context.Context) {
-	d.leaderMu.RLock()
-	leader := d.isLeader
-	d.leaderMu.RUnlock()
-	if !leader {
-		return
-	}
-
 	reaped := 0
 	for {
 		items, err := d.store.ListExpiredLeases(ctx, d.cfg.QueueName, 100)
@@ -458,10 +409,11 @@ func (d *Dispatcher) reaperTick(ctx context.Context) {
 			break
 		}
 		for _, item := range items {
-			slog.Warn("reaping expired item", "queue", item.Queue, "key", item.Key)
 			if err := d.store.Requeue(ctx, item.Queue, item.Key); err == nil {
+				slog.Warn("reaped expired item", "queue", item.Queue, "key", item.Key)
 				reaped++
 			}
+			// Suppress ErrNotFound — another dispatcher may have already reaped this item.
 		}
 		if len(items) < 100 {
 			break
@@ -474,13 +426,6 @@ func (d *Dispatcher) reaperTick(ctx context.Context) {
 }
 
 func (d *Dispatcher) scaleTick(ctx context.Context) {
-	d.leaderMu.RLock()
-	leader := d.isLeader
-	d.leaderMu.RUnlock()
-	if !leader {
-		return
-	}
-
 	counts, err := d.store.CountByStatus(ctx, d.cfg.QueueName, store.StatusPending, store.StatusClaimed, store.StatusRunning)
 	if err != nil {
 		return

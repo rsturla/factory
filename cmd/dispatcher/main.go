@@ -22,8 +22,6 @@
 //	DISPATCH_INTERVAL         - Dispatch loop interval (default: 2s)
 //	DISPATCH_SWEEP_INTERVAL   - Sweep loop interval (default: 30s)
 //	DISPATCH_LEASE_DURATION   - Lease duration for claimed items (default: 1h)
-//	DISPATCH_LEADER_INTERVAL  - Leader election interval (default: 10s)
-//	DISPATCH_LEADER_TTL       - Leader TTL (default: 30s)
 package main
 
 import (
@@ -67,8 +65,6 @@ func main() {
 	cfg.DispatchInterval = envutil.Duration("DISPATCH_INTERVAL", cfg.DispatchInterval)
 	cfg.SweepInterval = envutil.Duration("DISPATCH_SWEEP_INTERVAL", cfg.SweepInterval)
 	cfg.LeaseDuration = envutil.Duration("DISPATCH_LEASE_DURATION", cfg.LeaseDuration)
-	cfg.LeaderInterval = envutil.Duration("DISPATCH_LEADER_INTERVAL", cfg.LeaderInterval)
-	cfg.LeaderTTL = envutil.Duration("DISPATCH_LEADER_TTL", cfg.LeaderTTL)
 
 	// RECONCILER_ENDPOINT is only required in push mode.
 	reconcilerEndpoint := os.Getenv("RECONCILER_ENDPOINT")

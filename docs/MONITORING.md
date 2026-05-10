@@ -24,7 +24,7 @@ All services expose metrics at `GET /metrics` in Prometheus exposition format.
 | `factory_in_progress` | `queue` | Items currently being processed (claimed + running) |
 | `factory_max_concurrency` | `queue` | Maximum concurrent items allowed for a queue |
 | `factory_oldest_pending_age_seconds` | `queue` | Age in seconds of the oldest pending item (0 if queue is empty) |
-| `factory_leader_status` | `queue` | Whether this instance holds leadership for a queue (1=leader, 0=not) |
+| `factory_leader_status` | `queue` | Always 1 — all dispatcher instances are active (no leader election) |
 
 ### Histograms
 
