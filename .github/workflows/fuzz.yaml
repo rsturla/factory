@@ -60,7 +60,7 @@ jobs:
 
       - name: Fuzz ${{ matrix.target }}
         working-directory: ${{ matrix.workdir }}
-        run: go test ${{ matrix.pkg }} -fuzz=${{ matrix.target }} -fuzztime=60s -v
+        run: go test ${{ matrix.pkg }} -fuzz='^${{ matrix.target }}$' -fuzztime=60s -v
 
       - name: Upload crash artifacts
         if: failure()
