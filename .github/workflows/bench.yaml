@@ -47,20 +47,8 @@ jobs:
           AWS_ACCESS_KEY_ID=rustfsadmin AWS_SECRET_ACCESS_KEY=rustfsadmin \
             aws --endpoint-url http://localhost:9000 s3 mb s3://factory-test
 
-      - name: Find packages with benchmarks
-        id: find
-        run: |
-          pkgs=$(grep -rl '^func Benchmark' --include='*_test.go' . \
-            | xargs -I{} dirname {} | sort -u | sed 's|^\./|./|' | tr '\n' ' ')
-          echo "packages=$pkgs" >> "$GITHUB_OUTPUT"
-          echo "Benchmark packages: $pkgs"
-
       - name: Run benchmarks
-        if: steps.find.outputs.packages != ''
-        run: |
-          go test ${{ steps.find.outputs.packages }} \
-            -bench=. -benchmem -count=6 -run='^$' -timeout 300s \
-            | tee bench-results.txt
+        run: make bench | tee bench-results.txt
         env:
           PG_DATABASE_URL: postgres://factory:factory@localhost:5432/factory?sslmode=disable
           DDB_TEST_ENDPOINT: http://localhost:8000
@@ -81,7 +69,6 @@ jobs:
         run: go install golang.org/x/perf/cmd/benchstat@latest
 
       - name: Compare benchmarks
-        id: benchstat
         run: |
           if [ -f bench-baseline.txt ]; then
             echo "## Benchmark comparison" >> "$GITHUB_STEP_SUMMARY"

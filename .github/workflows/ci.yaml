@@ -38,18 +38,16 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.13"
       - name: Create S3 test bucket
         run: |
           AWS_ACCESS_KEY_ID=rustfsadmin AWS_SECRET_ACCESS_KEY=rustfsadmin \
             aws --endpoint-url http://localhost:9000 s3 mb s3://factory-test
-      - run: gofmt -l . | tee /dev/stderr | (! read)
-        name: Check formatting
-      - run: go vet ./...
-        name: Vet
-      - run: go vet ./...
-        name: Vet SDK module
-        working-directory: sdk/go/reconciler
-      - run: go test -v -race -count=1 -timeout 120s ./...
+      - run: make lint
+        name: Lint
+      - run: make test
         name: Test
         env:
           PG_DATABASE_URL: postgres://factory:factory@localhost:5432/factory?sslmode=disable
@@ -59,20 +57,3 @@ jobs:
           AWS_ACCESS_KEY_ID: test
           AWS_SECRET_ACCESS_KEY: test
           AWS_REGION: us-east-1
-      - run: go test -v -race -count=1 -timeout 30s ./...
-        name: Test SDK module
-        working-directory: sdk/go/reconciler
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        with:
-          python-version: "3.13"
-      - name: Test Python SDK
-        working-directory: sdk/python
-        run: |
-          pip install -e ".[dev]" -q
-          pytest -v
-      - name: Test Rust SDK
-        working-directory: sdk/rust
-        run: |
-          rustup component add clippy
-          cargo test
-          cargo clippy -- -D warnings

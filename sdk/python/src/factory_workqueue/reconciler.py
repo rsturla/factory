@@ -188,8 +188,15 @@ def serve_http(fn: ReconcileFunc, host: str = "0.0.0.0", port: int = 8082) -> No
 
 
 def serve(fn: ReconcileFunc, host: str = "0.0.0.0", port: int = 8082) -> None:
-    """Run reconciler handler with uvicorn (ASGI)."""
-    import uvicorn
+    """Run reconciler handler with uvicorn (ASGI). Requires 'server' extra."""
+    try:
+        import uvicorn
+    except ImportError as e:
+        raise ImportError(
+            "uvicorn required for serve(). Install with: "
+            "pip install 'factory-workqueue[server]' — "
+            "or use serve_http() for zero-dependency serving"
+        ) from e
 
     app = ReconcilerHandler(fn)
     uvicorn.run(app, host=host, port=port)
