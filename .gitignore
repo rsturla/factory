@@ -10,6 +10,13 @@
 /bin/
 *.exe
 
+# Python
+__pycache__/
+*.pyc
+
+# Rust
+target/
+
 # IDE
 .idea/
 .vscode/
