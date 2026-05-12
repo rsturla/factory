@@ -515,25 +515,22 @@ func (s *Store) Deadletter(ctx context.Context, queue, key string) error {
 
 func (s *Store) ExtendLease(ctx context.Context, queue, key string, duration time.Duration) error {
 	tag, err := s.pool.Exec(ctx, `
-		UPDATE work_items
-		SET lease_expires = now() + $3::interval,
-			updated_at = now()
+		WITH updated AS (
+			UPDATE work_items
+			SET lease_expires = now() + $3::interval,
+				updated_at = now()
+			WHERE queue = $1 AND key = $2
+			  AND status IN ('claimed', 'running')
+			RETURNING lease_expires
+		)
+		UPDATE active_leases SET lease_expires = (SELECT lease_expires FROM updated)
 		WHERE queue = $1 AND key = $2
-		  AND status IN ('claimed', 'running')
 	`, queue, key, duration.String())
 	if err != nil {
 		return fmt.Errorf("extend lease: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return store.ErrNotFound
-	}
-
-	_, err = s.pool.Exec(ctx, `
-		UPDATE active_leases SET lease_expires = now() + $3::interval
-		WHERE queue = $1 AND key = $2
-	`, queue, key, duration.String())
-	if err != nil {
-		return fmt.Errorf("extend active_lease: %w", err)
 	}
 	return nil
 }
