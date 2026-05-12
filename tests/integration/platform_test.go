@@ -23,7 +23,6 @@ import (
 
 	cedar "github.com/hummingbird-org/factory-workqueue/internal/authz/cedar"
 	"github.com/hummingbird-org/factory-workqueue/internal/authz/noop"
-	"github.com/hummingbird-org/factory-workqueue/internal/compute"
 	"github.com/hummingbird-org/factory-workqueue/internal/dispatcher"
 	"github.com/hummingbird-org/factory-workqueue/internal/store"
 	"github.com/hummingbird-org/factory-workqueue/internal/store/inmem"
@@ -81,7 +80,6 @@ func newPlatform(t *testing.T, reconcilerFn func(reconciler.ProcessRequest) reco
 		DispatchInterval: 50 * time.Millisecond,
 		SweepInterval:    100 * time.Millisecond,
 		ReaperInterval:   100 * time.Millisecond,
-		ScaleInterval:    1 * time.Hour,
 		LeaseDuration:    1 * time.Hour,
 		BatchSize:        10,
 		MaxConcurrency:   10,
@@ -92,7 +90,7 @@ func newPlatform(t *testing.T, reconcilerFn func(reconciler.ProcessRequest) reco
 		opt(&cfg)
 	}
 
-	d := dispatcher.New(s, client.NewReconcilerClient(reconciler.URL), compute.NoopProvider{}, cfg)
+	d := dispatcher.New(s, client.NewReconcilerClient(reconciler.URL), cfg)
 
 	t.Cleanup(func() {
 		receiver.Close()
@@ -534,15 +532,15 @@ func TestEndToEnd_MultipleQueuesIsolated(t *testing.T) {
 	buildCfg := dispatcher.Config{
 		QueueName: "build", WorkerID: "build-dispatcher", Mode: dispatcher.ModePush,
 		DispatchInterval: 50 * time.Millisecond, SweepInterval: 1 * time.Hour,
-		ReaperInterval: 1 * time.Hour, ScaleInterval: 1 * time.Hour,
-		LeaseDuration: 1 * time.Hour, BatchSize: 10, MaxConcurrency: 10, MaxRetry: 3,
+		ReaperInterval: 1 * time.Hour,
+		LeaseDuration:  1 * time.Hour, BatchSize: 10, MaxConcurrency: 10, MaxRetry: 3,
 	}
 	testCfg := buildCfg
 	testCfg.QueueName = "test-run"
 	testCfg.WorkerID = "test-dispatcher"
 
-	buildDispatcher := dispatcher.New(s, client.NewReconcilerClient(buildReconciler.URL), compute.NoopProvider{}, buildCfg)
-	testDispatcher := dispatcher.New(s, client.NewReconcilerClient(testReconciler.URL), compute.NoopProvider{}, testCfg)
+	buildDispatcher := dispatcher.New(s, client.NewReconcilerClient(buildReconciler.URL), buildCfg)
+	testDispatcher := dispatcher.New(s, client.NewReconcilerClient(testReconciler.URL), testCfg)
 
 	// Enqueue to both queues.
 	s.Enqueue(context.Background(), "build", "pkg-1", 0)
@@ -590,11 +588,11 @@ func TestEndToEnd_ReaperReclaimsExpiredLease(t *testing.T) {
 	cfg := dispatcher.Config{
 		QueueName: "test", WorkerID: "reaper-test", Mode: dispatcher.ModePush,
 		DispatchInterval: 50 * time.Millisecond, SweepInterval: 100 * time.Millisecond,
-		ReaperInterval: 50 * time.Millisecond, ScaleInterval: 1 * time.Hour,
-		LeaseDuration: 1 * time.Hour, BatchSize: 10, MaxConcurrency: 10, MaxRetry: 5,
+		ReaperInterval: 50 * time.Millisecond,
+		LeaseDuration:  1 * time.Hour, BatchSize: 10, MaxConcurrency: 10, MaxRetry: 5,
 	}
 
-	d := dispatcher.New(s, client.NewReconcilerClient(reconciler.URL), compute.NoopProvider{}, cfg)
+	d := dispatcher.New(s, client.NewReconcilerClient(reconciler.URL), cfg)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()

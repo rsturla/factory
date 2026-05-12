@@ -97,12 +97,11 @@ func cmdQueues(args []string) error {
 		json.Unmarshal(body, &queues)
 
 		w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-		fmt.Fprintln(w, "QUEUE\tBACKEND\tCONCURRENCY\tIN-PROGRESS\tPENDING\tFAILED\tDEAD")
+		fmt.Fprintln(w, "QUEUE\tCONCURRENCY\tIN-PROGRESS\tPENDING\tFAILED\tDEAD")
 		for _, q := range queues {
 			counts, _ := q["counts"].(map[string]any)
-			fmt.Fprintf(w, "%s\t%s\t%v\t%v\t%v\t%v\t%v\n",
+			fmt.Fprintf(w, "%s\t%v\t%v\t%v\t%v\t%v\n",
 				q["name"],
-				q["compute_backend"],
 				q["max_concurrency"],
 				q["in_progress"],
 				intOr(counts, "pending", 0),
@@ -214,7 +213,7 @@ func cmdWorkers(args []string) error {
 		json.Unmarshal(body, &workers)
 
 		w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-		fmt.Fprintln(w, "WORKER\tQUEUE\tBACKEND\tSTATUS\tPROCESSED\tLAST HEARTBEAT")
+		fmt.Fprintln(w, "WORKER\tQUEUE\tSTATUS\tPROCESSED\tLAST HEARTBEAT")
 		for _, wk := range workers {
 			hb := ""
 			if t, ok := wk["last_heartbeat"].(string); ok {
@@ -222,8 +221,8 @@ func cmdWorkers(args []string) error {
 					hb = time.Since(parsed).Truncate(time.Second).String() + " ago"
 				}
 			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%v\t%s\n",
-				wk["worker_id"], wk["queue"], wk["compute_backend"],
+			fmt.Fprintf(w, "%s\t%s\t%s\t%v\t%s\n",
+				wk["worker_id"], wk["queue"],
 				wk["status"], wk["items_processed"], hb,
 			)
 		}

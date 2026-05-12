@@ -15,8 +15,6 @@ import (
 	"github.com/hummingbird-org/factory-workqueue/internal/store/inmem"
 	"github.com/hummingbird-org/factory-workqueue/sdk/go/client"
 	"github.com/hummingbird-org/factory-workqueue/sdk/go/reconciler"
-
-	"github.com/hummingbird-org/factory-workqueue/internal/compute"
 )
 
 // fakeReconciler returns a test HTTP server that responds to /process
@@ -40,13 +38,12 @@ func newDispatcher(t *testing.T, s store.Interface, reconcilerURL string) (*disp
 		DispatchInterval: 50 * time.Millisecond,
 		SweepInterval:    1 * time.Hour, // don't sweep during tests
 		ReaperInterval:   1 * time.Hour, // don't reap during tests
-		ScaleInterval:    1 * time.Hour, // don't scale during tests
 		LeaseDuration:    1 * time.Hour,
 		BatchSize:        10,
 		MaxConcurrency:   5,
 		MaxRetry:         3,
 	}
-	d := dispatcher.New(s, client.NewReconcilerClient(reconcilerURL), compute.NoopProvider{}, cfg)
+	d := dispatcher.New(s, client.NewReconcilerClient(reconcilerURL), cfg)
 	return d, cfg
 }
 
@@ -260,13 +257,12 @@ func TestDispatcher_PriorityOrder(t *testing.T) {
 		DispatchInterval: 50 * time.Millisecond,
 		SweepInterval:    1 * time.Hour,
 		ReaperInterval:   1 * time.Hour,
-		ScaleInterval:    1 * time.Hour,
 		LeaseDuration:    1 * time.Hour,
 		BatchSize:        1,
 		MaxConcurrency:   1,
 		MaxRetry:         3,
 	}
-	d := dispatcher.New(s, client.NewReconcilerClient(srv.URL), compute.NoopProvider{}, cfg)
+	d := dispatcher.New(s, client.NewReconcilerClient(srv.URL), cfg)
 
 	s.Enqueue(ctx, "test", "low", -10)
 	s.Enqueue(ctx, "test", "high", 100)
@@ -386,13 +382,12 @@ func TestReconcilerTimeout(t *testing.T) {
 		DispatchInterval: 50 * time.Millisecond,
 		SweepInterval:    1 * time.Hour,
 		ReaperInterval:   100 * time.Millisecond,
-		ScaleInterval:    1 * time.Hour,
 		LeaseDuration:    50 * time.Millisecond, // very short lease
 		BatchSize:        10,
 		MaxConcurrency:   5,
 		MaxRetry:         3,
 	}
-	d := dispatcher.New(s, client.NewReconcilerClient(srv.URL), compute.NoopProvider{}, cfg)
+	d := dispatcher.New(s, client.NewReconcilerClient(srv.URL), cfg)
 
 	s.Enqueue(ctx, "test", "slow-item", 0)
 
@@ -529,7 +524,7 @@ func TestDispatcher_Reaper(t *testing.T) {
 
 	// Enqueue and claim with a very short lease.
 	s.EnsureQueue(ctx, "test", store.QueueConfig{
-		MaxConcurrency: 10, MaxRetry: 5, ComputeBackend: "kubernetes",
+		MaxConcurrency: 10, MaxRetry: 5,
 	})
 	s.Enqueue(ctx, "test", "expired", 0)
 	s.ClaimBatch(ctx, "test", 1, "dead-worker", 1*time.Millisecond)
@@ -537,20 +532,19 @@ func TestDispatcher_Reaper(t *testing.T) {
 	// Wait for lease to expire.
 	time.Sleep(10 * time.Millisecond)
 
-	// Run dispatcher in scale-only mode so it only reaps, never dispatches.
+	// Run dispatcher in sweep-only mode so it only reaps, never dispatches.
 	cfg := dispatcher.Config{
 		QueueName:      "test",
 		WorkerID:       "reaper-test",
-		Mode:           dispatcher.ModeScaleOnly,
+		Mode:           dispatcher.ModeSweepOnly,
 		SweepInterval:  1 * time.Hour,
 		ReaperInterval: 50 * time.Millisecond,
-		ScaleInterval:  1 * time.Hour,
 		LeaseDuration:  1 * time.Hour,
 		BatchSize:      10,
 		MaxConcurrency: 10,
 		MaxRetry:       5,
 	}
-	d := dispatcher.New(s, client.NewReconcilerClient(srv.URL), compute.NoopProvider{}, cfg)
+	d := dispatcher.New(s, client.NewReconcilerClient(srv.URL), cfg)
 
 	dctx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
 	defer cancel()

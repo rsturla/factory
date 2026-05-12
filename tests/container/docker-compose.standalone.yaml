@@ -37,15 +37,14 @@ services:
       postgres:
         condition: service_healthy
 
-  # Dispatcher in scale-only mode — does NOT dispatch work.
-  # Only runs sweep/reaper/scale loops.
+  # Dispatcher in sweep-only mode — does NOT dispatch work.
+  # Only runs sweep and reaper loops.
   echo-dispatcher:
     image: ${DISPATCHER_IMAGE}
     environment:
       QUEUE_NAME: echo
       DATABASE_URL: postgres://factory:factory@postgres:5432/factory?sslmode=disable
-      DISPATCH_MODE: scale-only
-      COMPUTE_BACKEND: noop
+      DISPATCH_MODE: sweep-only
       STORE_BACKEND: postgres
     depends_on:
       postgres:

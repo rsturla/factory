@@ -54,15 +54,16 @@ The dispatcher will requeue the item with exponential backoff, consuming one ret
 
 ## Choosing a pattern
 
-Two patterns depending on how long the work takes and where it runs:
+Three patterns depending on how long the work takes, where it runs, and what isolation it needs:
 
 | Duration | Pattern | Dispatcher mode | Example |
 |----------|---------|----------------|---------|
 | Under 2 minutes | HTTP reconciler | `push` | MR review, test runner, API calls |
-| 2-60 minutes | Either | Depends | Container build (K8s = push, EC2 = standalone) |
-| Over 60 minutes | Standalone worker | `scale-only` | RPM build, AI inference |
+| 2-60 minutes | Either | Depends | Container build (K8s = push, standalone = sweep-only) |
+| Over 60 minutes | Standalone worker | `sweep-only` | RPM build, AI inference |
+| Any (needs isolation) | Ephemeral VM | `sweep-only` | AI agent, untrusted code, full-OS builds |
 
-For work that delegates to external systems (Koji, Tekton, CI) and polls for completion, use an HTTP reconciler with `requeue` regardless of how long the external work takes -- each invocation is a quick status check.
+For work that delegates to external systems (Koji, Tekton, CI) and polls for completion, use an HTTP reconciler with `requeue` regardless of how long the external work takes -- each invocation is a quick status check. For work that needs full machine isolation (root, Docker inside, untrusted code), see the ephemeral VM pattern in `docs/RECONCILER_PATTERNS.md`.
 
 ## Go SDK
 
@@ -130,7 +131,7 @@ err := client.Enqueue(ctx, "container-build", "myimage-1.0", 10)
 
 ### Standalone worker (pull model)
 
-The worker claims items via the workqueue HTTP API, processes them locally, and reports back. Set `DISPATCH_MODE=scale-only` on the dispatcher. See `examples/standalone-worker/`.
+The worker claims items via the workqueue HTTP API, processes them locally, and reports back. Set `DISPATCH_MODE=sweep-only` on the dispatcher. See `examples/standalone-worker/`.
 
 ```go
 import "github.com/hummingbird-org/factory-workqueue/sdk/go/client"
@@ -286,6 +287,72 @@ Understanding how the dispatcher manages your item:
    - `error` -- item requeued with exponential backoff (consumes retry budget).
 5. **Dead-letter** -- after `DISPATCH_MAX_RETRY` failures (default 5), the item is dead-lettered.
 6. **Reaper** -- if a worker dies and the lease expires, the reaper reclaims the item.
+
+## Workqueue HTTP API
+
+The dispatcher exposes a JSON API on its HTTP port (default `:8080`) under `/wq/`. Standalone workers and external systems use these endpoints to interact with the queue. All endpoints accept `POST` with a JSON body and return JSON.
+
+The SDK clients (`WorkqueueClient` in Go, `WorkqueueClient` in Python, `WorkqueueClient` in Rust) wrap these endpoints. You can also call them directly with `curl` or any HTTP client.
+
+### Worker endpoints
+
+| Endpoint | Description | Request body |
+|----------|-------------|-------------|
+| `POST /wq/claim` | Claim items from the queue | `{"queue": "name", "batch_size": 1, "worker_id": "w-1", "lease_duration": "2h"}` |
+| `POST /wq/complete` | Mark item as succeeded | `{"queue": "name", "key": "item-key"}` |
+| `POST /wq/fail` | Mark item as failed (consumes retry budget) | `{"queue": "name", "key": "item-key", "error": "reason"}` |
+| `POST /wq/heartbeat` | Extend lease on a claimed item | `{"queue": "name", "key": "item-key", "duration": "2h"}` |
+| `POST /wq/requeue` | Return item to pending | `{"queue": "name", "key": "item-key"}` |
+| `POST /wq/transition` | Explicit state transition | `{"queue": "name", "key": "item-key", "from": "running", "to": "failed"}` |
+
+### Enqueue endpoints
+
+| Endpoint | Description | Request body |
+|----------|-------------|-------------|
+| `POST /wq/enqueue` | Add a single item | `{"queue": "name", "key": "item-key", "priority": 0}` |
+| `POST /wq/enqueue-batch` | Add multiple items | `{"queue": "name", "items": [{"key": "k1", "priority": 0}, ...]}` |
+
+### Query endpoints
+
+| Endpoint | Description | Request body |
+|----------|-------------|-------------|
+| `POST /wq/count` | Count items by status | `{"queue": "name"}` |
+| `POST /wq/get-item` | Get a single item | `{"queue": "name", "key": "item-key"}` |
+| `POST /wq/list` | List items with filters | `{"queue": "name", "status": "pending", "limit": 50}` |
+| `POST /wq/list-queues` | List all queues | `{}` |
+| `POST /wq/list-workers` | List registered workers | `{"queue": "name"}` |
+| `POST /wq/get-history` | Get item state transitions | `{"queue": "name", "key": "item-key"}` |
+
+### Example: claim and process with curl
+
+```bash
+# Claim one item with a 2-hour lease
+curl -s -X POST http://factory-dispatcher:8080/wq/claim \
+  -H 'Content-Type: application/json' \
+  -d '{"queue":"rpm-update","batch_size":1,"worker_id":"vm-42","lease_duration":"2h"}'
+
+# Returns: [{"queue":"rpm-update","key":"gcc-14.1","status":"claimed",...}]
+
+# Extend the lease while working
+curl -s -X POST http://factory-dispatcher:8080/wq/heartbeat \
+  -H 'Content-Type: application/json' \
+  -d '{"queue":"rpm-update","key":"gcc-14.1","duration":"2h"}'
+
+# Mark complete when done
+curl -s -X POST http://factory-dispatcher:8080/wq/complete \
+  -H 'Content-Type: application/json' \
+  -d '{"queue":"rpm-update","key":"gcc-14.1"}'
+```
+
+### Error responses
+
+| HTTP status | Meaning |
+|-------------|---------|
+| 200 | Success |
+| 400 | Invalid request body or invalid state transition |
+| 404 | Item or queue not found |
+| 409 | Status conflict (item already transitioned) |
+| 500 | Internal server error |
 
 ## Tips
 

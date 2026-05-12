@@ -16,7 +16,6 @@ func setup(t *testing.T) (store.Interface, *completion.Handler) {
 	s.EnsureQueue(context.Background(), "test", store.QueueConfig{
 		MaxConcurrency: 10,
 		MaxRetry:       5,
-		ComputeBackend: "kubernetes",
 	})
 	h := completion.NewHandler(s, completion.Config{
 		MaxAttempts:    3,

@@ -7,13 +7,12 @@ type Mode string
 
 const (
 	// ModePush is the default — the dispatcher claims items and calls
-	// the reconciler via HTTP. Used for Kubernetes reconcilers.
+	// the reconciler via HTTP.
 	ModePush Mode = "push"
 
-	// ModeScaleOnly runs the sweep, reaper, and scale loops but does
-	// not claim or dispatch items. Standalone workers claim items
-	// themselves. Used for EC2/bare metal workers.
-	ModeScaleOnly Mode = "scale-only"
+	// ModeSweepOnly runs the sweep and reaper loops but does not claim
+	// or dispatch items. Standalone workers claim items themselves.
+	ModeSweepOnly Mode = "sweep-only"
 )
 
 // Config controls the dispatcher's behavior.
@@ -25,7 +24,7 @@ type Config struct {
 	WorkerID string
 
 	// Mode controls whether the dispatcher claims and dispatches items
-	// (push) or only manages scaling and reaping (scale-only).
+	// (push) or only runs sweep and reaper loops (sweep-only).
 	Mode Mode
 
 	// DispatchInterval is how often the dispatch loop runs.
@@ -36,9 +35,6 @@ type Config struct {
 
 	// ReaperInterval is how often the reaper loop runs.
 	ReaperInterval time.Duration
-
-	// ScaleInterval is how often the scale loop runs.
-	ScaleInterval time.Duration
 
 	// LeaseDuration is the default lease granted to claimed items.
 	LeaseDuration time.Duration
@@ -60,7 +56,6 @@ func DefaultConfig(queueName string) Config {
 		DispatchInterval: 2 * time.Second,
 		SweepInterval:    60 * time.Second,
 		ReaperInterval:   5 * time.Minute,
-		ScaleInterval:    30 * time.Second,
 		LeaseDuration:    1 * time.Hour,
 		BatchSize:        10,
 		MaxConcurrency:   10,

@@ -16,7 +16,6 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/hummingbird-org/factory-workqueue/internal/completion"
-	"github.com/hummingbird-org/factory-workqueue/internal/compute"
 	"github.com/hummingbird-org/factory-workqueue/internal/metrics"
 	"github.com/hummingbird-org/factory-workqueue/internal/store"
 	"github.com/hummingbird-org/factory-workqueue/internal/tracing"
@@ -31,7 +30,6 @@ import (
 type Dispatcher struct {
 	store      store.Interface
 	reconciler *client.ReconcilerClient
-	compute    compute.Provider
 	completion *completion.Handler
 	cfg        Config
 	inFlight   sync.WaitGroup
@@ -40,7 +38,7 @@ type Dispatcher struct {
 }
 
 // New creates a new Dispatcher.
-func New(s store.Interface, reconciler *client.ReconcilerClient, cp compute.Provider, cfg Config) *Dispatcher {
+func New(s store.Interface, reconciler *client.ReconcilerClient, cfg Config) *Dispatcher {
 	compCfg := completion.Config{
 		MaxAttempts:    cfg.MaxRetry,
 		BackoffBase:    30 * time.Second,
@@ -50,7 +48,6 @@ func New(s store.Interface, reconciler *client.ReconcilerClient, cp compute.Prov
 	return &Dispatcher{
 		store:      s,
 		reconciler: reconciler,
-		compute:    cp,
 		completion: completion.NewHandler(s, compCfg),
 		cfg:        cfg,
 	}
@@ -61,7 +58,6 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 	if err := d.store.EnsureQueue(ctx, d.cfg.QueueName, store.QueueConfig{
 		MaxConcurrency: d.cfg.MaxConcurrency,
 		MaxRetry:       d.cfg.MaxRetry,
-		ComputeBackend: d.compute.Name(),
 	}); err != nil {
 		return err
 	}
@@ -87,10 +83,9 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 		g.Go(func() error { return d.loop(gctx, "dispatch", d.cfg.DispatchInterval, d.dispatchTick, true) })
 	}
 
-	// Sweep, reaper, and scale run in all modes.
+	// Sweep and reaper run in all modes.
 	g.Go(func() error { return d.loop(gctx, "sweep", d.cfg.SweepInterval, d.sweepTick, true) })
 	g.Go(func() error { return d.loop(gctx, "reaper", d.cfg.ReaperInterval, d.reaperTick, true) })
-	g.Go(func() error { return d.loop(gctx, "scale", d.cfg.ScaleInterval, d.scaleTick, true) })
 	err := g.Wait()
 
 	slog.Info("draining in-flight work", "queue", d.cfg.QueueName)
@@ -423,23 +418,6 @@ func (d *Dispatcher) reaperTick(ctx context.Context) {
 	if reaped > 0 {
 		metrics.ItemsReaped.WithLabelValues(d.cfg.QueueName).Add(float64(reaped))
 	}
-}
-
-func (d *Dispatcher) scaleTick(ctx context.Context) {
-	counts, err := d.store.CountByStatus(ctx, d.cfg.QueueName, store.StatusPending, store.StatusClaimed, store.StatusRunning)
-	if err != nil {
-		return
-	}
-	pending := counts[store.StatusPending]
-	inProgress := counts[store.StatusClaimed] + counts[store.StatusRunning]
-	desired := int(pending + inProgress)
-	if desired > d.cfg.MaxConcurrency {
-		desired = d.cfg.MaxConcurrency
-	}
-	if desired < 1 && pending > 0 {
-		desired = 1
-	}
-	d.compute.EnsureWorkers(ctx, d.cfg.QueueName, desired)
 }
 
 // parseTraceparent parses a W3C traceparent string ("00-{traceID}-{spanID}-{flags}")

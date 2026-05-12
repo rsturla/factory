@@ -50,7 +50,6 @@ services:
       DATABASE_URL: postgres://factory:factory@postgres:5432/factory?sslmode=disable
       RECONCILER_ENDPOINT: http://echo-reconciler:8082
       STORE_BACKEND: postgres
-      COMPUTE_BACKEND: noop
       MAX_CONCURRENCY: "5"
       BATCH_SIZE: "5"
       DISPATCH_INTERVAL: 2s

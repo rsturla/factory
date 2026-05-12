@@ -47,7 +47,7 @@ Raising an exception signals a retriable failure (consumes retry budget).
 
 ## Standalone Worker Pattern
 
-For `scale-only` mode where workers claim items directly.
+For `sweep-only` mode where workers claim items directly.
 
 ```python
 from factory_workqueue import WorkqueueClient, Status

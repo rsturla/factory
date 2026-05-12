@@ -143,11 +143,8 @@ factory-v2/
 │   │   ├── sqlite/        SQLite backend (single-node, edge)
 │   │   ├── inmem/         In-memory backend (testing)
 │   │   └── conformance/   Conformance suite all backends must pass
-│   ├── dispatcher/        Dispatch/sweep/reaper/scale loops
+│   ├── dispatcher/        Dispatch/sweep/reaper loops
 │   ├── completion/        Retry, backoff, dead-letter logic
-│   ├── compute/           Compute provider abstraction
-│   │   ├── kubernetes/    Scale K8s Deployments
-│   │   └── ec2/           Scale AWS Auto Scaling Groups
 │   ├── admin/             Admin API HTTP handlers
 │   ├── authz/             Pluggable authorization interface
 │   │   ├── noop/          Allow everything (default)
@@ -279,7 +276,7 @@ Python and Rust SDKs are also available — see [docs/SDK.md](docs/SDK.md).
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DISPATCH_MODE` | `push` | `push` or `scale-only` |
+| `DISPATCH_MODE` | `push` | `push` or `sweep-only` |
 | `DISPATCH_INTERVAL` | `2s` | How often the dispatcher checks for work |
 | `DISPATCH_BATCH_SIZE` | `10` | Items claimed per dispatch cycle |
 | `DISPATCH_MAX_CONCURRENCY` | `10` | Max items in-flight simultaneously |
@@ -299,12 +296,6 @@ Python and Rust SDKs are also available — see [docs/SDK.md](docs/SDK.md).
 |----------|---------|-------------|
 | `RECONCILER_ENDPOINT` | (required in push mode) | Base URL of reconciler service |
 | `RECONCILER_CA_CERT` | | PEM CA cert for reconciler TLS |
-
-### COMPUTE_ (compute provider)
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `COMPUTE_BACKEND` | `noop` | `noop`, `kubernetes`, or `ec2` |
 
 ### AUTHN_ / AUTHZ_ (authentication & authorization)
 

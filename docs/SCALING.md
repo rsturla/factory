@@ -33,7 +33,52 @@ Each dispatcher replica claims batches of items using `SELECT FOR UPDATE SKIP LO
 
 Reconciler pods are stateless HTTP servers. The dispatcher sends `POST /process` to the reconciler's Kubernetes Service, which distributes requests across all pods.
 
-Use a Kubernetes HPA driven by queue depth:
+Scaling is handled externally by KEDA, Kubernetes HPA, or custom controllers. The dispatcher exposes Prometheus metrics on `/metrics` that provide the signals needed for scaling decisions.
+
+### Prometheus metrics for scaling
+
+The dispatcher exposes these metrics on its `/metrics` endpoint (default `:8080`):
+
+| Metric | Type | Labels | Use for scaling |
+|--------|------|--------|-----------------|
+| `factory_queue_depth` | gauge | `queue`, `status` | Primary signal. Filter `status="pending"` for items waiting to be processed |
+| `factory_in_progress` | gauge | `queue` | Current claimed + running items. Use to avoid over-scaling |
+| `factory_max_concurrency` | gauge | `queue` | Upper bound — don't scale beyond this |
+| `factory_oldest_pending_age_seconds` | gauge | `queue` | Scale-from-zero trigger. Non-zero means work is waiting |
+| `factory_items_completed_total` | counter | `queue`, `outcome` | Processing rate via `rate()`. Use for capacity planning |
+| `factory_items_enqueued_total` | counter | `queue` | Arrival rate via `rate()`. Predict scaling needs |
+| `factory_reconcile_duration_seconds` | histogram | `queue`, `outcome` | Avg processing time. Informs items-per-pod ratio |
+
+### KEDA ScaledObject
+
+[KEDA](https://keda.sh) watches Prometheus metrics and manages the reconciler Deployment replica count:
+
+```yaml
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: rpm-update-reconciler
+spec:
+  scaleTargetRef:
+    name: factory-rpm-update-reconciler
+  minReplicaCount: 0
+  maxReplicaCount: 100
+  pollingInterval: 15
+  cooldownPeriod: 300
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus.monitoring:9090
+        query: factory_queue_depth{queue="rpm-update", status="pending"}
+        threshold: "5"
+        activationThreshold: "1"
+```
+
+This scales 1 replica per 5 pending items, activates from zero when any item is pending, and waits 5 minutes before scaling down.
+
+### Kubernetes HPA
+
+If you prefer native HPA with a Prometheus adapter:
 
 ```yaml
 apiVersion: autoscaling/v2
@@ -51,10 +96,11 @@ spec:
     - type: External
       external:
         metric:
-          name: factory_queue_depth_pending
+          name: factory_queue_depth
           selector:
             matchLabels:
               queue: rpm-update
+              status: pending
         target:
           type: AverageValue
           averageValue: "5"
@@ -69,7 +115,7 @@ spec:
       stabilizationWindowSeconds: 300
 ```
 
-This scales up when pending items exceed 5 per pod, and scales down conservatively (5-minute stabilization window) to avoid thrashing.
+Requires [prometheus-adapter](https://github.com/kubernetes-sigs/prometheus-adapter) to expose `factory_queue_depth` as an external metric.
 
 ## Configuration tuning
 

@@ -18,7 +18,6 @@ services:
       STORE_BACKEND: sqlite
       SQLITE_PATH: /tmp/factory.db
       RECONCILER_ENDPOINT: http://echo-reconciler:8082
-      COMPUTE_BACKEND: noop
       FACTORY_LISTEN_ADDR: ":8083"
       DISPATCH_MAX_CONCURRENCY: "5"
       DISPATCH_BATCH_SIZE: "5"

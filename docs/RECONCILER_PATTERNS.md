@@ -261,9 +261,87 @@ func main() {
 
 **Key properties:**
 - Worker pulls work, not pushed by dispatcher
-- Set `DISPATCH_MODE=scale-only` on the dispatcher — it manages scaling and reaping but doesn't dispatch
+- Set `DISPATCH_MODE=sweep-only` on the dispatcher — it runs sweep and reaper but doesn't dispatch
 - Heartbeat extends the lease — without it, the reaper reclaims the item after lease expiry
-- Worker exits after idle timeout, dispatcher scales compute down
+- Use KEDA or HPA to scale workers based on `factory_queue_depth{status="pending"}` metrics
+
+## Pattern 6: Ephemeral VM per Item
+
+**When:** Work requires full machine isolation — root access, Docker/Podman inside the worker, systemd services, untrusted code execution, or GPU passthrough. Each item gets a dedicated VM that is destroyed on completion.
+
+**Examples:** AI agent code generation, full OS-level builds, security-sensitive workloads, multi-container integration tests, dark factory operations.
+
+**Architecture:**
+
+```
+queue has pending items
+  → spawner claims item via /wq/claim
+  → spawner creates KubeVirt VirtualMachineInstance
+  → VM boots with item key + workqueue endpoint in cloud-init
+  → VM does work (root, Docker, full isolation)
+  → VM calls /wq/complete or /wq/fail
+  → spawner detects VMI terminated, deletes it
+```
+
+This pattern requires a **spawner** — a separate controller that bridges the workqueue and KubeVirt. The spawner is not part of this repo; it runs as its own deployment watching queue metrics.
+
+**Cloud-init bootstrap (inside the VM):**
+
+```bash
+#!/bin/bash
+QUEUE="${FACTORY_QUEUE}"
+KEY="${FACTORY_KEY}"
+WQ_URL="${FACTORY_WQ_URL}"
+LEASE_DURATION="2h"
+
+# Heartbeat in background
+while true; do
+  curl -s -X POST "$WQ_URL/wq/heartbeat" \
+    -H 'Content-Type: application/json' \
+    -d "{\"queue\":\"$QUEUE\",\"key\":\"$KEY\",\"duration\":\"$LEASE_DURATION\"}"
+  sleep 600
+done &
+HEARTBEAT_PID=$!
+
+# Do work (full root, Docker, anything)
+if /opt/agent/run.sh "$KEY"; then
+  curl -s -X POST "$WQ_URL/wq/complete" \
+    -H 'Content-Type: application/json' \
+    -d "{\"queue\":\"$QUEUE\",\"key\":\"$KEY\"}"
+else
+  curl -s -X POST "$WQ_URL/wq/fail" \
+    -H 'Content-Type: application/json' \
+    -d "{\"queue\":\"$QUEUE\",\"key\":\"$KEY\",\"error\":\"agent failed\"}"
+fi
+
+kill $HEARTBEAT_PID
+shutdown -h now
+```
+
+**Key properties:**
+- One VM per item — never reused, destroyed after completion
+- VM has full root, can run Docker/Podman, systemd, install packages
+- Workqueue enforces max concurrency — spawner claims until the queue says no
+- Set `DISPATCH_MODE=sweep-only` on the dispatcher — it runs sweep and reaper only
+- If a VM dies without reporting, the lease expires and the reaper reclaims the item
+- Credential injection happens outside the VM (e.g., via a gateway proxy like onecli)
+- Golden VM images should be pre-baked with toolchains to minimize boot time
+
+**Compared to Pattern 5 (Standalone Worker):**
+
+| | Standalone Worker | Ephemeral VM |
+|---|---|---|
+| Lifetime | Long-lived, processes many items | One item, then destroyed |
+| Isolation | Process-level | Full VM (kernel, network, filesystem) |
+| Root access | Optional | Yes |
+| Docker inside | Difficult | Native |
+| Boot overhead | None (already running) | 10-30s per item |
+| Best for | Trusted, repeatable work | Untrusted code, full OS needs |
+
+**When NOT to use this pattern:**
+- Work completes in under 2 minutes — boot overhead dominates. Use Pattern 1 or 2
+- Work is trusted and repeatable — Pattern 5 is simpler and faster
+- You don't need root or container-in-container — Pattern 1 with a regular pod is sufficient
 
 ## Anti-patterns
 

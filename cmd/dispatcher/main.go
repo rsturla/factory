@@ -3,7 +3,7 @@
 // Environment variables:
 //
 //	FACTORY_QUEUE_NAME        - The queue to dispatch (required)
-//	DISPATCH_MODE             - "push" (default) or "scale-only"
+//	DISPATCH_MODE             - "push" (default) or "sweep-only"
 //	RECONCILER_ENDPOINT       - Base URL of the reconciler service (required in push mode)
 //	STORE_BACKEND             - "postgres", "dynamodb", or "sqlite" (default: "postgres")
 //	PG_DATABASE_URL           - PostgreSQL connection string (postgres backend)
@@ -13,7 +13,6 @@
 //	S3_ENDPOINT               - S3 endpoint (optional, for MinIO etc.)
 //	SQLITE_PATH               - SQLite database path (sqlite backend)
 //	FACTORY_WORKER_ID         - Unique identifier for this dispatcher (default: hostname)
-//	COMPUTE_BACKEND           - "noop", "kubernetes", "ec2" (default: "noop")
 //	RECONCILER_CA_CERT        - Path to PEM CA cert for reconciler TLS (optional)
 //	FACTORY_LISTEN_ADDR       - HTTP listen address for health/metrics (default: ":8080")
 //	DISPATCH_MAX_CONCURRENCY  - Maximum concurrent items (default: 10)
@@ -35,9 +34,6 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"github.com/hummingbird-org/factory-workqueue/internal/compute"
-	computeec2 "github.com/hummingbird-org/factory-workqueue/internal/compute/ec2"
-	computek8s "github.com/hummingbird-org/factory-workqueue/internal/compute/kubernetes"
 	"github.com/hummingbird-org/factory-workqueue/internal/dispatcher"
 	"github.com/hummingbird-org/factory-workqueue/internal/envutil"
 	"github.com/hummingbird-org/factory-workqueue/internal/httputil"
@@ -98,36 +94,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	var cp compute.Provider
-	switch envutil.Or("COMPUTE_BACKEND", "noop") {
-	case "noop":
-		cp = compute.NoopProvider{}
-	case "kubernetes":
-		var cpErr error
-		cp, cpErr = computek8s.New(computek8s.Config{
-			Namespace:        envutil.Or("K8S_NAMESPACE", "factory"),
-			DeploymentPrefix: envutil.Or("K8S_DEPLOYMENT_PREFIX", "factory"),
-			Kubeconfig:       os.Getenv("KUBECONFIG"),
-		})
-		if cpErr != nil {
-			slog.Error("failed to create kubernetes provider", "error", cpErr)
-			os.Exit(1)
-		}
-	case "ec2":
-		var cpErr error
-		cp, cpErr = computeec2.New(ctx, computeec2.Config{
-			ASGPrefix: envutil.Or("EC2_ASG_PREFIX", "factory"),
-			Region:    os.Getenv("AWS_REGION"),
-		})
-		if cpErr != nil {
-			slog.Error("failed to create ec2 provider", "error", cpErr)
-			os.Exit(1)
-		}
-	default:
-		slog.Error("unsupported compute backend", "backend", os.Getenv("COMPUTE_BACKEND"))
-		os.Exit(1)
-	}
-
 	metrics.RegisterDefaults()
 
 	mux := http.NewServeMux()
@@ -159,7 +125,7 @@ func main() {
 		}
 	}()
 
-	d := dispatcher.New(result.Store, reconciler, cp, cfg)
+	d := dispatcher.New(result.Store, reconciler, cfg)
 	if err := d.Run(ctx); err != nil {
 		slog.Error("dispatcher error", "error", err)
 	}

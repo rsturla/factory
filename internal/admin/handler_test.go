@@ -20,10 +20,10 @@ func newServer(t *testing.T) (*httptest.Server, store.Interface) {
 	s := inmem.New()
 	ctx := context.Background()
 	s.EnsureQueue(ctx, "build", store.QueueConfig{
-		MaxConcurrency: 10, MaxRetry: 5, ComputeBackend: "kubernetes",
+		MaxConcurrency: 10, MaxRetry: 5,
 	})
 	s.EnsureQueue(ctx, "test-queue", store.QueueConfig{
-		MaxConcurrency: 5, MaxRetry: 3, ComputeBackend: "ec2",
+		MaxConcurrency: 5, MaxRetry: 3,
 	})
 
 	mux := http.NewServeMux()
