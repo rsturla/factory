@@ -1,18 +1,35 @@
 // Package dynamodb implements store.Interface using DynamoDB for the hot path
 // (queue mechanics) and S3 for the cold path (history, archival).
 //
-// Table schema:
+// # Table schema
 //
 //	PK: "{queue}#{key}"   SK: "ITEM"     ← work items
-//	PK: "_queue#{queue}"  SK: "CONFIG"   ← queue config
+//	PK: "_queue#{queue}"  SK: "CONFIG"   ← queue config (in_progress counter, leader, pause)
+//	PK: "_schema"         SK: "VERSION"  ← schema version marker
 //
-// GSI "ClaimIndex":
+// # GSI "ClaimIndex" — claim-time priority ordering
 //
-//	PK: "{queue}#{status}"  SK: "{priority_desc}#{created_at}"
+// Used by ClaimBatch to find the highest-priority pending items in a queue,
+// and by CountByStatus for per-status item counts.
 //
-// Claiming uses Query on ClaimIndex + conditional UpdateItem, giving
-// single-digit ms latency and atomic conflict detection — no scanning,
-// no sharding needed.
+//	GSI1PK: "{queue}#{status}"                         (partition by queue + status)
+//	GSI1SK: "{inverted_priority}#{created_at}"         (sort: highest priority first, FIFO within)
+//
+// Priority is inverted (1B - priority) so that higher priority → lower sort key → returned first.
+//
+// # GSI "LeaseIndex" — expired lease detection
+//
+// Sparse index: only items with active leases (claimed/running) are projected.
+// Used by ListExpiredLeases to find items whose leases have expired without
+// scanning all in-flight work.
+//
+//	GSI2PK: "{queue}#active"                           (partition by queue, active leases only)
+//	GSI2SK: "{lease_expires_rfc3339}#{key}"            (sort by expiry time, key suffix for uniqueness)
+//
+// Items enter the LeaseIndex on claim, update on ExtendLease, and are removed
+// on Complete/Fail/Requeue/Deadletter.
+//
+// # History
 //
 // History entries are stored in S3 at {queue}/history/{key}/{timestamp}.
 package dynamodb
@@ -42,9 +59,10 @@ import (
 )
 
 const (
-	gsiName = "ClaimIndex"
-	itemSK  = "ITEM"
-	cfgSK   = "CONFIG"
+	gsiName      = "ClaimIndex"
+	leaseGSIName = "LeaseIndex"
+	itemSK       = "ITEM"
+	cfgSK        = "CONFIG"
 )
 
 // Config holds configuration for the DynamoDB+S3 store.
@@ -132,6 +150,8 @@ func (s *Store) CreateTable(ctx context.Context) error {
 			{AttributeName: aws.String("SK"), AttributeType: dyntypes.ScalarAttributeTypeS},
 			{AttributeName: aws.String("GSI1PK"), AttributeType: dyntypes.ScalarAttributeTypeS},
 			{AttributeName: aws.String("GSI1SK"), AttributeType: dyntypes.ScalarAttributeTypeS},
+			{AttributeName: aws.String("GSI2PK"), AttributeType: dyntypes.ScalarAttributeTypeS},
+			{AttributeName: aws.String("GSI2SK"), AttributeType: dyntypes.ScalarAttributeTypeS},
 		},
 		GlobalSecondaryIndexes: []dyntypes.GlobalSecondaryIndex{
 			{
@@ -143,9 +163,15 @@ func (s *Store) CreateTable(ctx context.Context) error {
 				Projection: &dyntypes.Projection{
 					ProjectionType: dyntypes.ProjectionTypeAll,
 				},
-				ProvisionedThroughput: &dyntypes.ProvisionedThroughput{
-					ReadCapacityUnits:  aws.Int64(10),
-					WriteCapacityUnits: aws.Int64(10),
+			},
+			{
+				IndexName: aws.String(leaseGSIName),
+				KeySchema: []dyntypes.KeySchemaElement{
+					{AttributeName: aws.String("GSI2PK"), KeyType: dyntypes.KeyTypeHash},
+					{AttributeName: aws.String("GSI2SK"), KeyType: dyntypes.KeyTypeRange},
+				},
+				Projection: &dyntypes.Projection{
+					ProjectionType: dyntypes.ProjectionTypeAll,
 				},
 			},
 		},
@@ -176,7 +202,7 @@ func (s *Store) CreateTable(ctx context.Context) error {
 
 // SchemaVersion is the current DynamoDB table schema version.
 // Increment this when the table structure changes (new GSI, TTL config, etc.).
-const SchemaVersion = 1
+const SchemaVersion = 2
 
 func (s *Store) checkSchemaVersion(ctx context.Context) error {
 	result, err := s.ddb.GetItem(ctx, &dynamodb.GetItemInput{
@@ -214,14 +240,34 @@ func (s *Store) checkSchemaVersion(ctx context.Context) error {
 }
 
 // --- Key helpers ---
+// See package doc for full GSI schema descriptions.
 
-func itemPK(queue, key string) string                 { return queue + "#" + key }
-func gsi1PK(queue string, status store.Status) string { return queue + "#" + string(status) }
+func itemPK(queue, key string) string { return queue + "#" + key }
 
-// gsi1SK encodes priority (descending) and created_at (ascending) for server-side ordering.
+// ClaimIndex keys — partition by queue+status, sort by priority (desc) + time.
+// When ClaimShards > 1, pending items are distributed across N sub-partitions
+// (e.g., "myqueue#pending#3") for write throughput. Non-pending statuses stay unsharded.
+func claimIndexPK(queue string, status store.Status) string { return queue + "#" + string(status) }
+func claimIndexPKSharded(queue string, status store.Status, shard int) string {
+	return fmt.Sprintf("%s#%s#%d", queue, string(status), shard)
+}
+func pendingPK(queue string, shards int) string {
+	if shards <= 1 {
+		return claimIndexPK(queue, store.StatusPending)
+	}
+	return claimIndexPKSharded(queue, store.StatusPending, rand.IntN(shards))
+}
+
+// LeaseIndex keys — partition by queue (active leases only), sort by expiry.
+func leaseIndexPK(queue string) string { return queue + "#active" }
+func leaseIndexSK(leaseExpires time.Time, key string) string {
+	return leaseExpires.Format(time.RFC3339Nano) + "#" + key
+}
+
+// claimIndexSK encodes priority (descending) and created_at (ascending) for server-side ordering.
 // Priority is inverted: higher priority → lower sort key → returned first.
 // Offset by 1 billion to handle negative priorities without sign issues.
-func gsi1SK(priority int, createdAt time.Time) string {
+func claimIndexSK(priority int, createdAt time.Time) string {
 	invertedPriority := 1000000000 - priority
 	return fmt.Sprintf("%010d#%s", invertedPriority, createdAt.Format(time.RFC3339Nano))
 }
@@ -229,24 +275,28 @@ func gsi1SK(priority int, createdAt time.Time) string {
 // --- DynamoDB item type ---
 
 type ddbItem struct {
-	PK           string `dynamodbav:"PK"`
-	SK           string `dynamodbav:"SK"`
-	GSI1PK       string `dynamodbav:"GSI1PK"`
-	GSI1SK       string `dynamodbav:"GSI1SK"`
-	Queue        string `dynamodbav:"queue"`
-	Key          string `dynamodbav:"key"`
-	Status       string `dynamodbav:"status"`
-	Priority     int    `dynamodbav:"priority"`
-	Attempts     int    `dynamodbav:"attempts"`
-	MaxAttempts  int    `dynamodbav:"max_attempts"`
-	NotBefore    string `dynamodbav:"not_before,omitempty"`
-	LeaseExpires string `dynamodbav:"lease_expires,omitempty"`
-	WorkerID     string `dynamodbav:"worker_id,omitempty"`
-	ErrorMessage string `dynamodbav:"error_message,omitempty"`
-	CreatedAt    string `dynamodbav:"created_at"`
-	UpdatedAt    string `dynamodbav:"updated_at"`
-	ClaimedAt    string `dynamodbav:"claimed_at,omitempty"`
-	CompletedAt  string `dynamodbav:"completed_at,omitempty"`
+	PK            string `dynamodbav:"PK"`
+	SK            string `dynamodbav:"SK"`
+	GSI1PK        string `dynamodbav:"GSI1PK"`
+	GSI1SK        string `dynamodbav:"GSI1SK"`
+	GSI2PK        string `dynamodbav:"GSI2PK,omitempty"`
+	GSI2SK        string `dynamodbav:"GSI2SK,omitempty"`
+	PendingGSI1PK string `dynamodbav:"pending_gsi1pk,omitempty"`
+	PendingGSI1SK string `dynamodbav:"pending_gsi1sk,omitempty"`
+	Queue         string `dynamodbav:"queue"`
+	Key           string `dynamodbav:"key"`
+	Status        string `dynamodbav:"status"`
+	Priority      int    `dynamodbav:"priority"`
+	Attempts      int    `dynamodbav:"attempts"`
+	MaxAttempts   int    `dynamodbav:"max_attempts"`
+	NotBefore     string `dynamodbav:"not_before,omitempty"`
+	LeaseExpires  string `dynamodbav:"lease_expires,omitempty"`
+	WorkerID      string `dynamodbav:"worker_id,omitempty"`
+	ErrorMessage  string `dynamodbav:"error_message,omitempty"`
+	CreatedAt     string `dynamodbav:"created_at"`
+	UpdatedAt     string `dynamodbav:"updated_at"`
+	ClaimedAt     string `dynamodbav:"claimed_at,omitempty"`
+	CompletedAt   string `dynamodbav:"completed_at,omitempty"`
 }
 
 func (d ddbItem) toWorkItem() store.WorkItem {
@@ -299,6 +349,8 @@ func timePtrStr(t *time.Time) string {
 func (s *Store) Enqueue(ctx context.Context, queue, key string, priority int, opts ...store.EnqueueOption) error {
 	o := store.ApplyEnqueueOptions(opts)
 	now := time.Now()
+	cfg := s.getQueueConfig(ctx, queue)
+	pendPartition := pendingPK(queue, cfg.ClaimShards)
 
 	// Try to update existing pending item (merge priority upward).
 	pk := itemPK(queue, key)
@@ -309,18 +361,19 @@ func (s *Store) Enqueue(ctx context.Context, queue, key string, priority int, op
 			"SK": &dyntypes.AttributeValueMemberS{Value: itemSK},
 		},
 		ConditionExpression: aws.String("#status = :pending AND #priority < :newpriority"),
-		UpdateExpression:    aws.String("SET #priority = :newpriority, #updated = :now, #gsi1sk = :gsi1sk"),
+		UpdateExpression:    aws.String("SET #priority = :newpriority, #updated = :now, #gsi1sk = :gsi1sk, #pendgsi = :gsi1sk"),
 		ExpressionAttributeNames: map[string]string{
 			"#status":   "status",
 			"#priority": "priority",
 			"#updated":  "updated_at",
 			"#gsi1sk":   "GSI1SK",
+			"#pendgsi":  "pending_gsi1sk",
 		},
 		ExpressionAttributeValues: map[string]dyntypes.AttributeValue{
 			":pending":     &dyntypes.AttributeValueMemberS{Value: "pending"},
 			":newpriority": &dyntypes.AttributeValueMemberN{Value: strconv.Itoa(priority)},
 			":now":         &dyntypes.AttributeValueMemberS{Value: timeStr(now)},
-			":gsi1sk":      &dyntypes.AttributeValueMemberS{Value: gsi1SK(priority, now)},
+			":gsi1sk":      &dyntypes.AttributeValueMemberS{Value: claimIndexSK(priority, now)},
 		},
 	})
 	if err == nil {
@@ -328,18 +381,21 @@ func (s *Store) Enqueue(ctx context.Context, queue, key string, priority int, op
 	}
 
 	// Either doesn't exist or priority is already >= new. Put if not exists.
+	pendingSK := claimIndexSK(priority, now)
 	item := ddbItem{
-		PK:          pk,
-		SK:          itemSK,
-		GSI1PK:      gsi1PK(queue, store.StatusPending),
-		GSI1SK:      gsi1SK(priority, now),
-		Queue:       queue,
-		Key:         key,
-		Status:      "pending",
-		Priority:    priority,
-		MaxAttempts: 5,
-		CreatedAt:   timeStr(now),
-		UpdatedAt:   timeStr(now),
+		PK:            pk,
+		SK:            itemSK,
+		GSI1PK:        pendPartition,
+		GSI1SK:        pendingSK,
+		PendingGSI1PK: pendPartition,
+		PendingGSI1SK: pendingSK,
+		Queue:         queue,
+		Key:           key,
+		Status:        "pending",
+		Priority:      priority,
+		MaxAttempts:   5,
+		CreatedAt:     timeStr(now),
+		UpdatedAt:     timeStr(now),
 	}
 	if o.NotBefore != nil {
 		item.NotBefore = timePtrStr(o.NotBefore)
@@ -372,12 +428,13 @@ func (s *Store) Enqueue(ctx context.Context, queue, key string, priority int, op
 			ConditionExpression: aws.String("#status IN (:succeeded, :failed, :dead_letter)"),
 			UpdateExpression: aws.String(
 				"SET #status = :pending, #priority = :priority, #attempts = :zero, " +
-					"#gsi1pk = :gsi1pk, #gsi1sk = :gsi1sk, #updated = :now, " +
+					"#gsi1pk = :gsi1pk, #gsi1sk = :gsi1sk, #pendgpk = :gsi1pk, #pendgsi = :gsi1sk, #updated = :now, " +
 					"#worker = :empty, #lease = :empty, #errmsg = :empty, " +
 					"#claimed_at = :empty, #completed_at = :empty, #not_before = :notbefore"),
 			ExpressionAttributeNames: map[string]string{
 				"#status": "status", "#priority": "priority", "#attempts": "attempts",
-				"#gsi1pk": "GSI1PK", "#gsi1sk": "GSI1SK", "#updated": "updated_at",
+				"#gsi1pk": "GSI1PK", "#gsi1sk": "GSI1SK",
+				"#pendgpk": "pending_gsi1pk", "#pendgsi": "pending_gsi1sk", "#updated": "updated_at",
 				"#worker": "worker_id", "#lease": "lease_expires", "#errmsg": "error_message",
 				"#claimed_at": "claimed_at", "#completed_at": "completed_at", "#not_before": "not_before",
 			},
@@ -388,8 +445,8 @@ func (s *Store) Enqueue(ctx context.Context, queue, key string, priority int, op
 				":pending":     &dyntypes.AttributeValueMemberS{Value: "pending"},
 				":priority":    &dyntypes.AttributeValueMemberN{Value: strconv.Itoa(priority)},
 				":zero":        &dyntypes.AttributeValueMemberN{Value: "0"},
-				":gsi1pk":      &dyntypes.AttributeValueMemberS{Value: gsi1PK(queue, store.StatusPending)},
-				":gsi1sk":      &dyntypes.AttributeValueMemberS{Value: gsi1SK(priority, now)},
+				":gsi1pk":      &dyntypes.AttributeValueMemberS{Value: pendPartition},
+				":gsi1sk":      &dyntypes.AttributeValueMemberS{Value: claimIndexSK(priority, now)},
 				":now":         &dyntypes.AttributeValueMemberS{Value: timeStr(now)},
 				":empty":       &dyntypes.AttributeValueMemberS{Value: ""},
 				":notbefore":   &dyntypes.AttributeValueMemberS{Value: timePtrStr(o.NotBefore)},
@@ -448,36 +505,21 @@ func (s *Store) EnqueueBatch(ctx context.Context, queue string, items []store.Ba
 }
 
 func (s *Store) ClaimBatch(ctx context.Context, queue string, batchSize int, workerID string, leaseDuration time.Duration) ([]store.WorkItem, error) {
-	// Query the ClaimIndex for pending items, ordered by priority DESC (inverted in GSI1SK).
-	gsiPK := gsi1PK(queue, store.StatusPending)
-	result, err := s.ddb.Query(ctx, &dynamodb.QueryInput{
-		TableName:              &s.table,
-		IndexName:              aws.String(gsiName),
-		KeyConditionExpression: aws.String("GSI1PK = :pk"),
-		ExpressionAttributeValues: map[string]dyntypes.AttributeValue{
-			":pk": &dyntypes.AttributeValueMemberS{Value: gsiPK},
-		},
-		Limit: aws.Int32(int32(min(batchSize*2, 1000))), // over-fetch; cap to avoid int32 overflow
-	})
-	if err != nil {
-		return nil, fmt.Errorf("query claim index: %w", err)
-	}
-
 	cfg := s.getQueueConfig(ctx, queue)
+
+	candidates, err := s.queryPendingItems(ctx, queue, cfg.ClaimShards, min(batchSize*2, 1000))
+	if err != nil {
+		return nil, err
+	}
 	limit := min(batchSize, cfg.MaxConcurrency)
 
 	now := time.Now()
 	leaseExp := now.Add(leaseDuration)
 
 	var claimed []store.WorkItem
-	for _, rawItem := range result.Items {
+	for _, item := range candidates {
 		if len(claimed) >= limit {
 			break
-		}
-
-		var item ddbItem
-		if err := attributevalue.UnmarshalMap(rawItem, &item); err != nil {
-			continue
 		}
 
 		// Filter out not-before items.
@@ -505,7 +547,8 @@ func (s *Store) ClaimBatch(ctx context.Context, queue string, batchSize int, wor
 			UpdateExpression: aws.String(
 				"SET #status = :claimed, #gsi1pk = :gsi1pk, #gsi1sk = :gsi1sk, " +
 					"#worker = :worker, #lease = :lease, #attempts = #attempts + :one, " +
-					"#claimed_at = :now, #updated = :now"),
+					"#claimed_at = :now, #updated = :now, " +
+					"#gsi2pk = :gsi2pk, #gsi2sk = :gsi2sk"),
 			ExpressionAttributeNames: map[string]string{
 				"#status":     "status",
 				"#gsi1pk":     "GSI1PK",
@@ -515,16 +558,20 @@ func (s *Store) ClaimBatch(ctx context.Context, queue string, batchSize int, wor
 				"#attempts":   "attempts",
 				"#claimed_at": "claimed_at",
 				"#updated":    "updated_at",
+				"#gsi2pk":     "GSI2PK",
+				"#gsi2sk":     "GSI2SK",
 			},
 			ExpressionAttributeValues: map[string]dyntypes.AttributeValue{
 				":pending": &dyntypes.AttributeValueMemberS{Value: "pending"},
 				":claimed": &dyntypes.AttributeValueMemberS{Value: "claimed"},
-				":gsi1pk":  &dyntypes.AttributeValueMemberS{Value: gsi1PK(queue, store.StatusClaimed)},
-				":gsi1sk":  &dyntypes.AttributeValueMemberS{Value: gsi1SK(item.Priority, item.toWorkItem().CreatedAt)},
+				":gsi1pk":  &dyntypes.AttributeValueMemberS{Value: claimIndexPK(queue, store.StatusClaimed)},
+				":gsi1sk":  &dyntypes.AttributeValueMemberS{Value: claimIndexSK(item.Priority, item.toWorkItem().CreatedAt)},
 				":worker":  &dyntypes.AttributeValueMemberS{Value: workerID},
 				":lease":   &dyntypes.AttributeValueMemberS{Value: timeStr(leaseExp)},
 				":one":     &dyntypes.AttributeValueMemberN{Value: "1"},
 				":now":     &dyntypes.AttributeValueMemberS{Value: timeStr(now)},
+				":gsi2pk":  &dyntypes.AttributeValueMemberS{Value: leaseIndexPK(queue)},
+				":gsi2sk":  &dyntypes.AttributeValueMemberS{Value: leaseIndexSK(leaseExp, item.Key)},
 			},
 			ReturnValues: dyntypes.ReturnValueAllNew,
 		})
@@ -557,40 +604,48 @@ func (s *Store) Complete(ctx context.Context, queue, key string) error {
 	now := time.Now()
 	pk := itemPK(queue, key)
 
-	_, err := s.ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
-		TableName: &s.table,
-		Key: map[string]dyntypes.AttributeValue{
-			"PK": &dyntypes.AttributeValueMemberS{Value: pk},
-			"SK": &dyntypes.AttributeValueMemberS{Value: itemSK},
-		},
-		ConditionExpression: aws.String("#status = :claimed OR #status = :running"),
-		UpdateExpression: aws.String(
-			"SET #status = :status, #gsi1pk = :gsi1pk, #completed = :now, #updated = :now, #lease = :empty"),
-		ExpressionAttributeNames: map[string]string{
-			"#status":    "status",
-			"#gsi1pk":    "GSI1PK",
-			"#completed": "completed_at",
-			"#updated":   "updated_at",
-			"#lease":     "lease_expires",
-		},
-		ExpressionAttributeValues: map[string]dyntypes.AttributeValue{
-			":claimed": &dyntypes.AttributeValueMemberS{Value: "claimed"},
-			":running": &dyntypes.AttributeValueMemberS{Value: "running"},
-			":status":  &dyntypes.AttributeValueMemberS{Value: string(store.StatusSucceeded)},
-			":gsi1pk":  &dyntypes.AttributeValueMemberS{Value: gsi1PK(queue, store.StatusSucceeded)},
-			":now":     &dyntypes.AttributeValueMemberS{Value: timeStr(now)},
-			":empty":   &dyntypes.AttributeValueMemberS{Value: ""},
+	_, err := s.ddb.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
+		TransactItems: []dyntypes.TransactWriteItem{
+			{
+				Update: &dyntypes.Update{
+					TableName: &s.table,
+					Key: map[string]dyntypes.AttributeValue{
+						"PK": &dyntypes.AttributeValueMemberS{Value: pk},
+						"SK": &dyntypes.AttributeValueMemberS{Value: itemSK},
+					},
+					ConditionExpression: aws.String("#status = :claimed OR #status = :running"),
+					UpdateExpression: aws.String(
+						"SET #status = :status, #gsi1pk = :gsi1pk, #completed = :now, #updated = :now, #lease = :empty " +
+							"REMOVE #gsi2pk, #gsi2sk"),
+					ExpressionAttributeNames: map[string]string{
+						"#status":    "status",
+						"#gsi1pk":    "GSI1PK",
+						"#completed": "completed_at",
+						"#updated":   "updated_at",
+						"#lease":     "lease_expires",
+						"#gsi2pk":    "GSI2PK",
+						"#gsi2sk":    "GSI2SK",
+					},
+					ExpressionAttributeValues: map[string]dyntypes.AttributeValue{
+						":claimed": &dyntypes.AttributeValueMemberS{Value: "claimed"},
+						":running": &dyntypes.AttributeValueMemberS{Value: "running"},
+						":status":  &dyntypes.AttributeValueMemberS{Value: string(store.StatusSucceeded)},
+						":gsi1pk":  &dyntypes.AttributeValueMemberS{Value: claimIndexPK(queue, store.StatusSucceeded)},
+						":now":     &dyntypes.AttributeValueMemberS{Value: timeStr(now)},
+						":empty":   &dyntypes.AttributeValueMemberS{Value: ""},
+					},
+				},
+			},
+			s.decrementCounterItem(queue),
 		},
 	})
 	if err != nil {
-		var condFail *dyntypes.ConditionalCheckFailedException
-		if ok := errors.As(err, &condFail); ok {
+		if isTransactionConflict(err) {
 			return store.ErrNotFound
 		}
 		return fmt.Errorf("complete: %w", err)
 	}
 
-	s.decrementInProgress(ctx, queue)
 	s.writeHistory(ctx, queue, key, store.HistoryEntry{
 		Queue: queue, Key: key, FromStatus: "running", ToStatus: "succeeded",
 		CreatedAt: now,
@@ -609,12 +664,14 @@ func (s *Store) Fail(ctx context.Context, queue, key string, errMsg string) erro
 		"#completed": "completed_at",
 		"#updated":   "updated_at",
 		"#lease":     "lease_expires",
+		"#gsi2pk":    "GSI2PK",
+		"#gsi2sk":    "GSI2SK",
 	}
 	exprValues := map[string]dyntypes.AttributeValue{
 		":claimed": &dyntypes.AttributeValueMemberS{Value: "claimed"},
 		":running": &dyntypes.AttributeValueMemberS{Value: "running"},
 		":status":  &dyntypes.AttributeValueMemberS{Value: string(store.StatusFailed)},
-		":gsi1pk":  &dyntypes.AttributeValueMemberS{Value: gsi1PK(queue, store.StatusFailed)},
+		":gsi1pk":  &dyntypes.AttributeValueMemberS{Value: claimIndexPK(queue, store.StatusFailed)},
 		":now":     &dyntypes.AttributeValueMemberS{Value: timeStr(now)},
 		":empty":   &dyntypes.AttributeValueMemberS{Value: ""},
 	}
@@ -624,6 +681,8 @@ func (s *Store) Fail(ctx context.Context, queue, key string, errMsg string) erro
 		exprNames["#errmsg"] = "error_message"
 		exprValues[":errmsg"] = &dyntypes.AttributeValueMemberS{Value: errMsg}
 	}
+
+	updateExpr += " REMOVE #gsi2pk, #gsi2sk"
 
 	_, err := s.ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: &s.table,
@@ -665,57 +724,59 @@ func (s *Store) Requeue(ctx context.Context, queue, key string, opts ...store.Re
 		notBefore = timePtrStr(o.NotBefore)
 	}
 
-	// Read current item to get priority for GSI1SK.
-	item, err := s.getItem(ctx, pk)
-	if err != nil {
-		return store.ErrNotFound
-	}
-
-	_, err = s.ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
-		TableName: &s.table,
-		Key: map[string]dyntypes.AttributeValue{
-			"PK": &dyntypes.AttributeValueMemberS{Value: pk},
-			"SK": &dyntypes.AttributeValueMemberS{Value: itemSK},
-		},
-		ConditionExpression: aws.String("#status IN (:claimed, :running, :failed)"),
-		UpdateExpression: aws.String(
-			"SET #status = :pending, #gsi1pk = :gsi1pk, #gsi1sk = :gsi1sk, " +
-				"#worker = :empty, #lease = :empty, #errmsg = :empty, " +
-				"#claimed_at = :empty, #completed_at = :empty, " +
-				"#not_before = :notbefore, #updated = :now"),
-		ExpressionAttributeNames: map[string]string{
-			"#status":       "status",
-			"#gsi1pk":       "GSI1PK",
-			"#gsi1sk":       "GSI1SK",
-			"#worker":       "worker_id",
-			"#lease":        "lease_expires",
-			"#errmsg":       "error_message",
-			"#claimed_at":   "claimed_at",
-			"#completed_at": "completed_at",
-			"#not_before":   "not_before",
-			"#updated":      "updated_at",
-		},
-		ExpressionAttributeValues: map[string]dyntypes.AttributeValue{
-			":pending":   &dyntypes.AttributeValueMemberS{Value: "pending"},
-			":claimed":   &dyntypes.AttributeValueMemberS{Value: "claimed"},
-			":running":   &dyntypes.AttributeValueMemberS{Value: "running"},
-			":failed":    &dyntypes.AttributeValueMemberS{Value: "failed"},
-			":gsi1pk":    &dyntypes.AttributeValueMemberS{Value: gsi1PK(queue, store.StatusPending)},
-			":gsi1sk":    &dyntypes.AttributeValueMemberS{Value: gsi1SK(item.Priority, item.toWorkItem().CreatedAt)},
-			":empty":     &dyntypes.AttributeValueMemberS{Value: ""},
-			":notbefore": &dyntypes.AttributeValueMemberS{Value: notBefore},
-			":now":       &dyntypes.AttributeValueMemberS{Value: timeStr(now)},
+	_, err := s.ddb.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
+		TransactItems: []dyntypes.TransactWriteItem{
+			{
+				Update: &dyntypes.Update{
+					TableName: &s.table,
+					Key: map[string]dyntypes.AttributeValue{
+						"PK": &dyntypes.AttributeValueMemberS{Value: pk},
+						"SK": &dyntypes.AttributeValueMemberS{Value: itemSK},
+					},
+					ConditionExpression: aws.String("#status IN (:claimed, :running, :failed)"),
+					UpdateExpression: aws.String(
+						"SET #status = :pending, #gsi1pk = #pendgpk, #gsi1sk = #pendgsi, " +
+							"#worker = :empty, #lease = :empty, #errmsg = :empty, " +
+							"#claimed_at = :empty, #completed_at = :empty, " +
+							"#not_before = :notbefore, #updated = :now " +
+							"REMOVE #gsi2pk, #gsi2sk"),
+					ExpressionAttributeNames: map[string]string{
+						"#status":       "status",
+						"#gsi1pk":       "GSI1PK",
+						"#gsi1sk":       "GSI1SK",
+						"#pendgpk":      "pending_gsi1pk",
+						"#pendgsi":      "pending_gsi1sk",
+						"#worker":       "worker_id",
+						"#lease":        "lease_expires",
+						"#errmsg":       "error_message",
+						"#claimed_at":   "claimed_at",
+						"#completed_at": "completed_at",
+						"#not_before":   "not_before",
+						"#updated":      "updated_at",
+						"#gsi2pk":       "GSI2PK",
+						"#gsi2sk":       "GSI2SK",
+					},
+					ExpressionAttributeValues: map[string]dyntypes.AttributeValue{
+						":pending":   &dyntypes.AttributeValueMemberS{Value: "pending"},
+						":claimed":   &dyntypes.AttributeValueMemberS{Value: "claimed"},
+						":running":   &dyntypes.AttributeValueMemberS{Value: "running"},
+						":failed":    &dyntypes.AttributeValueMemberS{Value: "failed"},
+						":empty":     &dyntypes.AttributeValueMemberS{Value: ""},
+						":notbefore": &dyntypes.AttributeValueMemberS{Value: notBefore},
+						":now":       &dyntypes.AttributeValueMemberS{Value: timeStr(now)},
+					},
+				},
+			},
+			s.decrementCounterItem(queue),
 		},
 	})
 	if err != nil {
-		var condFail *dyntypes.ConditionalCheckFailedException
-		if ok := errors.As(err, &condFail); ok {
+		if isTransactionConflict(err) {
 			return store.ErrNotFound
 		}
 		return fmt.Errorf("requeue: %w", err)
 	}
 
-	s.decrementInProgress(ctx, queue)
 	s.writeHistory(ctx, queue, key, store.HistoryEntry{
 		Queue: queue, Key: key, FromStatus: "running", ToStatus: "pending", CreatedAt: now,
 	})
@@ -726,54 +787,52 @@ func (s *Store) RequeueUndoAttempt(ctx context.Context, queue, key string, notBe
 	now := time.Now()
 	pk := itemPK(queue, key)
 
-	item, err := s.getItem(ctx, pk)
-	if err != nil {
-		return store.ErrNotFound
-	}
-	newAttempts := item.Attempts - 1
-	if newAttempts < 0 {
-		newAttempts = 0
-	}
-
-	_, err = s.ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
-		TableName: &s.table,
-		Key: map[string]dyntypes.AttributeValue{
-			"PK": &dyntypes.AttributeValueMemberS{Value: pk},
-			"SK": &dyntypes.AttributeValueMemberS{Value: itemSK},
-		},
-		ConditionExpression: aws.String("#status IN (:claimed, :running)"),
-		UpdateExpression: aws.String(
-			"SET #status = :pending, #gsi1pk = :gsi1pk, #gsi1sk = :gsi1sk, " +
-				"#attempts = :attempts, #worker = :empty, #lease = :empty, " +
-				"#errmsg = :empty, #claimed_at = :empty, #completed_at = :empty, " +
-				"#not_before = :notbefore, #updated = :now"),
-		ExpressionAttributeNames: map[string]string{
-			"#status": "status", "#gsi1pk": "GSI1PK", "#gsi1sk": "GSI1SK",
-			"#attempts": "attempts", "#worker": "worker_id", "#lease": "lease_expires",
-			"#errmsg": "error_message", "#claimed_at": "claimed_at",
-			"#completed_at": "completed_at", "#not_before": "not_before", "#updated": "updated_at",
-		},
-		ExpressionAttributeValues: map[string]dyntypes.AttributeValue{
-			":pending":   &dyntypes.AttributeValueMemberS{Value: "pending"},
-			":claimed":   &dyntypes.AttributeValueMemberS{Value: "claimed"},
-			":running":   &dyntypes.AttributeValueMemberS{Value: "running"},
-			":gsi1pk":    &dyntypes.AttributeValueMemberS{Value: gsi1PK(queue, store.StatusPending)},
-			":gsi1sk":    &dyntypes.AttributeValueMemberS{Value: gsi1SK(item.Priority, item.toWorkItem().CreatedAt)},
-			":attempts":  &dyntypes.AttributeValueMemberN{Value: strconv.Itoa(newAttempts)},
-			":empty":     &dyntypes.AttributeValueMemberS{Value: ""},
-			":notbefore": &dyntypes.AttributeValueMemberS{Value: timeStr(notBefore)},
-			":now":       &dyntypes.AttributeValueMemberS{Value: timeStr(now)},
+	_, err := s.ddb.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
+		TransactItems: []dyntypes.TransactWriteItem{
+			{
+				Update: &dyntypes.Update{
+					TableName: &s.table,
+					Key: map[string]dyntypes.AttributeValue{
+						"PK": &dyntypes.AttributeValueMemberS{Value: pk},
+						"SK": &dyntypes.AttributeValueMemberS{Value: itemSK},
+					},
+					ConditionExpression: aws.String("#status IN (:claimed, :running)"),
+					UpdateExpression: aws.String(
+						"SET #status = :pending, #gsi1pk = #pendgpk, #gsi1sk = #pendgsi, " +
+							"#worker = :empty, #lease = :empty, " +
+							"#errmsg = :empty, #claimed_at = :empty, #completed_at = :empty, " +
+							"#not_before = :notbefore, #updated = :now " +
+							"ADD #attempts :negone " +
+							"REMOVE #gsi2pk, #gsi2sk"),
+					ExpressionAttributeNames: map[string]string{
+						"#status": "status", "#gsi1pk": "GSI1PK", "#gsi1sk": "GSI1SK",
+						"#pendgpk": "pending_gsi1pk", "#pendgsi": "pending_gsi1sk",
+						"#attempts": "attempts", "#worker": "worker_id", "#lease": "lease_expires",
+						"#errmsg": "error_message", "#claimed_at": "claimed_at",
+						"#completed_at": "completed_at", "#not_before": "not_before", "#updated": "updated_at",
+						"#gsi2pk": "GSI2PK", "#gsi2sk": "GSI2SK",
+					},
+					ExpressionAttributeValues: map[string]dyntypes.AttributeValue{
+						":pending":   &dyntypes.AttributeValueMemberS{Value: "pending"},
+						":claimed":   &dyntypes.AttributeValueMemberS{Value: "claimed"},
+						":running":   &dyntypes.AttributeValueMemberS{Value: "running"},
+						":negone":    &dyntypes.AttributeValueMemberN{Value: "-1"},
+						":empty":     &dyntypes.AttributeValueMemberS{Value: ""},
+						":notbefore": &dyntypes.AttributeValueMemberS{Value: timeStr(notBefore)},
+						":now":       &dyntypes.AttributeValueMemberS{Value: timeStr(now)},
+					},
+				},
+			},
+			s.decrementCounterItem(queue),
 		},
 	})
 	if err != nil {
-		var condFail *dyntypes.ConditionalCheckFailedException
-		if ok := errors.As(err, &condFail); ok {
+		if isTransactionConflict(err) {
 			return store.ErrNotFound
 		}
 		return fmt.Errorf("requeue undo: %w", err)
 	}
 
-	s.decrementInProgress(ctx, queue)
 	s.writeHistory(ctx, queue, key, store.HistoryEntry{
 		Queue: queue, Key: key, FromStatus: "claimed", ToStatus: "pending", CreatedAt: now,
 	})
@@ -789,40 +848,47 @@ func (s *Store) Deadletter(ctx context.Context, queue, key string) error {
 		return store.ErrNotFound
 	}
 
-	_, err = s.ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
-		TableName: &s.table,
-		Key: map[string]dyntypes.AttributeValue{
-			"PK": &dyntypes.AttributeValueMemberS{Value: pk},
-			"SK": &dyntypes.AttributeValueMemberS{Value: itemSK},
-		},
-		ConditionExpression: aws.String("#status IN (:claimed, :running, :failed)"),
-		UpdateExpression: aws.String(
-			"SET #status = :dl, #gsi1pk = :gsi1pk, #gsi1sk = :gsi1sk, " +
-				"#completed = :now, #updated = :now, #lease = :empty"),
-		ExpressionAttributeNames: map[string]string{
-			"#status": "status", "#gsi1pk": "GSI1PK", "#gsi1sk": "GSI1SK",
-			"#completed": "completed_at", "#updated": "updated_at", "#lease": "lease_expires",
-		},
-		ExpressionAttributeValues: map[string]dyntypes.AttributeValue{
-			":claimed": &dyntypes.AttributeValueMemberS{Value: "claimed"},
-			":running": &dyntypes.AttributeValueMemberS{Value: "running"},
-			":failed":  &dyntypes.AttributeValueMemberS{Value: "failed"},
-			":dl":      &dyntypes.AttributeValueMemberS{Value: "dead_letter"},
-			":gsi1pk":  &dyntypes.AttributeValueMemberS{Value: gsi1PK(queue, store.StatusDeadLetter)},
-			":gsi1sk":  &dyntypes.AttributeValueMemberS{Value: gsi1SK(item.Priority, item.toWorkItem().CreatedAt)},
-			":now":     &dyntypes.AttributeValueMemberS{Value: timeStr(now)},
-			":empty":   &dyntypes.AttributeValueMemberS{Value: ""},
+	_, err = s.ddb.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
+		TransactItems: []dyntypes.TransactWriteItem{
+			{
+				Update: &dyntypes.Update{
+					TableName: &s.table,
+					Key: map[string]dyntypes.AttributeValue{
+						"PK": &dyntypes.AttributeValueMemberS{Value: pk},
+						"SK": &dyntypes.AttributeValueMemberS{Value: itemSK},
+					},
+					ConditionExpression: aws.String("#status IN (:claimed, :running, :failed)"),
+					UpdateExpression: aws.String(
+						"SET #status = :dl, #gsi1pk = :gsi1pk, #gsi1sk = :gsi1sk, " +
+							"#completed = :now, #updated = :now, #lease = :empty " +
+							"REMOVE #gsi2pk, #gsi2sk"),
+					ExpressionAttributeNames: map[string]string{
+						"#status": "status", "#gsi1pk": "GSI1PK", "#gsi1sk": "GSI1SK",
+						"#completed": "completed_at", "#updated": "updated_at", "#lease": "lease_expires",
+						"#gsi2pk": "GSI2PK", "#gsi2sk": "GSI2SK",
+					},
+					ExpressionAttributeValues: map[string]dyntypes.AttributeValue{
+						":claimed": &dyntypes.AttributeValueMemberS{Value: "claimed"},
+						":running": &dyntypes.AttributeValueMemberS{Value: "running"},
+						":failed":  &dyntypes.AttributeValueMemberS{Value: "failed"},
+						":dl":      &dyntypes.AttributeValueMemberS{Value: "dead_letter"},
+						":gsi1pk":  &dyntypes.AttributeValueMemberS{Value: claimIndexPK(queue, store.StatusDeadLetter)},
+						":gsi1sk":  &dyntypes.AttributeValueMemberS{Value: claimIndexSK(item.Priority, item.toWorkItem().CreatedAt)},
+						":now":     &dyntypes.AttributeValueMemberS{Value: timeStr(now)},
+						":empty":   &dyntypes.AttributeValueMemberS{Value: ""},
+					},
+				},
+			},
+			s.decrementCounterItem(queue),
 		},
 	})
 	if err != nil {
-		var condFail *dyntypes.ConditionalCheckFailedException
-		if ok := errors.As(err, &condFail); ok {
+		if isTransactionConflict(err) {
 			return store.ErrNotFound
 		}
 		return fmt.Errorf("deadletter: %w", err)
 	}
 
-	s.decrementInProgress(ctx, queue)
 	s.writeHistory(ctx, queue, key, store.HistoryEntry{
 		Queue: queue, Key: key, FromStatus: "failed", ToStatus: "dead_letter", CreatedAt: now,
 	})
@@ -840,15 +906,17 @@ func (s *Store) ExtendLease(ctx context.Context, queue, key string, duration tim
 			"SK": &dyntypes.AttributeValueMemberS{Value: itemSK},
 		},
 		ConditionExpression: aws.String("#status IN (:claimed, :running)"),
-		UpdateExpression:    aws.String("SET #lease = :lease, #updated = :now"),
+		UpdateExpression:    aws.String("SET #lease = :lease, #updated = :now, #gsi2sk = :gsi2sk"),
 		ExpressionAttributeNames: map[string]string{
 			"#status": "status", "#lease": "lease_expires", "#updated": "updated_at",
+			"#gsi2sk": "GSI2SK",
 		},
 		ExpressionAttributeValues: map[string]dyntypes.AttributeValue{
 			":claimed": &dyntypes.AttributeValueMemberS{Value: "claimed"},
 			":running": &dyntypes.AttributeValueMemberS{Value: "running"},
 			":lease":   &dyntypes.AttributeValueMemberS{Value: timeStr(exp)},
 			":now":     &dyntypes.AttributeValueMemberS{Value: timeStr(time.Now())},
+			":gsi2sk":  &dyntypes.AttributeValueMemberS{Value: leaseIndexSK(exp, key)},
 		},
 	})
 	if err != nil {
@@ -874,16 +942,25 @@ func (s *Store) Transition(ctx context.Context, queue, key string, from, to stor
 		return store.ErrNotFound
 	}
 
-	updateExpr := "SET #status = :to, #gsi1pk = :gsi1pk, #gsi1sk = :gsi1sk, #updated = :now"
+	var updateExpr string
 	exprNames := map[string]string{
 		"#status": "status", "#gsi1pk": "GSI1PK", "#gsi1sk": "GSI1SK", "#updated": "updated_at",
 	}
 	exprValues := map[string]dyntypes.AttributeValue{
-		":from":   &dyntypes.AttributeValueMemberS{Value: string(from)},
-		":to":     &dyntypes.AttributeValueMemberS{Value: string(to)},
-		":gsi1pk": &dyntypes.AttributeValueMemberS{Value: gsi1PK(queue, to)},
-		":gsi1sk": &dyntypes.AttributeValueMemberS{Value: gsi1SK(item.Priority, item.toWorkItem().CreatedAt)},
-		":now":    &dyntypes.AttributeValueMemberS{Value: timeStr(now)},
+		":from": &dyntypes.AttributeValueMemberS{Value: string(from)},
+		":to":   &dyntypes.AttributeValueMemberS{Value: string(to)},
+		":now":  &dyntypes.AttributeValueMemberS{Value: timeStr(now)},
+	}
+
+	if to == store.StatusPending {
+		// Restore sharded pending GSI1PK from stored attribute.
+		updateExpr = "SET #status = :to, #gsi1pk = #pendgpk, #gsi1sk = :gsi1sk, #updated = :now"
+		exprNames["#pendgpk"] = "pending_gsi1pk"
+		exprValues[":gsi1sk"] = &dyntypes.AttributeValueMemberS{Value: claimIndexSK(item.Priority, item.toWorkItem().CreatedAt)}
+	} else {
+		updateExpr = "SET #status = :to, #gsi1pk = :gsi1pk, #gsi1sk = :gsi1sk, #updated = :now"
+		exprValues[":gsi1pk"] = &dyntypes.AttributeValueMemberS{Value: claimIndexPK(queue, to)}
+		exprValues[":gsi1sk"] = &dyntypes.AttributeValueMemberS{Value: claimIndexSK(item.Priority, item.toWorkItem().CreatedAt)}
 	}
 
 	if o.WorkerID != "" {
@@ -895,6 +972,12 @@ func (s *Store) Transition(ctx context.Context, queue, key string, from, to stor
 		updateExpr += ", #errmsg = :errmsg"
 		exprNames["#errmsg"] = "error_message"
 		exprValues[":errmsg"] = &dyntypes.AttributeValueMemberS{Value: o.ErrorMessage}
+	}
+
+	if to != store.StatusClaimed && to != store.StatusRunning {
+		updateExpr += " REMOVE #gsi2pk, #gsi2sk"
+		exprNames["#gsi2pk"] = "GSI2PK"
+		exprNames["#gsi2sk"] = "GSI2SK"
 	}
 
 	_, err = s.ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
@@ -947,8 +1030,32 @@ func (s *Store) EnsureQueue(ctx context.Context, queue string, cfg store.QueueCo
 	return nil
 }
 
-func (s *Store) RepairCounter(_ context.Context, _ string) error {
-	return nil // no counter to repair — counts are derived from GSI queries
+func (s *Store) RepairCounter(ctx context.Context, queue string) error {
+	claimed, err := s.countByStatusSingle(ctx, queue, store.StatusClaimed)
+	if err != nil {
+		return fmt.Errorf("count claimed: %w", err)
+	}
+	running, err := s.countByStatusSingle(ctx, queue, store.StatusRunning)
+	if err != nil {
+		return fmt.Errorf("count running: %w", err)
+	}
+
+	pk := "_queue#" + queue
+	_, err = s.ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: &s.table,
+		Key: map[string]dyntypes.AttributeValue{
+			"PK": &dyntypes.AttributeValueMemberS{Value: pk},
+			"SK": &dyntypes.AttributeValueMemberS{Value: cfgSK},
+		},
+		UpdateExpression: aws.String("SET in_progress = :val"),
+		ExpressionAttributeValues: map[string]dyntypes.AttributeValue{
+			":val": &dyntypes.AttributeValueMemberN{Value: strconv.FormatInt(claimed+running, 10)},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("repair counter: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) SetQueuePaused(ctx context.Context, queue string, paused bool) error {
@@ -1068,7 +1175,7 @@ func (s *Store) tryIncrementInProgress(ctx context.Context, queue string, maxCon
 }
 
 // decrementInProgress atomically decrements the in_progress counter.
-// Uses a condition expression to prevent the counter from going below zero.
+// Used only in ClaimBatch to release a slot when a conditional claim fails.
 func (s *Store) decrementInProgress(ctx context.Context, queue string) {
 	pk := "_queue#" + queue
 	s.ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
@@ -1084,6 +1191,42 @@ func (s *Store) decrementInProgress(ctx context.Context, queue string) {
 			":zero": &dyntypes.AttributeValueMemberN{Value: "0"},
 		},
 	})
+}
+
+// decrementCounterItem returns a TransactWriteItem that atomically decrements
+// the in_progress counter. Used by Complete/Requeue/RequeueUndoAttempt/Deadletter
+// to bundle the counter update with the work item update in a single transaction.
+func (s *Store) decrementCounterItem(queue string) dyntypes.TransactWriteItem {
+	pk := "_queue#" + queue
+	return dyntypes.TransactWriteItem{
+		Update: &dyntypes.Update{
+			TableName: &s.table,
+			Key: map[string]dyntypes.AttributeValue{
+				"PK": &dyntypes.AttributeValueMemberS{Value: pk},
+				"SK": &dyntypes.AttributeValueMemberS{Value: cfgSK},
+			},
+			ConditionExpression: aws.String("attribute_exists(in_progress) AND in_progress > :zero"),
+			UpdateExpression:    aws.String("ADD in_progress :neg"),
+			ExpressionAttributeValues: map[string]dyntypes.AttributeValue{
+				":neg":  &dyntypes.AttributeValueMemberN{Value: "-1"},
+				":zero": &dyntypes.AttributeValueMemberN{Value: "0"},
+			},
+		},
+	}
+}
+
+// isTransactionConflict checks if a TransactionCanceledException was caused
+// by a conditional check failure on the first (work item) operation.
+func isTransactionConflict(err error) bool {
+	var txErr *dyntypes.TransactionCanceledException
+	if !errors.As(err, &txErr) {
+		return false
+	}
+	if len(txErr.CancellationReasons) > 0 {
+		r := txErr.CancellationReasons[0]
+		return r.Code != nil && *r.Code == "ConditionalCheckFailed"
+	}
+	return false
 }
 
 // countInProgressConsistent uses a strongly consistent Scan to count claimed+running items.
@@ -1111,12 +1254,22 @@ func (s *Store) countInProgressConsistent(ctx context.Context, queue string) (in
 }
 
 func (s *Store) countByStatusSingle(ctx context.Context, queue string, status store.Status) (int64, error) {
+	if status == store.StatusPending {
+		cfg := s.getQueueConfig(ctx, queue)
+		if cfg.ClaimShards > 1 {
+			return s.countByStatusSharded(ctx, queue, status, cfg.ClaimShards)
+		}
+	}
+	return s.countGSIPartition(ctx, claimIndexPK(queue, status))
+}
+
+func (s *Store) countGSIPartition(ctx context.Context, gsiPK string) (int64, error) {
 	result, err := s.ddb.Query(ctx, &dynamodb.QueryInput{
 		TableName:              &s.table,
 		IndexName:              aws.String(gsiName),
 		KeyConditionExpression: aws.String("GSI1PK = :pk"),
 		ExpressionAttributeValues: map[string]dyntypes.AttributeValue{
-			":pk": &dyntypes.AttributeValueMemberS{Value: gsi1PK(queue, status)},
+			":pk": &dyntypes.AttributeValueMemberS{Value: gsiPK},
 		},
 		Select: dyntypes.SelectCount,
 	})
@@ -1124,6 +1277,36 @@ func (s *Store) countByStatusSingle(ctx context.Context, queue string, status st
 		return 0, err
 	}
 	return int64(result.Count), nil
+}
+
+func (s *Store) countByStatusSharded(ctx context.Context, queue string, status store.Status, shards int) (int64, error) {
+	type result struct {
+		count int64
+		err   error
+	}
+	results := make([]result, shards)
+	var wg sync.WaitGroup
+	for i := range shards {
+		wg.Add(1)
+		go func(shard int) {
+			defer wg.Done()
+			c, err := s.countGSIPartition(ctx, claimIndexPKSharded(queue, status, shard))
+			results[shard] = result{count: c, err: err}
+		}(i)
+	}
+	wg.Wait()
+
+	// Also count the unsharded partition for items enqueued before sharding was enabled.
+	unsharded, _ := s.countGSIPartition(ctx, claimIndexPK(queue, status))
+
+	var total int64 = unsharded
+	for _, r := range results {
+		if r.err != nil {
+			return 0, r.err
+		}
+		total += r.count
+	}
+	return total, nil
 }
 
 func (s *Store) List(ctx context.Context, filter store.ListFilter) ([]store.WorkItem, error) {
@@ -1188,13 +1371,95 @@ func (s *Store) List(ctx context.Context, filter store.ListFilter) ([]store.Work
 	return all[:limit], nil
 }
 
-func (s *Store) listByStatus(ctx context.Context, queue string, status store.Status, limit int) ([]store.WorkItem, error) {
+// queryPendingItems queries pending items across shards, merges by priority order.
+// With shards <= 1, this is a single GSI query (zero overhead).
+func (s *Store) queryPendingItems(ctx context.Context, queue string, shards, limit int) ([]ddbItem, error) {
+	if shards <= 1 {
+		return s.queryGSIPartition(ctx, claimIndexPK(queue, store.StatusPending), limit)
+	}
+
+	// Query all shards + the unsharded partition (for items predating shard config) in parallel.
+	type shardResult struct {
+		items []ddbItem
+		err   error
+	}
+	results := make([]shardResult, shards+1)
+	var wg sync.WaitGroup
+	for i := range shards {
+		wg.Add(1)
+		go func(shard int) {
+			defer wg.Done()
+			pk := claimIndexPKSharded(queue, store.StatusPending, shard)
+			items, err := s.queryGSIPartition(ctx, pk, limit)
+			results[shard] = shardResult{items: items, err: err}
+		}(i)
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		items, err := s.queryGSIPartition(ctx, claimIndexPK(queue, store.StatusPending), limit)
+		results[shards] = shardResult{items: items, err: err}
+	}()
+	wg.Wait()
+
+	var all []ddbItem
+	for _, r := range results {
+		if r.err != nil {
+			return nil, r.err
+		}
+		all = append(all, r.items...)
+	}
+
+	sort.Slice(all, func(i, j int) bool { return all[i].GSI1SK < all[j].GSI1SK })
+
+	if len(all) > limit {
+		all = all[:limit]
+	}
+	return all, nil
+}
+
+func (s *Store) queryGSIPartition(ctx context.Context, gsiPK string, limit int) ([]ddbItem, error) {
 	result, err := s.ddb.Query(ctx, &dynamodb.QueryInput{
 		TableName:              &s.table,
 		IndexName:              aws.String(gsiName),
 		KeyConditionExpression: aws.String("GSI1PK = :pk"),
 		ExpressionAttributeValues: map[string]dyntypes.AttributeValue{
-			":pk": &dyntypes.AttributeValueMemberS{Value: gsi1PK(queue, status)},
+			":pk": &dyntypes.AttributeValueMemberS{Value: gsiPK},
+		},
+		Limit: aws.Int32(int32(limit)),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("query claim index: %w", err)
+	}
+
+	var items []ddbItem
+	for _, rawItem := range result.Items {
+		var item ddbItem
+		if err := attributevalue.UnmarshalMap(rawItem, &item); err != nil {
+			continue
+		}
+		items = append(items, item)
+	}
+	return items, nil
+}
+
+func (s *Store) listByStatus(ctx context.Context, queue string, status store.Status, limit int) ([]store.WorkItem, error) {
+	if status == store.StatusPending {
+		cfg := s.getQueueConfig(ctx, queue)
+		if cfg.ClaimShards > 1 {
+			return s.listByStatusSharded(ctx, queue, status, cfg.ClaimShards, limit)
+		}
+	}
+	return s.listGSIPartition(ctx, claimIndexPK(queue, status), limit)
+}
+
+func (s *Store) listGSIPartition(ctx context.Context, gsiPK string, limit int) ([]store.WorkItem, error) {
+	result, err := s.ddb.Query(ctx, &dynamodb.QueryInput{
+		TableName:              &s.table,
+		IndexName:              aws.String(gsiName),
+		KeyConditionExpression: aws.String("GSI1PK = :pk"),
+		ExpressionAttributeValues: map[string]dyntypes.AttributeValue{
+			":pk": &dyntypes.AttributeValueMemberS{Value: gsiPK},
 		},
 		Limit: aws.Int32(int32(limit)),
 	})
@@ -1213,30 +1478,77 @@ func (s *Store) listByStatus(ctx context.Context, queue string, status store.Sta
 	return items, nil
 }
 
-func (s *Store) ListExpiredLeases(ctx context.Context, queue string, limit int) ([]store.WorkItem, error) {
-	now := time.Now()
-	var expired []store.WorkItem
+func (s *Store) listByStatusSharded(ctx context.Context, queue string, status store.Status, shards, limit int) ([]store.WorkItem, error) {
+	type shardResult struct {
+		items []store.WorkItem
+		err   error
+	}
+	results := make([]shardResult, shards)
+	var wg sync.WaitGroup
+	for i := range shards {
+		wg.Add(1)
+		go func(shard int) {
+			defer wg.Done()
+			pk := claimIndexPKSharded(queue, status, shard)
+			items, err := s.listGSIPartition(ctx, pk, limit)
+			results[shard] = shardResult{items: items, err: err}
+		}(i)
+	}
+	wg.Wait()
 
-	for _, status := range []store.Status{store.StatusClaimed, store.StatusRunning} {
-		items, err := s.listByStatus(ctx, queue, status, 1000)
-		if err != nil {
-			return nil, fmt.Errorf("list %s items: %w", status, err)
+	// Also query the unsharded partition for items predating shard config.
+	unsharded, _ := s.listGSIPartition(ctx, claimIndexPK(queue, status), limit)
+
+	all := unsharded
+	for _, r := range results {
+		if r.err != nil {
+			return nil, r.err
 		}
-		for _, item := range items {
-			if item.LeaseExpires != nil && item.LeaseExpires.Before(now) {
-				expired = append(expired, item)
-			}
-		}
+		all = append(all, r.items...)
 	}
 
-	sort.Slice(expired, func(i, j int) bool {
-		return expired[i].LeaseExpires.Before(*expired[j].LeaseExpires)
+	sort.Slice(all, func(i, j int) bool {
+		if all[i].Priority != all[j].Priority {
+			return all[i].Priority > all[j].Priority
+		}
+		return all[i].CreatedAt.Before(all[j].CreatedAt)
 	})
 
-	if limit > 0 && len(expired) > limit {
-		expired = expired[:limit]
+	if len(all) > limit {
+		all = all[:limit]
 	}
-	return expired, nil
+	return all, nil
+}
+
+func (s *Store) ListExpiredLeases(ctx context.Context, queue string, limit int) ([]store.WorkItem, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	now := time.Now()
+
+	result, err := s.ddb.Query(ctx, &dynamodb.QueryInput{
+		TableName:              &s.table,
+		IndexName:              aws.String(leaseGSIName),
+		KeyConditionExpression: aws.String("GSI2PK = :pk AND GSI2SK < :now"),
+		ExpressionAttributeValues: map[string]dyntypes.AttributeValue{
+			":pk":  &dyntypes.AttributeValueMemberS{Value: leaseIndexPK(queue)},
+			":now": &dyntypes.AttributeValueMemberS{Value: now.Format(time.RFC3339Nano)},
+		},
+		Limit: aws.Int32(int32(limit)),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("query lease index: %w", err)
+	}
+
+	var items []store.WorkItem
+	for _, rawItem := range result.Items {
+		var item ddbItem
+		if err := attributevalue.UnmarshalMap(rawItem, &item); err != nil {
+			continue
+		}
+		items = append(items, item.toWorkItem())
+	}
+	return items, nil
 }
 
 func (s *Store) GetItem(ctx context.Context, queue, key string) (*store.WorkItem, error) {
@@ -1334,18 +1646,53 @@ func (s *Store) PurgeDeadLetters(ctx context.Context, queue string) (int64, erro
 	if err != nil {
 		return 0, err
 	}
-
-	for _, item := range items {
-		pk := itemPK(queue, item.Key)
-		s.ddb.DeleteItem(ctx, &dynamodb.DeleteItemInput{
-			TableName: &s.table,
-			Key: map[string]dyntypes.AttributeValue{
-				"PK": &dyntypes.AttributeValueMemberS{Value: pk},
-				"SK": &dyntypes.AttributeValueMemberS{Value: itemSK},
-			},
-		})
+	if len(items) == 0 {
+		return 0, nil
 	}
-	return int64(len(items)), nil
+
+	var deleted int64
+	for start := 0; start < len(items); start += 25 {
+		end := start + 25
+		if end > len(items) {
+			end = len(items)
+		}
+		chunk := items[start:end]
+
+		requests := make([]dyntypes.WriteRequest, len(chunk))
+		for i, item := range chunk {
+			requests[i] = dyntypes.WriteRequest{
+				DeleteRequest: &dyntypes.DeleteRequest{
+					Key: map[string]dyntypes.AttributeValue{
+						"PK": &dyntypes.AttributeValueMemberS{Value: itemPK(queue, item.Key)},
+						"SK": &dyntypes.AttributeValueMemberS{Value: itemSK},
+					},
+				},
+			}
+		}
+
+		out, err := s.ddb.BatchWriteItem(ctx, &dynamodb.BatchWriteItemInput{
+			RequestItems: map[string][]dyntypes.WriteRequest{s.table: requests},
+		})
+		if err != nil {
+			return deleted, fmt.Errorf("batch delete: %w", err)
+		}
+
+		unprocessed := out.UnprocessedItems[s.table]
+		for retries := 0; len(unprocessed) > 0 && retries < 3; retries++ {
+			time.Sleep(time.Duration(100*(1<<retries)) * time.Millisecond)
+			out, err = s.ddb.BatchWriteItem(ctx, &dynamodb.BatchWriteItemInput{
+				RequestItems: map[string][]dyntypes.WriteRequest{s.table: unprocessed},
+			})
+			if err != nil {
+				return deleted, fmt.Errorf("batch delete retry: %w", err)
+			}
+			unprocessed = out.UnprocessedItems[s.table]
+		}
+
+		deleted += int64(len(chunk) - len(unprocessed))
+	}
+
+	return deleted, nil
 }
 
 // --- History (S3-backed) ---

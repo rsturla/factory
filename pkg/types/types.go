@@ -66,6 +66,7 @@ type QueueConfig struct {
 	MaxConcurrency int    `json:"max_concurrency"`
 	MaxRetry       int    `json:"max_retry"`
 	ComputeBackend string `json:"compute_backend"`
+	ClaimShards    int    `json:"claim_shards,omitempty"`
 }
 
 // QueueInfo describes a queue and its current state.
