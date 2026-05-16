@@ -1,0 +1,29 @@
+summary: Container image integration tests
+description: |
+    Deploys pre-built container images via docker-compose and verifies
+    end-to-end workqueue functionality: enqueue, dispatch, reconcile,
+    deduplication, priority ordering, admin API, and metrics.
+
+    Images are set via environment variables (from Konflux Testing Farm):
+      FACTORY_RECEIVER_IMAGE
+      FACTORY_DISPATCHER_IMAGE
+      FACTORY_ADMIN_IMAGE
+      ECHO_RECONCILER_IMAGE
+
+    For group snapshots, Testing Farm sets IMAGE_URL_<COMPONENT>.
+    For single component snapshots, Testing Farm sets IMAGE_URL.
+    Plan environment+ derives FACTORY_*_IMAGE from these.
+test: bash tests/container/run.sh
+duration: 15m
+require:
+    - docker
+    - docker-compose
+    - curl
+    - python3
+framework: shell
+
+adjust+:
+  - when: initiator == konflux
+    enabled: true
+  - when: initiator != konflux
+    enabled: false

@@ -1,0 +1,14 @@
+apiVersion: factory.hummingbird.dev/v1
+kind: Pipeline
+metadata:
+  name: hello-agent
+
+resources: []
+
+stages:
+  - name: hello
+    agent:
+      image: alpine:latest
+      command: ["sh", "-c", "echo 'Agent running at:'; date; sleep 2; echo 'Agent execution successful!' > /output/result.txt; echo '{\"type\":\"report\",\"content\":\"Hello from real agent\"}' > /output/output.json"]
+    output:
+      type: report

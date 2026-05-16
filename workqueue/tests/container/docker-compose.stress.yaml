@@ -1,0 +1,58 @@
+# Stress test compose file - uses pre-built images from Konflux
+services:
+  postgres:
+    image: quay.io/hummingbird/postgresql:18
+    environment:
+      POSTGRES_DB: factory
+      POSTGRES_USER: factory
+      POSTGRES_PASSWORD: factory
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U factory"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  admin:
+    image: ${FACTORY_ADMIN_IMAGE:-quay.io/hummingbird/factory-admin:latest}
+    ports:
+      - "18080:8080"
+    environment:
+      PG_DATABASE_URL: postgres://factory:factory@postgres:5432/factory?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  echo-receiver:
+    image: ${FACTORY_RECEIVER_IMAGE:-quay.io/hummingbird/factory-receiver:latest}
+    ports:
+      - "8081:8081"
+    environment:
+      FACTORY_QUEUE_NAME: echo
+      PG_DATABASE_URL: postgres://factory:factory@postgres:5432/factory?sslmode=disable
+      FACTORY_LISTEN_ADDR: ":8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  echo-dispatcher:
+    image: ${FACTORY_DISPATCHER_IMAGE:-quay.io/hummingbird/factory-dispatcher:latest}
+    environment:
+      FACTORY_QUEUE_NAME: echo
+      PG_DATABASE_URL: postgres://factory:factory@postgres:5432/factory?sslmode=disable
+      RECONCILER_ENDPOINT: http://echo-reconciler:8082
+      STORE_BACKEND: postgres
+      DISPATCH_MAX_CONCURRENCY: "100"
+      DISPATCH_BATCH_SIZE: "100"
+      DISPATCH_INTERVAL: 100ms
+      DISPATCH_LEASE_DURATION: 5m
+    depends_on:
+      postgres:
+        condition: service_healthy
+      echo-reconciler:
+        condition: service_started
+
+  echo-reconciler:
+    image: ${ECHO_RECONCILER_IMAGE:-quay.io/hummingbird/echo-reconciler:latest}
+    environment:
+      FACTORY_LISTEN_ADDR: ":8082"
+      PROCESS_DELAY: "0s"

@@ -1,0 +1,47 @@
+apiVersion: factory.hummingbird.dev/v1
+kind: Pipeline
+metadata:
+  name: fanin-test
+
+resources: []
+
+stages:
+  - name: stage1
+    agent:
+      image: alpine:latest
+      command: ["sh", "-c", "echo '{\"type\":\"report\",\"content\":\"Output from stage1\",\"data\":\"value1\"}' > /output/output.json"]
+    output:
+      type: report
+
+  - name: stage2
+    agent:
+      image: alpine:latest
+      command: ["sh", "-c", "echo '{\"type\":\"report\",\"content\":\"Output from stage2\",\"data\":\"value2\"}' > /output/output.json"]
+    output:
+      type: report
+
+  - name: merge
+    dependsOn: [stage1, stage2]
+    agent:
+      image: alpine:latest
+      command:
+        - sh
+        - -c
+        - |
+          echo "=== Checking upstream inputs ==="
+          ls -la /workspace/inputs/ || echo "No inputs dir"
+          ls -la /workspace/inputs/stage1/ || echo "No stage1 dir"
+          ls -la /workspace/inputs/stage2/ || echo "No stage2 dir"
+
+          echo "=== Reading stage1 output ==="
+          cat /workspace/inputs/stage1/output.json || echo "No stage1 output"
+
+          echo "=== Reading stage2 output ==="
+          cat /workspace/inputs/stage2/output.json || echo "No stage2 output"
+
+          echo "=== Creating merged output ==="
+          echo '{"type":"report","content":"Merged outputs","upstream_files":["stage1","stage2"]}' > /output/output.json
+
+          echo "=== Done ==="
+    output:
+      type: report

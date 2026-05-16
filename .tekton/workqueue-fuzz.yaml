@@ -1,0 +1,125 @@
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  name: workqueue-fuzz
+  annotations:
+    pipelinesascode.tekton.dev/on-cel-expression: |
+      event == "push" && target_branch == "main" && "workqueue/".pathChanged()
+    pipelinesascode.tekton.dev/max-keep-runs: "3"
+spec:
+  params:
+    - name: git-url
+      value: '{{repo_url}}'
+    - name: revision
+      value: '{{revision}}'
+  pipelineSpec:
+    params:
+      - name: git-url
+      - name: revision
+    tasks:
+      - name: clone-repository
+        taskRef:
+          resolver: bundles
+          params:
+            - name: name
+              value: git-clone
+            - name: bundle
+              value: quay.io/konflux-ci/tekton-catalog/task-git-clone:0.1
+            - name: kind
+              value: task
+        params:
+          - name: url
+            value: $(params.git-url)
+          - name: revision
+            value: $(params.revision)
+        workspaces:
+          - name: output
+            workspace: workspace
+          - name: basic-auth
+            workspace: git-auth
+
+      - name: fuzz-long
+        runAfter:
+          - clone-repository
+        taskSpec:
+          workspaces:
+            - name: source
+          results:
+            - name: crashes
+              description: Number of crashes found
+          steps:
+            - name: restore-corpus
+              image: quay.io/hummingbird/go:1.26
+              workingDir: $(workspaces.source.path)/workqueue
+              script: |
+                #!/bin/bash
+                set -euo pipefail
+                # TODO: Restore corpus from Konflux artifact storage
+                echo "Corpus restore not yet implemented"
+
+            - name: fuzz
+              image: quay.io/hummingbird/go:1.26
+              workingDir: $(workspaces.source.path)/workqueue
+              timeout: 2h
+              script: |
+                #!/bin/bash
+                set -euo pipefail
+
+                # Run long fuzz (30 min per target)
+                CRASHES=0
+                make fuzz FUZZ_TIME=30m || CRASHES=$?
+
+                # Save crash count
+                echo -n "$CRASHES" > $(results.crashes.path)
+
+                if [ "$CRASHES" -gt 0 ]; then
+                  echo "Found $CRASHES crashes - see artifacts"
+                  exit 1
+                fi
+
+            - name: save-corpus
+              image: quay.io/hummingbird/go:1.26
+              workingDir: $(workspaces.source.path)/workqueue
+              script: |
+                #!/bin/bash
+                set -euo pipefail
+                # TODO: Save corpus to Konflux artifact storage
+                echo "Corpus save not yet implemented"
+
+            - name: upload-crashes
+              image: quay.io/hummingbird/go:1.26
+              workingDir: $(workspaces.source.path)/workqueue
+              onError: continue
+              script: |
+                #!/bin/bash
+                set -euo pipefail
+
+                # Find crash artifacts
+                CRASH_FILES=$(find . -path "*/testdata/fuzz/*" -type f 2>/dev/null || true)
+
+                if [ -n "$CRASH_FILES" ]; then
+                  echo "=== Crash artifacts found ==="
+                  echo "$CRASH_FILES"
+                  # TODO: Upload to Konflux artifact storage
+                  echo "Artifact upload not yet implemented"
+                fi
+        workspaces:
+          - name: source
+            workspace: workspace
+
+    workspaces:
+      - name: workspace
+      - name: git-auth
+        optional: true
+  workspaces:
+    - name: workspace
+      volumeClaimTemplate:
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 2Gi
+    - name: git-auth
+      secret:
+        secretName: '{{ git_auth_secret }}'

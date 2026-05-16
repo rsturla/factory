@@ -1,0 +1,24 @@
+summary: High-volume stress test
+description: |
+    Enqueues 10,000 items and verifies end-to-end processing under load.
+    Tests dispatcher concurrency, database connection pooling, reconciler
+    throughput, and metrics collection at scale.
+
+    Uses pre-built container images from environment variables:
+      FACTORY_RECEIVER_IMAGE
+      FACTORY_DISPATCHER_IMAGE
+      FACTORY_ADMIN_IMAGE
+      ECHO_RECONCILER_IMAGE
+test: bash tests/container/run-stress.sh
+duration: 30m
+require:
+    - docker
+    - docker-compose
+    - curl
+framework: shell
+
+adjust+:
+  - when: initiator == konflux
+    enabled: true
+  - when: initiator != konflux
+    enabled: false

@@ -1,0 +1,57 @@
+{
+  "name": "@hummingbird/factory-sdk",
+  "version": "0.1.0",
+  "description": "Imperative TypeScript SDK for Factory — orchestrate AI agents to build, test, and ship code",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "clean": "rm -rf dist",
+    "test": "bun test",
+    "format": "prettier --write 'src/**/*.ts'",
+    "lint": "eslint 'src/**/*.ts'"
+  },
+  "keywords": [
+    "factory",
+    "pipeline",
+    "agentic",
+    "ai",
+    "claude",
+    "llm",
+    "automation",
+    "cicd",
+    "typescript",
+    "orchestration"
+  ],
+  "author": "Hummingbird",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://gitlab.com/redhat/hummingbird/experimental/factory/core.git",
+    "directory": "sdk/typescript"
+  },
+  "bugs": {
+    "url": "https://github.com/anthropics/factory/issues"
+  },
+  "homepage": "https://github.com/anthropics/factory#readme",
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "@types/node": "^22.0.0",
+    "prettier": "^3.0.0",
+    "eslint": "^8.0.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0"
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18.0.0",
+    "bun": ">=1.0.0"
+  }
+}

@@ -1,0 +1,156 @@
+apiVersion: factory.hummingbird.dev/v1
+kind: Pipeline
+metadata:
+  name: verified-cve-patch
+
+resources: []
+
+stages:
+  # Stage 1: Generate patch for CVE
+  - name: generate-patch
+    agent:
+      image: alpine:latest
+      command:
+        - sh
+        - -c
+        - |
+          echo "=== Generating CVE patch ==="
+
+          # Simulate generating a patch
+          # In reality, this would be Claude Code or similar
+          cat > /output/output.json <<'EOF'
+          {
+            "type": "patch",
+            "cve_id": "CVE-2026-1234",
+            "description": "Fix buffer overflow in SSL handshake",
+            "changes": [
+              {
+                "file": "src/ssl.c",
+                "line": 42,
+                "old": "if (len < MIN_SIZE) return ERROR;",
+                "new": "if (len <= MIN_SIZE) return ERROR;"
+              }
+            ],
+            "diff": "--- a/src/ssl.c\n+++ b/src/ssl.c\n@@ -42 +42 @@\n-if (len < MIN_SIZE) return ERROR;\n+if (len <= MIN_SIZE) return ERROR;\n"
+          }
+          EOF
+
+          cat /output/output.json
+    output:
+      type: patch
+
+  # Stage 2: LLM judge verifies patch safety
+  - name: verify-patch
+    dependsOn: [generate-patch]
+    agent:
+      image: alpine:latest
+      command:
+        - sh
+        - -c
+        - |
+          echo "=== LLM Judge: Reviewing patch ==="
+
+          # Read generated patch
+          cat /workspace/inputs/generate-patch/output.json
+
+          # Simulate LLM judgment
+          # In production, this would call Claude API with structured prompt
+
+          # Check 1: Addresses task (fix CVE-2026-1234)
+          echo "Check 1: Does patch fix CVE-2026-1234?"
+          echo "  - Yes, changes boundary check from < to <="
+
+          # Check 2: No malicious code
+          echo "Check 2: Any malicious patterns?"
+          echo "  - No system calls"
+          echo "  - No network operations"
+          echo "  - No obfuscation"
+
+          # Check 3: No scope creep
+          echo "Check 3: Only CVE-related changes?"
+          echo "  - Single line change"
+          echo "  - Directly addresses vulnerability"
+
+          # Check 4: No new vulnerabilities
+          echo "Check 4: New vulnerabilities introduced?"
+          echo "  - No SQL injection"
+          echo "  - No XSS"
+          echo "  - Boundary check strengthened, not weakened"
+
+          # Generate judgment
+          cat > /output/output.json <<'EOF'
+          {
+            "type": "verification",
+            "verdict": "APPROVE",
+            "reasoning": "Patch correctly fixes CVE-2026-1234 buffer overflow by strengthening boundary check. No malicious code, no scope creep, no new vulnerabilities introduced. Single focused change addressing stated vulnerability.",
+            "criteria_results": {
+              "addresses_task": {
+                "pass": true,
+                "evidence": "Changes boundary condition from < to <= which prevents buffer overflow when len equals MIN_SIZE"
+              },
+              "no_malicious_code": {
+                "pass": true,
+                "evidence": "No system calls, network operations, or obfuscated code detected"
+              },
+              "no_scope_creep": {
+                "pass": true,
+                "evidence": "Single line change directly addressing CVE"
+              },
+              "no_security_vulnerabilities": {
+                "pass": true,
+                "evidence": "Boundary check strengthened, prevents overflow condition"
+              }
+            }
+          }
+          EOF
+
+          echo ""
+          echo "=== Judgment: APPROVE ==="
+          cat /output/output.json
+    output:
+      type: verification
+
+  # Stage 3: Apply patch (only runs if verification approved)
+  - name: apply-patch
+    dependsOn: [verify-patch, generate-patch]
+    agent:
+      image: alpine:latest
+      command:
+        - sh
+        - -c
+        - |
+          echo "=== Applying verified patch ==="
+
+          # Read verification result
+          verdict=$(grep -o '"verdict":[[:space:]]*"[^"]*"' /workspace/inputs/verify-patch/output.json | grep -o '[A-Z]*' | tail -1)
+
+          if [ "$verdict" != "APPROVE" ]; then
+            echo "ERROR: Patch not approved by LLM judge"
+            echo "Verdict: $verdict"
+            exit 1
+          fi
+
+          echo "Patch approved by LLM judge"
+
+          # Read patch
+          cat /workspace/inputs/generate-patch/output.json
+
+          # Simulate applying patch
+          echo "Applying patch to repository..."
+          echo "Creating branch: factory/cve-2026-1234"
+          echo "Committing changes..."
+
+          cat > /output/output.json <<'EOF'
+          {
+            "type": "report",
+            "status": "success",
+            "message": "Patch applied and verified",
+            "branch": "factory/cve-2026-1234",
+            "verified_by": "llm-judge",
+            "cve_id": "CVE-2026-1234"
+          }
+          EOF
+
+          cat /output/output.json
+    output:
+      type: report

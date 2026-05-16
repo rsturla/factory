@@ -1,0 +1,18 @@
+apiVersion: factory.hummingbird.dev/v1
+kind: Pipeline
+metadata:
+  name: simple-test
+
+resources:
+  - name: test-repo
+    type: git
+    access: read-only
+
+stages:
+  - name: test
+    agent:
+      image: busybox
+      command: ["sh", "-c", "echo hello > /output/result.txt"]
+      resources: [test-repo]
+    output:
+      type: report

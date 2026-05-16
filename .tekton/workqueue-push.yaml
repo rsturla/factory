@@ -1,0 +1,471 @@
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  name: workqueue-push
+  annotations:
+    pipelinesascode.tekton.dev/on-cel-expression: |
+      event == "push" &&
+      target_branch == "main" &&
+      ("workqueue/".pathChanged() || ".tekton/workqueue-".pathChanged())
+    pipelinesascode.tekton.dev/max-keep-runs: "3"
+spec:
+  params:
+    - name: git-url
+      value: '{{repo_url}}'
+    - name: revision
+      value: '{{revision}}'
+  pipelineSpec:
+    params:
+      - name: git-url
+      - name: revision
+    results:
+      - name: IMAGE_URL_RECEIVER
+        value: $(tasks.tag-receiver-latest.results.IMAGE_URL)
+      - name: IMAGE_URL_DISPATCHER
+        value: $(tasks.tag-dispatcher-latest.results.IMAGE_URL)
+      - name: IMAGE_URL_ADMIN
+        value: $(tasks.tag-admin-latest.results.IMAGE_URL)
+      - name: IMAGE_URL_RECONCILER
+        value: $(tasks.tag-echo-reconciler-latest.results.IMAGE_URL)
+      - name: CHAINS-GIT_URL
+        value: $(tasks.clone-repository.results.url)
+      - name: CHAINS-GIT_COMMIT
+        value: $(tasks.clone-repository.results.commit)
+    tasks:
+      - name: init
+        taskRef:
+          resolver: bundles
+          params:
+            - name: name
+              value: init
+            - name: bundle
+              value: quay.io/konflux-ci/tekton-catalog/task-init:0.4
+            - name: kind
+              value: task
+        params:
+          - name: image-url
+            value: quay.io/hummingbird/factory-receiver:$(params.revision)
+
+      - name: clone-repository
+        runAfter:
+          - init
+        taskRef:
+          resolver: bundles
+          params:
+            - name: name
+              value: git-clone
+            - name: bundle
+              value: quay.io/konflux-ci/tekton-catalog/task-git-clone:0.1
+            - name: kind
+              value: task
+        params:
+          - name: url
+            value: $(params.git-url)
+          - name: revision
+            value: $(params.revision)
+        workspaces:
+          - name: output
+            workspace: workspace
+          - name: basic-auth
+            workspace: git-auth
+
+      - name: prefetch-dependencies
+        runAfter:
+          - clone-repository
+        taskRef:
+          resolver: bundles
+          params:
+            - name: name
+              value: prefetch-dependencies
+            - name: bundle
+              value: quay.io/konflux-ci/tekton-catalog/task-prefetch-dependencies:0.3
+            - name: kind
+              value: task
+        params:
+          - name: input
+            value: |
+              - type: gomod
+                path: workqueue
+        workspaces:
+          - name: source
+            workspace: workspace
+          - name: git-basic-auth
+            workspace: git-auth
+
+      - name: lint
+        runAfter:
+          - prefetch-dependencies
+        taskSpec:
+          workspaces:
+            - name: source
+          steps:
+            - name: lint
+              image: quay.io/hummingbird/go:1.26
+              workingDir: $(workspaces.source.path)/workqueue
+              script: |
+                #!/bin/bash
+                set -euo pipefail
+                make lint
+        workspaces:
+          - name: source
+            workspace: workspace
+
+      - name: test-full
+        runAfter:
+          - prefetch-dependencies
+        taskSpec:
+          workspaces:
+            - name: source
+          sidecars:
+            - name: postgres
+              image: quay.io/hummingbird/postgresql:18
+              env:
+                - name: POSTGRES_DB
+                  value: factory
+                - name: POSTGRES_USER
+                  value: factory
+                - name: POSTGRES_PASSWORD
+                  value: factory
+            - name: dynamodb
+              image: amazon/dynamodb-local:latest
+            - name: rustfs
+              image: rustfs/rustfs:latest
+          steps:
+            - name: setup-s3
+              image: quay.io/hummingbird/go:1.26
+              workingDir: $(workspaces.source.path)/workqueue
+              env:
+                - name: AWS_ACCESS_KEY_ID
+                  value: rustfsadmin
+                - name: AWS_SECRET_ACCESS_KEY
+                  value: rustfsadmin
+              script: |
+                #!/bin/bash
+                set -euo pipefail
+                for i in {1..30}; do
+                  if aws --endpoint-url http://localhost:9000 s3 ls 2>/dev/null; then
+                    break
+                  fi
+                  sleep 1
+                done
+                aws --endpoint-url http://localhost:9000 s3 mb s3://factory-test
+
+            - name: test-go
+              image: quay.io/hummingbird/go:1.26
+              workingDir: $(workspaces.source.path)/workqueue
+              env:
+                - name: PG_DATABASE_URL
+                  value: postgres://factory:factory@localhost:5432/factory?sslmode=disable
+                - name: DDB_TEST_ENDPOINT
+                  value: http://localhost:8000
+                - name: S3_TEST_ENDPOINT
+                  value: http://localhost:9000
+                - name: S3_TEST_BUCKET
+                  value: factory-test
+                - name: AWS_ACCESS_KEY_ID
+                  value: test
+                - name: AWS_SECRET_ACCESS_KEY
+                  value: test
+                - name: AWS_REGION
+                  value: us-east-1
+              script: |
+                #!/bin/bash
+                set -euo pipefail
+                for i in {1..30}; do
+                  if pg_isready -h localhost -U factory 2>/dev/null; then
+                    break
+                  fi
+                  sleep 1
+                done
+                make test-go
+
+            - name: test-python
+              image: quay.io/hummingbird/go:1.26
+              workingDir: $(workspaces.source.path)/workqueue
+              script: |
+                #!/bin/bash
+                set -euo pipefail
+                cd sdk/python
+                pip install -e ".[dev,server]" -q
+                pytest -v
+
+            - name: test-rust
+              image: quay.io/hummingbird/go:1.26
+              workingDir: $(workspaces.source.path)/workqueue
+              script: |
+                #!/bin/bash
+                set -euo pipefail
+                cd sdk/rust
+                rustup component add clippy 2>/dev/null
+                cargo test
+                cargo clippy -- -D warnings
+
+            - name: benchmark
+              image: quay.io/hummingbird/go:1.26
+              workingDir: $(workspaces.source.path)/workqueue
+              env:
+                - name: PG_DATABASE_URL
+                  value: postgres://factory:factory@localhost:5432/factory?sslmode=disable
+                - name: DDB_TEST_ENDPOINT
+                  value: http://localhost:8000
+                - name: S3_TEST_ENDPOINT
+                  value: http://localhost:9000
+                - name: S3_TEST_BUCKET
+                  value: factory-test
+                - name: AWS_ACCESS_KEY_ID
+                  value: test
+                - name: AWS_SECRET_ACCESS_KEY
+                  value: test
+                - name: AWS_REGION
+                  value: us-east-1
+              script: |
+                #!/bin/bash
+                set -euo pipefail
+                make bench || echo "Benchmarks completed with warnings"
+        workspaces:
+          - name: source
+            workspace: workspace
+
+      - name: fuzz-quick
+        runAfter:
+          - prefetch-dependencies
+        taskSpec:
+          workspaces:
+            - name: source
+          steps:
+            - name: fuzz
+              image: quay.io/hummingbird/go:1.26
+              workingDir: $(workspaces.source.path)/workqueue
+              script: |
+                #!/bin/bash
+                set -euo pipefail
+                make fuzz FUZZ_TIME=1m
+        workspaces:
+          - name: source
+            workspace: workspace
+
+      - name: build-receiver
+        runAfter:
+          - lint
+          - test-full
+          - fuzz-quick
+        taskRef:
+          resolver: bundles
+          params:
+            - name: name
+              value: buildah
+            - name: bundle
+              value: quay.io/konflux-ci/tekton-catalog/task-buildah:0.9
+            - name: kind
+              value: task
+        params:
+          - name: IMAGE
+            value: 'quay.io/hummingbird/factory-receiver:$(params.revision)'
+          - name: DOCKERFILE
+            value: ./workqueue/Containerfile
+          - name: CONTEXT
+            value: ./workqueue
+          - name: BUILD_EXTRA_ARGS
+            value: '--build-arg=BINARY=receiver'
+          - name: HERMETIC
+            value: 'true'
+        workspaces:
+          - name: source
+            workspace: workspace
+
+      - name: build-dispatcher
+        runAfter:
+          - lint
+          - test-full
+          - fuzz-quick
+        taskRef:
+          resolver: bundles
+          params:
+            - name: name
+              value: buildah
+            - name: bundle
+              value: quay.io/konflux-ci/tekton-catalog/task-buildah:0.9
+            - name: kind
+              value: task
+        params:
+          - name: IMAGE
+            value: 'quay.io/hummingbird/factory-dispatcher:$(params.revision)'
+          - name: DOCKERFILE
+            value: ./workqueue/Containerfile
+          - name: CONTEXT
+            value: ./workqueue
+          - name: BUILD_EXTRA_ARGS
+            value: '--build-arg=BINARY=dispatcher'
+          - name: HERMETIC
+            value: 'true'
+        workspaces:
+          - name: source
+            workspace: workspace
+
+      - name: build-admin
+        runAfter:
+          - lint
+          - test-full
+          - fuzz-quick
+        taskRef:
+          resolver: bundles
+          params:
+            - name: name
+              value: buildah
+            - name: bundle
+              value: quay.io/konflux-ci/tekton-catalog/task-buildah:0.9
+            - name: kind
+              value: task
+        params:
+          - name: IMAGE
+            value: 'quay.io/hummingbird/factory-admin:$(params.revision)'
+          - name: DOCKERFILE
+            value: ./workqueue/Containerfile
+          - name: CONTEXT
+            value: ./workqueue
+          - name: BUILD_EXTRA_ARGS
+            value: '--build-arg=BINARY=admin'
+          - name: HERMETIC
+            value: 'true'
+        workspaces:
+          - name: source
+            workspace: workspace
+
+      - name: build-echo-reconciler
+        runAfter:
+          - lint
+          - test-full
+          - fuzz-quick
+        taskRef:
+          resolver: bundles
+          params:
+            - name: name
+              value: buildah
+            - name: bundle
+              value: quay.io/konflux-ci/tekton-catalog/task-buildah:0.9
+            - name: kind
+              value: task
+        params:
+          - name: IMAGE
+            value: 'quay.io/hummingbird/echo-reconciler:$(params.revision)'
+          - name: DOCKERFILE
+            value: ./workqueue/examples/echo-reconciler/Containerfile
+          - name: CONTEXT
+            value: ./workqueue
+          - name: HERMETIC
+            value: 'true'
+        workspaces:
+          - name: source
+            workspace: workspace
+
+      - name: tag-receiver-latest
+        runAfter:
+          - build-receiver
+        taskRef:
+          resolver: bundles
+          params:
+            - name: name
+              value: oci-copy
+            - name: bundle
+              value: quay.io/konflux-ci/tekton-catalog/task-oci-copy:0.2
+            - name: kind
+              value: task
+        params:
+          - name: SOURCE_IMAGE
+            value: 'quay.io/hummingbird/factory-receiver:$(params.revision)'
+          - name: DESTINATION_IMAGE
+            value: 'quay.io/hummingbird/factory-receiver:latest'
+
+      - name: tag-dispatcher-latest
+        runAfter:
+          - build-dispatcher
+        taskRef:
+          resolver: bundles
+          params:
+            - name: name
+              value: oci-copy
+            - name: bundle
+              value: quay.io/konflux-ci/tekton-catalog/task-oci-copy:0.2
+            - name: kind
+              value: task
+        params:
+          - name: SOURCE_IMAGE
+            value: 'quay.io/hummingbird/factory-dispatcher:$(params.revision)'
+          - name: DESTINATION_IMAGE
+            value: 'quay.io/hummingbird/factory-dispatcher:latest'
+
+      - name: tag-admin-latest
+        runAfter:
+          - build-admin
+        taskRef:
+          resolver: bundles
+          params:
+            - name: name
+              value: oci-copy
+            - name: bundle
+              value: quay.io/konflux-ci/tekton-catalog/task-oci-copy:0.2
+            - name: kind
+              value: task
+        params:
+          - name: SOURCE_IMAGE
+            value: 'quay.io/hummingbird/factory-admin:$(params.revision)'
+          - name: DESTINATION_IMAGE
+            value: 'quay.io/hummingbird/factory-admin:latest'
+
+      - name: tag-echo-reconciler-latest
+        runAfter:
+          - build-echo-reconciler
+        taskRef:
+          resolver: bundles
+          params:
+            - name: name
+              value: oci-copy
+            - name: bundle
+              value: quay.io/konflux-ci/tekton-catalog/task-oci-copy:0.2
+            - name: kind
+              value: task
+        params:
+          - name: SOURCE_IMAGE
+            value: 'quay.io/hummingbird/echo-reconciler:$(params.revision)'
+          - name: DESTINATION_IMAGE
+            value: 'quay.io/hummingbird/echo-reconciler:latest'
+
+      - name: testing-farm
+        runAfter:
+          - tag-receiver-latest
+          - tag-dispatcher-latest
+          - tag-admin-latest
+          - tag-echo-reconciler-latest
+        taskRef:
+          name: testing-farm
+          kind: ClusterTask
+        params:
+          - name: git-url
+            value: $(params.git-url)
+          - name: git-ref
+            value: $(params.revision)
+          - name: tf-scope
+            value: public
+          - name: env-vars
+            value: |
+              FACTORY_RECEIVER_IMAGE=quay.io/hummingbird/factory-receiver:$(params.revision)
+              FACTORY_DISPATCHER_IMAGE=quay.io/hummingbird/factory-dispatcher:$(params.revision)
+              FACTORY_ADMIN_IMAGE=quay.io/hummingbird/factory-admin:$(params.revision)
+              ECHO_RECONCILER_IMAGE=quay.io/hummingbird/echo-reconciler:$(params.revision)
+
+    workspaces:
+      - name: workspace
+      - name: git-auth
+        optional: true
+  workspaces:
+    - name: workspace
+      volumeClaimTemplate:
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 2Gi
+    - name: git-auth
+      secret:
+        secretName: '{{ git_auth_secret }}'

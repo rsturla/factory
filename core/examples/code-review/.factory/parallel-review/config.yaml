@@ -1,0 +1,217 @@
+apiVersion: factory.hummingbird.dev/v1
+kind: Pipeline
+metadata:
+  name: parallel-code-review
+
+resources: []
+
+stages:
+  # Parallel review stages
+  - name: security-review
+    agent:
+      image: alpine:latest
+      command:
+        - sh
+        - -c
+        - |
+          echo "=== Security Review ==="
+          cd /workspace/code
+
+          findings=0
+          issues=""
+
+          # Check for hardcoded credentials
+          if grep -n "PASSWORD\|API_KEY\|SECRET" sample-code/api.js; then
+            findings=$((findings + 1))
+            issues="${issues}\n- Hardcoded credentials found (lines with PASSWORD/API_KEY)"
+          fi
+
+          # Check for SQL injection
+          if grep -n "query.*\${" sample-code/api.js; then
+            findings=$((findings + 1))
+            issues="${issues}\n- SQL injection vulnerability: string interpolation in queries"
+          fi
+
+          # Check for XSS
+          if grep -n "res\.send.*\${" sample-code/api.js; then
+            findings=$((findings + 1))
+            issues="${issues}\n- XSS vulnerability: unsanitized user input in HTML"
+          fi
+
+          echo "Found $findings security issues"
+
+          # Generate output
+          cat > /output/output.json <<EOF
+          {
+            "type": "review",
+            "category": "security",
+            "findings": $findings,
+            "severity": "high",
+            "issues": "$issues"
+          }
+          EOF
+
+          cat /output/output.json
+    output:
+      type: review
+
+  - name: performance-review
+    agent:
+      image: alpine:latest
+      command:
+        - sh
+        - -c
+        - |
+          echo "=== Performance Review ==="
+          cd /workspace/code
+
+          findings=0
+          issues=""
+
+          # Check for N+1 queries
+          if grep -B5 -A5 "for.*post of posts" sample-code/api.js | grep -q "await.*query"; then
+            findings=$((findings + 1))
+            issues="${issues}\n- N+1 query problem in /posts endpoint"
+          fi
+
+          # Check for nested loops
+          if grep -A10 "for.*i.*length" sample-code/api.js | grep -q "for.*j.*length"; then
+            findings=$((findings + 1))
+            issues="${issues}\n- Inefficient nested loops in findDuplicates"
+          fi
+
+          echo "Found $findings performance issues"
+
+          # Generate output
+          cat > /output/output.json <<EOF
+          {
+            "type": "review",
+            "category": "performance",
+            "findings": $findings,
+            "severity": "medium",
+            "issues": "$issues"
+          }
+          EOF
+
+          cat /output/output.json
+    output:
+      type: review
+
+  - name: style-review
+    agent:
+      image: alpine:latest
+      command:
+        - sh
+        - -c
+        - |
+          echo "=== Style Review ==="
+          cd /workspace/code
+
+          findings=0
+          issues=""
+
+          # Check for long lines (>100 chars)
+          long_lines=$(awk 'length > 100' sample-code/api.js | wc -l)
+          if [ "$long_lines" -gt 0 ]; then
+            findings=$((findings + 1))
+            issues="${issues}\n- $long_lines lines exceed 100 characters"
+          fi
+
+          # Check for inconsistent naming (PascalCase in function names)
+          if grep -n "^function [A-Z]" sample-code/api.js; then
+            findings=$((findings + 1))
+            issues="${issues}\n- Inconsistent naming: PascalCase function names"
+          fi
+
+          # Check for missing error handling
+          if grep -n "readFileSync" sample-code/api.js | grep -v "try"; then
+            findings=$((findings + 1))
+            issues="${issues}\n- Missing error handling in file operations"
+          fi
+
+          echo "Found $findings style issues"
+
+          # Generate output
+          cat > /output/output.json <<EOF
+          {
+            "type": "review",
+            "category": "style",
+            "findings": $findings,
+            "severity": "low",
+            "issues": "$issues"
+          }
+          EOF
+
+          cat /output/output.json
+    output:
+      type: review
+
+  # Fan-in synthesis stage
+  - name: synthesize
+    dependsOn: [security-review, performance-review, style-review]
+    agent:
+      image: alpine:latest
+      command:
+        - sh
+        - -c
+        - |
+          echo "=== Synthesizing Reviews ==="
+
+          # Read upstream outputs
+          echo "Security findings:"
+          cat /workspace/inputs/security-review/output.json
+          echo ""
+
+          echo "Performance findings:"
+          cat /workspace/inputs/performance-review/output.json
+          echo ""
+
+          echo "Style findings:"
+          cat /workspace/inputs/style-review/output.json
+          echo ""
+
+          # Extract findings counts (robust parsing)
+          sec_findings=$(grep -o '"findings":[[:space:]]*[0-9]*' /workspace/inputs/security-review/output.json | grep -o '[0-9]*$' || echo "0")
+          perf_findings=$(grep -o '"findings":[[:space:]]*[0-9]*' /workspace/inputs/performance-review/output.json | grep -o '[0-9]*$' || echo "0")
+          style_findings=$(grep -o '"findings":[[:space:]]*[0-9]*' /workspace/inputs/style-review/output.json | grep -o '[0-9]*$' || echo "0")
+
+          total=$((sec_findings + perf_findings + style_findings))
+
+          echo "Total findings: $total"
+
+          # Determine overall status
+          if [ "$sec_findings" -gt 0 ]; then
+            status="NEEDS_WORK"
+            priority="high"
+          elif [ "$perf_findings" -gt 2 ]; then
+            status="NEEDS_WORK"
+            priority="medium"
+          elif [ "$total" -gt 5 ]; then
+            status="NEEDS_IMPROVEMENT"
+            priority="low"
+          else
+            status="APPROVED"
+            priority="low"
+          fi
+
+          # Generate synthesis
+          cat > /output/output.json <<EOF
+          {
+            "type": "review",
+            "category": "synthesis",
+            "status": "$status",
+            "priority": "$priority",
+            "total_findings": $total,
+            "breakdown": {
+              "security": $sec_findings,
+              "performance": $perf_findings,
+              "style": $style_findings
+            },
+            "summary": "Code review complete. Found $total issues across 3 categories.",
+            "upstream_reviews": ["security-review", "performance-review", "style-review"]
+          }
+          EOF
+
+          cat /output/output.json
+    output:
+      type: report

@@ -1,0 +1,238 @@
+# Development/testing only. Do not use these credentials in production.
+services:
+  # --- Shared Infrastructure ---
+
+  postgres:
+    image: quay.io/hummingbird/postgresql:18
+    environment:
+      POSTGRES_DB: factory
+      POSTGRES_USER: factory
+      POSTGRES_PASSWORD: factory
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/01-factory-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U factory"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  # --- Factory API ---
+
+  factory-api:
+    build:
+      context: ..
+      dockerfile: Containerfile
+      args:
+        BINARY: factory-api
+    ports:
+      - "8080:8080"
+    environment:
+      DATABASE_URL: postgres://factory:factory@postgres:5432/factory?sslmode=disable  # sslmode=disable: dev only
+      PIPELINE_BASE_PATH: /pipelines
+      ENQUEUE_ENDPOINT: http://sf-pipeline-receiver:8081
+      PORT: "8080"
+    volumes:
+      - ../examples/pipelines:/pipelines:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      sf-pipeline-receiver:
+        condition: service_started
+
+  # --- sf-pipeline Queue Stack (Orchestrator) ---
+
+  sf-pipeline-receiver:
+    build:
+      context: ../../workqueue
+      dockerfile: Containerfile
+      args:
+        BINARY: receiver
+    ports:
+      - "8081:8081"
+    environment:
+      FACTORY_QUEUE_NAME: sf-pipeline
+      PG_DATABASE_URL: postgres://factory:factory@postgres:5432/factory?sslmode=disable  # sslmode=disable: dev only
+      FACTORY_LISTEN_ADDR: ":8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  sf-pipeline-dispatcher:
+    build:
+      context: ../../workqueue
+      dockerfile: Containerfile
+      args:
+        BINARY: dispatcher
+    environment:
+      FACTORY_QUEUE_NAME: sf-pipeline
+      PG_DATABASE_URL: postgres://factory:factory@postgres:5432/factory?sslmode=disable  # sslmode=disable: dev only
+      RECONCILER_ENDPOINT: http://factory-orchestrator:8090
+      STORE_BACKEND: postgres
+      DISPATCH_MAX_CONCURRENCY: "5"
+      DISPATCH_BATCH_SIZE: "5"
+      DISPATCH_INTERVAL: 2s
+      DISPATCH_LEASE_DURATION: 5m
+    depends_on:
+      postgres:
+        condition: service_healthy
+      factory-orchestrator:
+        condition: service_started
+
+  factory-orchestrator:
+    build:
+      context: ..
+      dockerfile: Containerfile
+      args:
+        BINARY: factory-orchestrator
+    ports:
+      - "8090:8090"
+    environment:
+      DATABASE_URL: postgres://factory:factory@postgres:5432/factory?sslmode=disable  # sslmode=disable: dev only
+      ENQUEUE_ENDPOINT: http://sf-stage-receiver:8082
+      PORT: "8090"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # --- sf-stage Queue Stack (Sandbox Manager) ---
+
+  sf-stage-receiver:
+    build:
+      context: ../../workqueue
+      dockerfile: Containerfile
+      args:
+        BINARY: receiver
+    ports:
+      - "8082:8082"
+    environment:
+      FACTORY_QUEUE_NAME: sf-stage
+      PG_DATABASE_URL: postgres://factory:factory@postgres:5432/factory?sslmode=disable  # sslmode=disable: dev only
+      FACTORY_LISTEN_ADDR: ":8082"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  sf-stage-dispatcher:
+    build:
+      context: ../../workqueue
+      dockerfile: Containerfile
+      args:
+        BINARY: dispatcher
+    environment:
+      FACTORY_QUEUE_NAME: sf-stage
+      PG_DATABASE_URL: postgres://factory:factory@postgres:5432/factory?sslmode=disable  # sslmode=disable: dev only
+      RECONCILER_ENDPOINT: http://factory-sandbox-manager:8091
+      STORE_BACKEND: postgres
+      DISPATCH_MAX_CONCURRENCY: "3"
+      DISPATCH_BATCH_SIZE: "3"
+      DISPATCH_INTERVAL: 5s
+      DISPATCH_LEASE_DURATION: 10m
+    depends_on:
+      postgres:
+        condition: service_healthy
+      factory-sandbox-manager:
+        condition: service_started
+
+  factory-sandbox-manager:
+    build:
+      context: ..
+      dockerfile: Containerfile
+      args:
+        BINARY: factory-sandbox-manager
+    ports:
+      - "8091:8091"
+    environment:
+      DATABASE_URL: postgres://factory:factory@postgres:5432/factory?sslmode=disable  # sslmode=disable: dev only
+      ENQUEUE_ENDPOINT: http://sf-output-receiver:8083
+      SANDBOX_PROVIDER: docker
+      PORT: "8091"
+      GIT_PROXY_URL: http://factory-git-proxy:8092
+      TOKEN_SECRET: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"  # dev only
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      postgres:
+        condition: service_healthy
+      factory-git-proxy:
+        condition: service_started
+
+  # --- Git Proxy ---
+
+  factory-git-proxy:
+    build:
+      context: ..
+      dockerfile: Containerfile
+      args:
+        BINARY: factory-git-proxy
+    ports:
+      - "8092:8092"
+    environment:
+      DATABASE_URL: postgres://factory:factory@postgres:5432/factory?sslmode=disable  # sslmode=disable: dev only
+      LISTEN_ADDR: ":8092"
+      TOKEN_SECRET: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"  # dev only (must match sandbox-manager)
+      # Add GitHub/GitLab tokens here when needed:
+      # GITHUB_TOKEN: ghp_...
+      # GITLAB_TOKEN: glpat-...
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # --- sf-output Queue Stack (Output Processor - Phase 2) ---
+
+  sf-output-receiver:
+    build:
+      context: ../../workqueue
+      dockerfile: Containerfile
+      args:
+        BINARY: receiver
+    ports:
+      - "8083:8083"
+    environment:
+      FACTORY_QUEUE_NAME: sf-output
+      PG_DATABASE_URL: postgres://factory:factory@postgres:5432/factory?sslmode=disable  # sslmode=disable: dev only
+      FACTORY_LISTEN_ADDR: ":8083"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  sf-output-dispatcher:
+    build:
+      context: ../../workqueue
+      dockerfile: Containerfile
+      args:
+        BINARY: dispatcher
+    environment:
+      FACTORY_QUEUE_NAME: sf-output
+      PG_DATABASE_URL: postgres://factory:factory@postgres:5432/factory?sslmode=disable  # sslmode=disable: dev only
+      RECONCILER_ENDPOINT: http://factory-output-processor:8093
+      STORE_BACKEND: postgres
+      DISPATCH_MAX_CONCURRENCY: "3"
+      DISPATCH_BATCH_SIZE: "3"
+      DISPATCH_INTERVAL: 2s
+      DISPATCH_LEASE_DURATION: 5m
+    depends_on:
+      postgres:
+        condition: service_healthy
+      factory-output-processor:
+        condition: service_started
+
+  factory-output-processor:
+    build:
+      context: ..
+      dockerfile: Containerfile
+      args:
+        BINARY: factory-output-processor
+    ports:
+      - "8093:8093"
+    environment:
+      DATABASE_URL: postgres://factory:factory@postgres:5432/factory?sslmode=disable  # sslmode=disable: dev only
+      PORT: "8093"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:

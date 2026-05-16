@@ -1,9 +1,0 @@
-summary: Factory Workqueue test plan
-description: |
-    Runs unit tests (in-process, no dependencies) and container image
-    integration tests (pre-built images from Konflux, deployed via
-    docker-compose).
-discover:
-    how: fmf
-execute:
-    how: tmt

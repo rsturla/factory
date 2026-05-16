@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pipeline-deployments
+  namespace: factory
+data:
+  deployments.json: |
+    [
+      {
+        "name": "cve-auto-fix",
+        "repo_url": "https://github.com/org/pipelines",
+        "branch": "main",
+        "path": "cve-auto-fix-deployed"
+      },
+      {
+        "name": "security-scan",
+        "repo_url": "https://github.com/org/pipelines",
+        "branch": "main",
+        "path": "security-scan-deployed"
+      }
+    ]

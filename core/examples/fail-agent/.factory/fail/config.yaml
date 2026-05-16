@@ -1,0 +1,14 @@
+apiVersion: factory.hummingbird.dev/v1
+kind: Pipeline
+metadata:
+  name: fail-agent
+
+resources: []
+
+stages:
+  - name: fail
+    agent:
+      image: alpine:latest
+      command: ["sh", "-c", "echo 'Agent starting...'; sleep 1; echo 'Simulating failure'; exit 42"]
+    output:
+      type: report

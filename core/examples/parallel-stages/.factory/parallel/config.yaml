@@ -1,0 +1,31 @@
+apiVersion: factory.hummingbird.dev/v1
+kind: Pipeline
+metadata:
+  name: parallel-test
+
+resources: []
+
+stages:
+  # Two stages run in parallel (no dependencies)
+  - name: review-security
+    agent:
+      image: alpine:latest
+      command: ["sh", "-c", "echo 'Security review starting...'; sleep 2; echo '{\"type\":\"review\",\"content\":\"Security: LGTM\",\"stage\":\"review-security\"}' > /output/output.json"]
+    output:
+      type: review
+
+  - name: review-performance
+    agent:
+      image: alpine:latest
+      command: ["sh", "-c", "echo 'Performance review starting...'; sleep 2; echo '{\"type\":\"review\",\"content\":\"Performance: LGTM\",\"stage\":\"review-performance\"}' > /output/output.json"]
+    output:
+      type: review
+
+  # Fan-in stage waits for both reviews
+  - name: synthesize
+    dependsOn: [review-security, review-performance]
+    agent:
+      image: alpine:latest
+      command: ["sh", "-c", "echo 'Synthesizing reviews...'; sleep 1; echo '{\"type\":\"report\",\"content\":\"All reviews passed\",\"upstream\":[\"review-security\",\"review-performance\"]}' > /output/output.json"]
+    output:
+      type: report
