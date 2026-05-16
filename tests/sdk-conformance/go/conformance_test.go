@@ -50,6 +50,8 @@ func TestResponseBuilderConformance(t *testing.T) {
 				resp = reconciler.RequeueAfter(d)
 			case "fan_out":
 				resp = reconciler.FanOut(tc.Args...)
+			case "reject":
+				resp = reconciler.Reject(tc.Args[0])
 			default:
 				t.Fatalf("unknown builder: %s", tc.Builder)
 			}

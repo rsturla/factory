@@ -916,6 +916,120 @@ func TestEndToEnd_RejectImmediateDeadLetter(t *testing.T) {
 	}
 }
 
+func TestEndToEnd_ConcurrentEnqueueAndDispatch(t *testing.T) {
+	var processed sync.Map
+	var processedCount atomic.Int32
+
+	p := newPlatform(t, func(req reconciler.ProcessRequest) reconciler.ProcessResponse {
+		processedCount.Add(1)
+		processed.Store(req.Key, true)
+		return reconciler.Completed()
+	})
+
+	// Start dispatcher in background.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	var dispatchWg sync.WaitGroup
+	dispatchWg.Add(1)
+	go func() {
+		defer dispatchWg.Done()
+		p.dispatcher.Run(ctx)
+	}()
+
+	// Concurrently enqueue 100 items from 10 goroutines (10 items each).
+	var enqueueWg sync.WaitGroup
+	for g := range 10 {
+		enqueueWg.Add(1)
+		go func() {
+			defer enqueueWg.Done()
+			for i := range 10 {
+				p.enqueue(t, fmt.Sprintf("conc-%d-%d", g, i), 0)
+			}
+		}()
+	}
+	enqueueWg.Wait()
+
+	// Wait for dispatcher to finish.
+	dispatchWg.Wait()
+
+	if processedCount.Load() != 100 {
+		t.Errorf("expected 100 processed, got %d", processedCount.Load())
+	}
+
+	// Verify all 100 items were processed exactly once.
+	for g := range 10 {
+		for i := range 10 {
+			key := fmt.Sprintf("conc-%d-%d", g, i)
+			if _, ok := processed.Load(key); !ok {
+				t.Errorf("expected %s to be processed", key)
+			}
+		}
+	}
+
+	counts, _ := p.store.CountByStatus(context.Background(), "test")
+	if counts[store.StatusSucceeded] != 100 {
+		t.Errorf("expected 100 succeeded, got %v", counts)
+	}
+	if counts[store.StatusPending] != 0 {
+		t.Errorf("expected 0 pending, got %v", counts)
+	}
+}
+
+func TestEndToEnd_ReaperReclaimsAfterCrash(t *testing.T) {
+	s := inmem.New()
+	s.EnsureQueue(context.Background(), "test", store.QueueConfig{
+		MaxConcurrency: 10, MaxRetry: 5,
+	})
+
+	// Enqueue and claim with very short lease (simulating a dead dispatcher).
+	s.Enqueue(context.Background(), "test", "crashed-item", 0)
+	s.ClaimBatch(context.Background(), "test", 1, "dead-dispatcher", 1*time.Millisecond)
+	time.Sleep(10 * time.Millisecond)
+
+	// Start a NEW platform (fresh dispatcher + reconciler) pointing at same store.
+	reconciled := make(chan string, 1)
+	rec := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req reconciler.ProcessRequest
+		json.NewDecoder(r.Body).Decode(&req)
+		reconciled <- req.Key
+		json.NewEncoder(w).Encode(reconciler.Completed())
+	}))
+	defer rec.Close()
+
+	cfg := dispatcher.Config{
+		QueueName: "test", WorkerID: "new-dispatcher", Mode: dispatcher.ModePush,
+		DispatchInterval: 50 * time.Millisecond, SweepInterval: 100 * time.Millisecond,
+		ReaperInterval: 50 * time.Millisecond,
+		LeaseDuration:  1 * time.Hour, BatchSize: 10, MaxConcurrency: 10, MaxRetry: 5,
+	}
+
+	d := dispatcher.New(s, client.NewReconcilerClient(rec.URL), cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	go d.Run(ctx)
+
+	select {
+	case key := <-reconciled:
+		if key != "crashed-item" {
+			t.Errorf("expected crashed-item, got %s", key)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("reaper did not reclaim item from crashed dispatcher")
+	}
+
+	// Wait for processing to complete.
+	cancel()
+	time.Sleep(100 * time.Millisecond)
+
+	counts, _ := s.CountByStatus(context.Background(), "test")
+	if counts[store.StatusSucceeded] != 1 {
+		t.Errorf("expected 1 succeeded, got %v", counts)
+	}
+}
+
 func TestEndToEnd_HeartbeatPreventsReaping(t *testing.T) {
 	var processed atomic.Bool
 
@@ -942,4 +1056,74 @@ func TestEndToEnd_HeartbeatPreventsReaping(t *testing.T) {
 	if item.Status != store.StatusSucceeded {
 		t.Errorf("expected succeeded (heartbeat prevented reaping), got %s", item.Status)
 	}
+}
+
+func TestEndToEnd_LoadSoak(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping load test in short mode")
+	}
+
+	const (
+		totalItems     = 1_000
+		maxConcurrency = 50
+		batchSize      = 25
+	)
+
+	var processed atomic.Int64
+	var duplicates atomic.Int64
+	seen := sync.Map{}
+
+	p := newPlatform(t, func(req reconciler.ProcessRequest) reconciler.ProcessResponse {
+		if _, loaded := seen.LoadOrStore(req.Key, true); loaded {
+			duplicates.Add(1)
+		}
+		processed.Add(1)
+		return reconciler.Completed()
+	}, func(cfg *dispatcher.Config) {
+		cfg.MaxConcurrency = maxConcurrency
+		cfg.BatchSize = batchSize
+		cfg.DispatchInterval = 20 * time.Millisecond
+	})
+
+	// Enqueue all items.
+	for i := range totalItems {
+		p.enqueue(t, fmt.Sprintf("load-%05d", i), i%10)
+	}
+
+	// Verify all items are pending.
+	counts, err := p.store.CountByStatus(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("CountByStatus: %v", err)
+	}
+	if counts[store.StatusPending] != totalItems {
+		t.Fatalf("expected %d pending after enqueue, got %d", totalItems, counts[store.StatusPending])
+	}
+
+	// Run dispatcher until all items processed or timeout.
+	p.runFor(t, 10*time.Second)
+
+	// Verify results.
+	if processed.Load() != totalItems {
+		t.Errorf("processed %d/%d items", processed.Load(), totalItems)
+	}
+	if duplicates.Load() != 0 {
+		t.Errorf("detected %d duplicate processings", duplicates.Load())
+	}
+
+	counts, err = p.store.CountByStatus(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("CountByStatus: %v", err)
+	}
+	if counts[store.StatusSucceeded] != totalItems {
+		t.Errorf("expected %d succeeded, got counts=%v", totalItems, counts)
+	}
+	if counts[store.StatusPending] != 0 {
+		t.Errorf("expected 0 pending, got %d", counts[store.StatusPending])
+	}
+	if counts[store.StatusDeadLetter] != 0 {
+		t.Errorf("expected 0 dead-lettered, got %d", counts[store.StatusDeadLetter])
+	}
+
+	t.Logf("load test: %d items, %d processed, %d duplicates, concurrency=%d",
+		totalItems, processed.Load(), duplicates.Load(), maxConcurrency)
 }

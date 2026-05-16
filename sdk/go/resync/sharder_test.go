@@ -440,6 +440,129 @@ func TestProcess_BatchSplitting(t *testing.T) {
 	}
 }
 
+// --- Partial batch failure ---
+
+func TestProcess_PartialBatchFailure(t *testing.T) {
+	// period=tick guarantees all keys land in the shard.
+	tick := time.Hour
+	nKeys := 25_000
+	keys := make([]string, nKeys)
+	for i := range keys {
+		keys[i] = fmt.Sprintf("k-%d", i)
+	}
+
+	mock := newMockEnqueuer()
+	mock.failAt = 1 // fail on second batch
+
+	sh, _ := resync.New("q", tick, mock,
+		resync.WithNow(staticNow(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))))
+
+	result, err := sh.Process(t.Context(), tick, keys)
+	if err == nil {
+		t.Fatal("expected error from partial batch failure")
+	}
+
+	if result.Enqueued != 10000 {
+		t.Errorf("Enqueued=%d, want 10000 (first batch succeeded)", result.Enqueued)
+	}
+	if result.InShard != nKeys {
+		t.Errorf("InShard=%d, want %d", result.InShard, nKeys)
+	}
+}
+
+// --- Duplicate keys ---
+
+func TestProcess_DuplicateKeys(t *testing.T) {
+	keys := []string{"a", "b", "a", "c", "b"}
+
+	mock := newMockEnqueuer()
+	sh, _ := resync.New("q", time.Hour, mock,
+		resync.WithNow(staticNow(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))))
+
+	// Use period=tick so all keys land in shard.
+	result, err := sh.Process(t.Context(), time.Hour, keys)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Sharder doesn't dedup — InShard includes duplicates.
+	if result.InShard != 5 {
+		t.Errorf("InShard=%d, want 5 (duplicates included)", result.InShard)
+	}
+}
+
+// --- Overrun flag ---
+
+func TestProcess_OverrunFlag(t *testing.T) {
+	tick := time.Second
+	keys := []string{"a", "b", "c"}
+
+	// Use an advancing clock: the enqueuer advances the clock past the tick.
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	clock := &advancingClock{now: base}
+
+	adv := &advancingEnqueuer{clock: clock, advance: 2 * time.Second}
+	sh, _ := resync.New("q", tick, adv,
+		resync.WithNow(clock.Now))
+
+	result, err := sh.Process(t.Context(), tick, keys)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !result.Overrun {
+		t.Errorf("expected Overrun=true when enqueue takes longer than tick")
+	}
+}
+
+func TestProcess_NoOverrun(t *testing.T) {
+	tick := time.Hour
+	keys := []string{"a", "b", "c"}
+
+	mock := newMockEnqueuer()
+	sh, _ := resync.New("q", tick, mock,
+		resync.WithNow(staticNow(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))))
+
+	// Use period=tick so all keys land in shard.
+	result, err := sh.Process(t.Context(), tick, keys)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if result.Overrun {
+		t.Errorf("expected Overrun=false for fast processing")
+	}
+}
+
+// advancingClock is a fake clock whose time advances when EnqueueBatch is called.
+type advancingClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *advancingClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *advancingClock) Advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
+}
+
+// advancingEnqueuer advances the clock on each EnqueueBatch call.
+type advancingEnqueuer struct {
+	clock   *advancingClock
+	advance time.Duration
+}
+
+func (e *advancingEnqueuer) EnqueueBatch(_ context.Context, _ string, items []types.BatchEnqueueItem) (int, error) {
+	e.clock.Advance(e.advance)
+	return len(items), nil
+}
+
 // --- Error propagation ---
 
 func TestProcess_EnqueueError(t *testing.T) {

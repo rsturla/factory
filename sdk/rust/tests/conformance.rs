@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use factory_workqueue::duration::parse_duration;
-use factory_workqueue::reconciler::{completed, converged, fan_out, requeue_after, ProcessRequest};
+use factory_workqueue::reconciler::{completed, converged, fan_out, reject, requeue_after, ProcessRequest};
 use factory_workqueue::types::{Status, WorkItem};
 
 fn fixtures_dir() -> std::path::PathBuf {
@@ -45,6 +45,7 @@ fn test_response_builder_conformance() {
                 requeue_after(d)
             }
             "fan_out" => fan_out(&args),
+            "reject" => reject(args[0]),
             _ => panic!("unknown builder: {builder}"),
         };
 

@@ -47,6 +47,18 @@
       "builder": "fan_out",
       "args": [],
       "expected": {"action": "completed"}
+    },
+    {
+      "name": "reject_with_reason",
+      "builder": "reject",
+      "args": ["resource deleted"],
+      "expected": {"action": "reject", "error": "resource deleted"}
+    },
+    {
+      "name": "reject_empty_reason_defaults",
+      "builder": "reject",
+      "args": [""],
+      "expected": {"action": "reject", "error": "rejected"}
     }
   ]
 }

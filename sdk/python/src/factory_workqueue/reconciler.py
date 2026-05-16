@@ -17,6 +17,7 @@ ACTION_COMPLETED = "completed"
 ACTION_CONVERGED = "converged"
 ACTION_REQUEUE = "requeue"
 ACTION_FAN_OUT = "fan_out"
+ACTION_REJECT = "reject"
 
 
 @dataclass
@@ -82,6 +83,10 @@ def fan_out(*keys: str) -> ProcessResponse:
     if not keys:
         return ProcessResponse(action=ACTION_COMPLETED)
     return ProcessResponse(action=ACTION_FAN_OUT, fan_out_keys=list(keys))
+
+
+def reject(reason: str = "") -> ProcessResponse:
+    return ProcessResponse(action=ACTION_REJECT, error=reason or "rejected")
 
 
 class ReconcilerHandler:

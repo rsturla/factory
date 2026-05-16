@@ -15,6 +15,7 @@ from factory_workqueue.reconciler import (
     completed,
     converged,
     fan_out,
+    reject,
     requeue_after,
 )
 from factory_workqueue.types import Status, WorkItem, valid_transition
@@ -26,6 +27,7 @@ _BUILDERS = {
     "converged": lambda args: converged(),
     "requeue_after": lambda args: requeue_after(parse_duration(args[0])),
     "fan_out": lambda args: fan_out(*args),
+    "reject": lambda args: reject(args[0]),
 }
 
 

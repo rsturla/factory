@@ -9,6 +9,7 @@ pub const ACTION_COMPLETED: &str = "completed";
 pub const ACTION_CONVERGED: &str = "converged";
 pub const ACTION_REQUEUE: &str = "requeue";
 pub const ACTION_FAN_OUT: &str = "fan_out";
+pub const ACTION_REJECT: &str = "reject";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessRequest {
@@ -56,6 +57,16 @@ pub fn requeue_after(delay: Duration) -> ProcessResponse {
         requeue_after: format_duration(delay),
         fan_out_keys: Vec::new(),
         error: String::new(),
+    }
+}
+
+pub fn reject(reason: &str) -> ProcessResponse {
+    let r = if reason.is_empty() { "rejected" } else { reason };
+    ProcessResponse {
+        action: ACTION_REJECT.to_string(),
+        requeue_after: String::new(),
+        fan_out_keys: Vec::new(),
+        error: r.to_string(),
     }
 }
 
