@@ -1,0 +1,36 @@
+summary: Factory integration test plan
+description: |
+    Runs factory-wide integration tests with all components together.
+    Currently identical to workqueue plan since workqueue is the only
+    factory component.
+
+    As factory grows (codegen, rpm-builder), this plan will add cross-
+    component scenarios: workqueue + codegen workflows, rpm-builder +
+    workqueue coordination, etc.
+
+context:
+    initiator: konflux
+
+discover:
+    how: fmf
+execute:
+    how: tmt
+
+environment+:
+    # Konflux Testing Farm integration sets these automatically:
+    # - IMAGE_URL: Single component snapshot image
+    # - IMAGE_URL_RECEIVER: Group snapshot - receiver image
+    # - IMAGE_URL_DISPATCHER: Group snapshot - dispatcher image
+    # - IMAGE_URL_ADMIN: Group snapshot - admin image
+    # - IMAGE_URL_RECONCILER: Group snapshot - reconciler image
+    # - IMAGE_NAME: Component name (single snapshot)
+    # - IMAGE_NAMES: Space-separated component names (group snapshot)
+    # - SNAPSHOT_b64: Full snapshot JSON (base64)
+    # - AUTHFILE_b64: Pull secret (base64)
+
+    # Derive image env vars for test scripts
+    FACTORY_RECEIVER_IMAGE: ${IMAGE_URL_RECEIVER:-${IMAGE_URL}}
+    FACTORY_DISPATCHER_IMAGE: ${IMAGE_URL_DISPATCHER:-${IMAGE_URL}}
+    FACTORY_ADMIN_IMAGE: ${IMAGE_URL_ADMIN:-${IMAGE_URL}}
+    ECHO_RECONCILER_IMAGE: ${IMAGE_URL_RECONCILER:-${IMAGE_URL}}
+    STANDALONE_WORKER_IMAGE: ${IMAGE_URL_STANDALONE_WORKER:-${IMAGE_URL}}
