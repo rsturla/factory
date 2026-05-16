@@ -63,7 +63,7 @@ All persistence is abstracted behind `store.Interface`. To swap the storage back
 2. Pass the conformance test suite (`internal/store/conformance/`).
 3. Add the backend to `internal/storeutil/create.go`.
 
-No other code needs to change — dispatcher, completion, webhook, admin all accept `store.Interface`.
+No other code needs to change — dispatcher, completion, wqapi, admin all accept `store.Interface`.
 
 Current backends: `postgres` (default), `dynamodb`, `sqlite`, `inmem` (tests only).
 

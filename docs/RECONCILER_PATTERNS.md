@@ -146,7 +146,7 @@ func reconcile(ctx context.Context, req reconciler.ProcessRequest) (reconciler.P
 func reconcile(ctx context.Context, req reconciler.ProcessRequest) (reconciler.ProcessResponse, error) {
     // RPM build succeeded — trigger container rebuild.
     containerReceiver := reconciler.NewEnqueueClient("http://container-receiver:8081")
-    err := containerReceiver.Enqueue(ctx, "base-image-rebuild", 10)
+    err := containerReceiver.Enqueue(ctx, "container-build", "base-image-rebuild", 10)
     if err != nil {
         return reconciler.ProcessResponse{}, err
     }

@@ -19,7 +19,7 @@ your service → receiver /enqueue → database → dispatcher → reconciler
 **3-service split**: each pipeline consists of three cooperating services:
 - **Receiver** — accepts enqueue requests via HTTP, writes keys to the queue
 - **Dispatcher** — claims items, manages lifecycle (leases, retries, dead-lettering), invokes the reconciler
-- **Reconciler** — does the actual work, returns a result (completed, converged, requeue, fan-out)
+- **Reconciler** — does the actual work, returns a result (completed, converged, requeue, fan-out, reject)
 
 The receiver and dispatcher are **generic factory binaries** configured via environment variables. Only the reconciler contains domain-specific logic.
 
@@ -46,7 +46,7 @@ docker compose -f docker-compose.postgres.yaml down -v
 
 ## Kubernetes deployment
 
-The Kustomize base in `deploy/kubernetes/base/` provides the workqueue services (admin, receiver, dispatcher, HPA). It does **not** include a database — bring your own PostgreSQL (RDS, Aurora, Cloud SQL) or use the in-cluster component.
+The Kustomize base in `deploy/kubernetes/base/` provides the workqueue services (admin, receiver, dispatcher, HPA) and an in-cluster PostgreSQL. For production, use the postgres component overlay or bring your own PostgreSQL (RDS, Aurora, Cloud SQL).
 
 ### With in-cluster PostgreSQL
 
@@ -130,7 +130,7 @@ See `deploy/kubernetes/overlays/kind-echo/` for a complete working example with 
 ## Project structure
 
 ```
-factory-v2/
+factory-workqueue/
 ├── cmd/
 │   ├── receiver/          Generic receiver binary
 │   ├── dispatcher/        Generic dispatcher binary
@@ -143,27 +143,41 @@ factory-v2/
 │   │   ├── sqlite/        SQLite backend (single-node, edge)
 │   │   ├── inmem/         In-memory backend (testing)
 │   │   └── conformance/   Conformance suite all backends must pass
-│   ├── dispatcher/        Dispatch/sweep/reaper loops
-│   ├── completion/        Retry, backoff, dead-letter logic
+│   ├── dispatcher/        Dispatch/sweep/reaper loops + auto-heartbeat
+│   ├── completion/        Retry, backoff, dead-letter, reject logic
 │   ├── admin/             Admin API HTTP handlers
+│   ├── wqapi/             Workqueue HTTP API handlers
 │   ├── authz/             Pluggable authorization interface
 │   │   ├── noop/          Allow everything (default)
 │   │   ├── cedar/         Cedar policies (in-process)
 │   │   └── opa/           Open Policy Agent (external server)
+│   ├── authn/             Pluggable authentication interface
 │   ├── storeutil/         Store creation from env vars
 │   ├── authzutil/         Authorizer creation from env vars
+│   ├── envutil/           Environment variable helpers
+│   ├── httputil/          HTTP middleware (security headers)
+│   ├── logging/           Structured logging setup
 │   ├── metrics/           Prometheus metric definitions
+│   └── tracing/           OpenTelemetry tracing setup
 ├── pkg/
-│   ├── sdk/               Public SDK for reconciler authors (separate Go module)
-│   └── client/            HTTP clients for inter-service communication
+│   └── types/             Shared data types (WorkItem, Status, etc.)
+├── sdk/
+│   └── go/
+│       ├── reconciler/    Public SDK for reconciler authors (separate Go module)
+│       ├── client/        HTTP clients for workqueue and reconciler
+│       └── resync/        Deterministic resync sharder for periodic reconciliation
 ├── examples/
 │   ├── echo-reconciler/   HTTP server reconciler (K8s, push model)
 │   └── standalone-worker/ Self-dispatching worker (EC2, pull model)
+├── tests/
+│   ├── integration/       End-to-end platform tests (inmem store)
+│   ├── sdk-conformance/   SDK conformance tests
+│   └── container/         Container build tests
 ├── deploy/
 │   ├── kubernetes/
-│   │   ├── base/              Kustomize base (services only, no database)
+│   │   ├── base/              Kustomize base (services + PostgreSQL)
 │   │   ├── components/
-│   │   │   └── postgres/      Opt-in in-cluster PostgreSQL
+│   │   │   └── postgres/      PostgreSQL component overlay
 │   │   └── overlays/
 │   │       ├── kind-echo/     Example: kind cluster with echo reconciler
 │   │       └── openshift/     OpenShift with Route + Cedar
@@ -230,8 +244,6 @@ Python and Rust SDKs are also available — see [docs/SDK.md](docs/SDK.md).
 
 ## Environment variables
 
-> **Backward compatibility**: old names without prefixes (e.g., `QUEUE_NAME`, `DATABASE_URL`, `LISTEN_ADDR`) are accepted with a deprecation warning. Migrate to the new names below.
-
 ### FACTORY_ (shared)
 
 | Variable | Default | Description |
@@ -282,7 +294,7 @@ Python and Rust SDKs are also available — see [docs/SDK.md](docs/SDK.md).
 | `DISPATCH_MAX_CONCURRENCY` | `10` | Max items in-flight simultaneously |
 | `DISPATCH_MAX_RETRY` | `5` | Attempts before dead-lettering |
 | `DISPATCH_LEASE_DURATION` | `1h` | Lease granted to claimed items |
-| `DISPATCH_SWEEP_INTERVAL` | `30s` | How often the sweep loop runs |
+| `DISPATCH_SWEEP_INTERVAL` | `60s` | How often the sweep loop runs |
 
 ### RECEIVER_ (receiver)
 

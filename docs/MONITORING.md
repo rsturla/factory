@@ -226,10 +226,12 @@ All services use Go's `log/slog` with JSON output. Log lines include trace IDs w
 | INFO | `claimed items` | Dispatcher claimed a batch. `count` field shows how many. |
 | INFO | `dispatcher starting` | Dispatcher started. Shows `queue`, `worker_id`, `max_concurrency`. |
 | WARN | `reconciler reported error` | Reconciler returned an error. Item will be retried. |
-| WARN | `reaping expired item` | Reaper reclaiming an item with expired lease. |
+| WARN | `reaped expired item` | Reaper reclaimed an item with expired lease. |
+| WARN | `reconciler rejected item` | Reconciler returned `reject` action. Item dead-lettered immediately. |
+| WARN | `heartbeat failed` | Lease extension failed during processing. Transient errors are retried; `ErrNotFound` means item already completed. |
 | ERROR | `claim batch failed` | ClaimBatch query failed. Check PostgreSQL connectivity. |
 | ERROR | `reconciler call failed` | HTTP call to reconciler failed (connection refused, timeout). Item requeued without consuming retry budget. |
-| ERROR | `migration failed` | Schema migration failed on startup. |
+| ERROR | `failed to create store` | Store initialization failed on startup. Check connection string and credentials. |
 
 ### Log aggregation
 

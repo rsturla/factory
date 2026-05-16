@@ -34,6 +34,7 @@ Return a JSON object with an `action` field:
 | `"converged"` | Desired state already met, no work needed | `{"action": "converged"}` |
 | `"requeue"` | Re-enqueue after a delay (does not consume retry budget) | `{"action": "requeue", "requeue_after": "30s"}` |
 | `"fan_out"` | Complete this item and enqueue new items | `{"action": "fan_out", "fan_out_keys": ["a", "b"]}` |
+| `"reject"` | Dead-letter immediately (retrying will never succeed) | `{"action": "reject", "error": "resource deleted"}` |
 
 To signal a retriable failure, set the `error` field:
 
@@ -47,7 +48,7 @@ The dispatcher will requeue the item with exponential backoff, consuming one ret
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `action` | string | One of: `completed`, `converged`, `requeue`, `fan_out`. |
+| `action` | string | One of: `completed`, `converged`, `requeue`, `fan_out`, `reject`. |
 | `requeue_after` | string | Go duration string (e.g., `"30s"`, `"5m"`). Required when action is `requeue`. |
 | `fan_out_keys` | []string | Keys to enqueue into the same queue. Required when action is `fan_out`. |
 | `error` | string | Error message for retriable failures. |
@@ -111,6 +112,7 @@ reconciler.Completed()              // work done
 reconciler.Converged()              // already at desired state
 reconciler.RequeueAfter(30*time.Second) // check back later
 reconciler.FanOut("child-1", "child-2") // complete and spawn children
+reconciler.Reject("resource deleted")   // dead-letter immediately, no retries
 ```
 
 Returning a non-nil `error` from your `ReconcileFunc` signals a retriable failure.
@@ -280,17 +282,19 @@ Understanding how the dispatcher manages your item:
 1. **Enqueue** -- a key is added to the queue via the receiver.
 2. **Claim** -- the dispatcher claims the item with a lease (default 1h).
 3. **Process** -- the dispatcher POSTs to your reconciler.
-4. **Outcome** -- based on your response:
+4. **Heartbeat** -- while the reconciler is processing, the dispatcher automatically extends the lease at half the lease interval. This prevents the reaper from reclaiming long-running items.
+5. **Outcome** -- based on your response:
    - `completed`/`converged` -- item marked done.
    - `requeue` -- item re-enqueued after the specified delay (no retry budget cost).
    - `fan_out` -- item marked done, child keys enqueued.
+   - `reject` -- item dead-lettered immediately (no retries).
    - `error` -- item requeued with exponential backoff (consumes retry budget).
-5. **Dead-letter** -- after `DISPATCH_MAX_RETRY` failures (default 5), the item is dead-lettered.
-6. **Reaper** -- if a worker dies and the lease expires, the reaper reclaims the item.
+6. **Dead-letter** -- after `DISPATCH_MAX_RETRY` failures (default 5), the item is dead-lettered.
+7. **Reaper** -- if a worker dies and the lease expires, the reaper reclaims the item.
 
 ## Workqueue HTTP API
 
-The dispatcher exposes a JSON API on its HTTP port (default `:8080`) under `/wq/`. Standalone workers and external systems use these endpoints to interact with the queue. All endpoints accept `POST` with a JSON body and return JSON.
+The receiver exposes a JSON API on its HTTP port (default `:8081`) under `/wq/`. Standalone workers and external systems use these endpoints to interact with the queue. All endpoints accept `POST` with a JSON body and return JSON.
 
 The SDK clients (`WorkqueueClient` in Go, `WorkqueueClient` in Python, `WorkqueueClient` in Rust) wrap these endpoints. You can also call them directly with `curl` or any HTTP client.
 
@@ -303,6 +307,8 @@ The SDK clients (`WorkqueueClient` in Go, `WorkqueueClient` in Python, `Workqueu
 | `POST /wq/fail` | Mark item as failed (consumes retry budget) | `{"queue": "name", "key": "item-key", "error": "reason"}` |
 | `POST /wq/heartbeat` | Extend lease on a claimed item | `{"queue": "name", "key": "item-key", "duration": "2h"}` |
 | `POST /wq/requeue` | Return item to pending | `{"queue": "name", "key": "item-key"}` |
+| `POST /wq/requeue-undo` | Requeue without consuming retry budget | `{"queue": "name", "key": "item-key", "not_before": "2026-01-01T00:00:00Z"}` |
+| `POST /wq/deadletter` | Move item to dead-letter queue | `{"queue": "name", "key": "item-key"}` |
 | `POST /wq/transition` | Explicit state transition | `{"queue": "name", "key": "item-key", "from": "running", "to": "failed"}` |
 
 ### Enqueue endpoints
@@ -321,25 +327,38 @@ The SDK clients (`WorkqueueClient` in Go, `WorkqueueClient` in Python, `Workqueu
 | `POST /wq/list` | List items with filters | `{"queue": "name", "status": "pending", "limit": 50}` |
 | `POST /wq/list-queues` | List all queues | `{}` |
 | `POST /wq/list-workers` | List registered workers | `{"queue": "name"}` |
+| `POST /wq/list-expired-leases` | List items with expired leases | `{"queue": "name", "limit": 100}` |
 | `POST /wq/get-history` | Get item state transitions | `{"queue": "name", "key": "item-key"}` |
+| `POST /wq/record-history` | Record a history entry | `{"queue": "name", "key": "item-key", ...}` |
+
+### Queue management endpoints
+
+| Endpoint | Description | Request body |
+|----------|-------------|-------------|
+| `POST /wq/ensure-queue` | Create or update queue config | `{"queue": "name", "config": {"max_concurrency": 10}}` |
+| `POST /wq/set-paused` | Pause or resume a queue | `{"queue": "name", "paused": true}` |
+| `POST /wq/is-paused` | Check if queue is paused | `{"queue": "name"}` |
+| `POST /wq/repair` | Repair in-progress counter | `{"queue": "name"}` |
+| `POST /wq/purge-dead-letters` | Purge dead-lettered items | `{"queue": "name"}` |
+| `POST /wq/ping` | Health check | `{}` |
 
 ### Example: claim and process with curl
 
 ```bash
 # Claim one item with a 2-hour lease
-curl -s -X POST http://factory-dispatcher:8080/wq/claim \
+curl -s -X POST http://factory-receiver:8081/wq/claim \
   -H 'Content-Type: application/json' \
   -d '{"queue":"rpm-update","batch_size":1,"worker_id":"vm-42","lease_duration":"2h"}'
 
 # Returns: [{"queue":"rpm-update","key":"gcc-14.1","status":"claimed",...}]
 
 # Extend the lease while working
-curl -s -X POST http://factory-dispatcher:8080/wq/heartbeat \
+curl -s -X POST http://factory-receiver:8081/wq/heartbeat \
   -H 'Content-Type: application/json' \
   -d '{"queue":"rpm-update","key":"gcc-14.1","duration":"2h"}'
 
 # Mark complete when done
-curl -s -X POST http://factory-dispatcher:8080/wq/complete \
+curl -s -X POST http://factory-receiver:8081/wq/complete \
   -H 'Content-Type: application/json' \
   -d '{"queue":"rpm-update","key":"gcc-14.1"}'
 ```
