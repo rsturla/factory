@@ -2,7 +2,7 @@ apiVersion: appstudio.redhat.com/v1alpha1
 kind: Component
 metadata:
   name: workqueue
-  namespace: REPLACE_WITH_YOUR_NAMESPACE  # e.g., rsturla-tenant
+  namespace: rsturla-tenant  # e.g., rsturla-tenant
   annotations:
     build.appstudio.openshift.io/request: configure-pac
 spec:

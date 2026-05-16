@@ -5,7 +5,7 @@ apiVersion: appstudio.redhat.com/v1beta2
 kind: IntegrationTestScenario
 metadata:
   name: factory-testing-farm
-  namespace: REPLACE_WITH_YOUR_NAMESPACE  # e.g., rsturla-tenant
+  namespace: rsturla-tenant  # e.g., rsturla-tenant
   labels:
     test.appstudio.openshift.io/optional: "false"  # Blocking test
 spec:
