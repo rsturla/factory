@@ -1,13 +1,20 @@
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
-  name: workqueue-push
+  name: workqueue-on-push
   annotations:
+    build.appstudio.openshift.io/repo: https://github.com/rsturla/factory?rev={{revision}}
+    build.appstudio.redhat.com/commit_sha: '{{revision}}'
+    build.appstudio.redhat.com/target_branch: '{{target_branch}}'
     pipelinesascode.tekton.dev/on-cel-expression: |
       event == "push" &&
       target_branch == "main" &&
       ("workqueue/".pathChanged() || ".tekton/workqueue-".pathChanged())
     pipelinesascode.tekton.dev/max-keep-runs: "3"
+  labels:
+    appstudio.openshift.io/application: hummingbird-factory
+    appstudio.openshift.io/component: workqueue
+    pipelines.appstudio.openshift.io/type: build
 spec:
   params:
     - name: git-url
