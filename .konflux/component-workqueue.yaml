@@ -1,0 +1,16 @@
+apiVersion: appstudio.redhat.com/v1alpha1
+kind: Component
+metadata:
+  name: workqueue
+  namespace: rsturla-tenant
+  annotations:
+    build.appstudio.openshift.io/request: configure-pac
+spec:
+  application: hummingbird-factory
+  componentName: workqueue
+  source:
+    git:
+      url: https://github.com/rsturla/factory
+      revision: main
+      context: workqueue
+      dockerfileUrl: workqueue/Containerfile

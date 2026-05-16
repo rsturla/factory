@@ -5,11 +5,11 @@ apiVersion: appstudio.redhat.com/v1beta2
 kind: IntegrationTestScenario
 metadata:
   name: factory-testing-farm
-  namespace: factory-workspace  # Update to your Konflux workspace
+  namespace: rsturla-tenant  # e.g., rsturla-tenant
   labels:
     test.appstudio.openshift.io/optional: "false"  # Blocking test
 spec:
-  application: factory
+  application: hummingbird-factory
   contexts:
     - name: group
       description: Test all factory components together (workqueue, codegen, rpm-builder)
