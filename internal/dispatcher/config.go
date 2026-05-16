@@ -47,6 +47,12 @@ type Config struct {
 
 	// MaxRetry before dead-lettering.
 	MaxRetry int
+
+	// MaxProcessingDuration is the absolute ceiling on how long a single
+	// item can be processed. The heartbeat keeps the lease alive within
+	// this budget, but cannot exceed it. Prevents hung reconcilers from
+	// holding a concurrency slot forever. Default: 24h.
+	MaxProcessingDuration time.Duration
 }
 
 // DefaultConfig returns a Config with sensible production defaults.
@@ -56,8 +62,9 @@ func DefaultConfig(queueName string) Config {
 		DispatchInterval: 2 * time.Second,
 		SweepInterval:    60 * time.Second,
 		ReaperInterval:   5 * time.Minute,
-		LeaseDuration:    1 * time.Hour,
-		BatchSize:        10,
+		LeaseDuration:         1 * time.Hour,
+		MaxProcessingDuration: 24 * time.Hour,
+		BatchSize:             10,
 		MaxConcurrency:   10,
 		MaxRetry:         5,
 	}

@@ -44,6 +44,7 @@ const (
 	ActionConverged = "converged"
 	ActionRequeue   = "requeue"
 	ActionFanOut    = "fan_out"
+	ActionReject    = "reject"
 )
 
 // ReconcileFunc is the signature reconciler authors implement.
@@ -76,6 +77,20 @@ func RequeueAfter(d time.Duration) ProcessResponse {
 	return ProcessResponse{
 		Action:       ActionRequeue,
 		RequeueAfter: d.String(),
+	}
+}
+
+// Reject returns a response indicating the item should be dead-lettered
+// immediately without consuming further retries. Use when the reconciler
+// knows that retrying will never succeed (e.g., resource deleted,
+// invalid configuration).
+func Reject(reason string) ProcessResponse {
+	if reason == "" {
+		reason = "rejected"
+	}
+	return ProcessResponse{
+		Action: ActionReject,
+		Error:  reason,
 	}
 }
 

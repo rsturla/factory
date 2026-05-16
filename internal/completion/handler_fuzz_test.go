@@ -10,6 +10,39 @@ import (
 	"github.com/hummingbird-org/factory-workqueue/internal/store/inmem"
 )
 
+func FuzzHandleReject(f *testing.F) {
+	f.Add("")
+	f.Add("resource deleted")
+	f.Add("invalid\x00configuration")
+	f.Add(string(make([]byte, 10000)))
+
+	f.Fuzz(func(t *testing.T, reason string) {
+		ctx := context.Background()
+		s := inmem.New()
+		s.EnsureQueue(ctx, "test", store.QueueConfig{MaxConcurrency: 10, MaxRetry: 5})
+		s.Enqueue(ctx, "test", "k", 0)
+		s.ClaimBatch(ctx, "test", 1, "w", time.Hour)
+
+		h := completion.NewHandler(s, completion.Config{
+			MaxAttempts:    5,
+			BackoffBase:    100 * time.Millisecond,
+			BackoffMax:     10 * time.Minute,
+			JitterFraction: 0.25,
+		})
+
+		// Must not panic on any reason string.
+		h.HandleReject(ctx, "test", "k", reason)
+
+		item, err := s.GetItem(ctx, "test", "k")
+		if err != nil {
+			t.Fatalf("GetItem: %v", err)
+		}
+		if item.Status != store.StatusDeadLetter {
+			t.Errorf("expected dead_letter, got %s", item.Status)
+		}
+	})
+}
+
 func FuzzBackoffHandleFailure(f *testing.F) {
 	// Fuzz the attempt number to find overflow/NaN/Inf in the backoff math.
 	f.Add(0)

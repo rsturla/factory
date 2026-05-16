@@ -559,3 +559,110 @@ func TestDispatcher_Reaper(t *testing.T) {
 		t.Errorf("expected pending after reap, got %s", item.Status)
 	}
 }
+
+func TestDispatcher_RejectAction(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	srv := fakeReconciler(t, func(req reconciler.ProcessRequest) reconciler.ProcessResponse {
+		return reconciler.Reject("resource deleted")
+	})
+	defer srv.Close()
+
+	d, _ := newDispatcher(t, s, srv.URL)
+
+	s.Enqueue(ctx, "test", "reject-me", 0)
+
+	dctx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancel()
+	d.Run(dctx)
+
+	item, err := s.GetItem(ctx, "test", "reject-me")
+	if err != nil {
+		t.Fatalf("GetItem: %v", err)
+	}
+	if item.Status != store.StatusDeadLetter {
+		t.Errorf("expected dead_letter after reject, got %s", item.Status)
+	}
+}
+
+func TestDispatcher_Heartbeat_ExtendsLease(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	srv := fakeReconciler(t, func(req reconciler.ProcessRequest) reconciler.ProcessResponse {
+		time.Sleep(400 * time.Millisecond)
+		return reconciler.Completed()
+	})
+	defer srv.Close()
+
+	cfg := dispatcher.Config{
+		QueueName:        "test",
+		WorkerID:         "heartbeat-test",
+		DispatchInterval: 50 * time.Millisecond,
+		SweepInterval:    1 * time.Hour,
+		ReaperInterval:   50 * time.Millisecond,
+		LeaseDuration:    100 * time.Millisecond,
+		BatchSize:        10,
+		MaxConcurrency:   5,
+		MaxRetry:         3,
+	}
+	d := dispatcher.New(s, client.NewReconcilerClient(srv.URL), cfg)
+
+	s.Enqueue(ctx, "test", "long-running", 0)
+
+	dctx, cancel := context.WithTimeout(ctx, 1*time.Second)
+	defer cancel()
+	d.Run(dctx)
+
+	item, err := s.GetItem(ctx, "test", "long-running")
+	if err != nil {
+		t.Fatalf("GetItem: %v", err)
+	}
+	if item.Status != store.StatusSucceeded {
+		t.Errorf("expected succeeded (heartbeat kept lease alive), got %s", item.Status)
+	}
+}
+
+func TestDispatcher_Heartbeat_StopsOnCompletion(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	var processed atomic.Bool
+	srv := fakeReconciler(t, func(req reconciler.ProcessRequest) reconciler.ProcessResponse {
+		processed.Store(true)
+		return reconciler.Completed()
+	})
+	defer srv.Close()
+
+	cfg := dispatcher.Config{
+		QueueName:        "test",
+		WorkerID:         "hb-stop-test",
+		DispatchInterval: 50 * time.Millisecond,
+		SweepInterval:    1 * time.Hour,
+		ReaperInterval:   1 * time.Hour,
+		LeaseDuration:    50 * time.Millisecond,
+		BatchSize:        10,
+		MaxConcurrency:   5,
+		MaxRetry:         3,
+	}
+	d := dispatcher.New(s, client.NewReconcilerClient(srv.URL), cfg)
+
+	s.Enqueue(ctx, "test", "fast-item", 0)
+
+	dctx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancel()
+	d.Run(dctx)
+
+	if !processed.Load() {
+		t.Fatal("item was not processed")
+	}
+
+	item, err := s.GetItem(ctx, "test", "fast-item")
+	if err != nil {
+		t.Fatalf("GetItem: %v", err)
+	}
+	if item.Status != store.StatusSucceeded {
+		t.Errorf("expected succeeded, got %s", item.Status)
+	}
+}

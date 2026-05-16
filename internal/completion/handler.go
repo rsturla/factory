@@ -64,6 +64,15 @@ func (h *Handler) HandleInfraFailure(ctx context.Context, queue, key string) err
 	return h.store.RequeueUndoAttempt(ctx, queue, key, notBefore)
 }
 
+// HandleReject marks the item as failed and immediately dead-letters it,
+// bypassing the retry budget.
+func (h *Handler) HandleReject(ctx context.Context, queue, key, reason string) error {
+	if err := h.store.Fail(ctx, queue, key, reason); err != nil {
+		return err
+	}
+	return h.store.Deadletter(ctx, queue, key)
+}
+
 // HandleRequeueAfter requeues with a caller-specified delay.
 func (h *Handler) HandleRequeueAfter(ctx context.Context, queue, key string, delay time.Duration) error {
 	notBefore := time.Now().Add(delay)

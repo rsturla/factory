@@ -3,6 +3,7 @@ package dispatcher
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
@@ -39,6 +40,9 @@ type Dispatcher struct {
 
 // New creates a new Dispatcher.
 func New(s store.Interface, reconciler *client.ReconcilerClient, cfg Config) *Dispatcher {
+	if cfg.MaxProcessingDuration <= 0 {
+		cfg.MaxProcessingDuration = 24 * time.Hour
+	}
 	compCfg := completion.Config{
 		MaxAttempts:    cfg.MaxRetry,
 		BackoffBase:    30 * time.Second,
@@ -144,7 +148,7 @@ func (d *Dispatcher) dispatchTick(ctx context.Context) {
 
 	for _, item := range items {
 		d.inFlight.Add(1)
-		itemCtx, itemCancel := context.WithTimeout(context.Background(), d.cfg.LeaseDuration)
+		itemCtx, itemCancel := context.WithTimeout(context.Background(), d.cfg.MaxProcessingDuration)
 		go func(item store.WorkItem, cancel context.CancelFunc) {
 			defer cancel()
 			d.processItem(itemCtx, item)
@@ -215,6 +219,11 @@ func (d *Dispatcher) processItem(ctx context.Context, item store.WorkItem) {
 		WorkerID: d.cfg.WorkerID, TraceID: traceID,
 	})
 
+	// Start heartbeat to keep the lease alive during reconciliation.
+	heartbeatCtx, heartbeatCancel := context.WithCancel(ctx)
+	defer heartbeatCancel()
+	go d.heartbeat(heartbeatCtx, item.Queue, item.Key)
+
 	// Call the reconciler.
 	var resp reconciler.ProcessResponse
 	var reconcileDur float64
@@ -243,6 +252,8 @@ func (d *Dispatcher) processItem(ctx context.Context, item store.WorkItem) {
 		}
 	}()
 
+	heartbeatCancel()
+
 	span.SetAttributes(attribute.Float64("reconcile_duration_s", reconcileDur))
 
 	if reconcileErr != nil {
@@ -267,6 +278,18 @@ func (d *Dispatcher) processItem(ctx context.Context, item store.WorkItem) {
 
 func (d *Dispatcher) handleResponse(ctx context.Context, item store.WorkItem, resp reconciler.ProcessResponse, durSec float64, span trace.Span, traceID string) {
 	queue, key := item.Queue, item.Key
+
+	// Reject bypasses normal error handling — dead-letter immediately.
+	if resp.Action == reconciler.ActionReject {
+		span.RecordError(fmt.Errorf("%s", resp.Error))
+		span.SetStatus(codes.Error, "reconciler rejected")
+		span.SetAttributes(attribute.String("outcome", "rejected"))
+		slog.Warn("reconciler rejected item", "queue", queue, "key", key, "reason", resp.Error, "trace_id", traceID)
+		metrics.ReconcileDuration.WithLabelValues(queue, "rejected").Observe(durSec)
+		metrics.ItemsCompleted.WithLabelValues(queue, "rejected").Inc()
+		d.completion.HandleReject(ctx, queue, key, resp.Error)
+		return
+	}
 
 	if resp.Error != "" {
 		span.RecordError(fmt.Errorf("%s", resp.Error))
@@ -341,6 +364,34 @@ func (d *Dispatcher) handleResponse(ctx context.Context, item store.WorkItem, re
 		span.SetStatus(codes.Error, "unknown action")
 		slog.Error("unknown reconciler action", "queue", queue, "key", key, "action", resp.Action, "trace_id", traceID)
 		d.completion.HandleFailure(ctx, queue, key, item.Attempts, "unknown action: "+resp.Action)
+	}
+}
+
+// heartbeat extends the lease for a work item at regular intervals until
+// the context is cancelled. This prevents the reaper from reclaiming items
+// that take longer than the initial lease duration to process.
+//
+// A late heartbeat after item completion is harmless: ExtendLease checks
+// that the item is still claimed/running and returns ErrNotFound otherwise.
+func (d *Dispatcher) heartbeat(ctx context.Context, queue, key string) {
+	interval := d.cfg.LeaseDuration / 2
+	if interval <= 0 {
+		return
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := d.store.ExtendLease(ctx, queue, key, d.cfg.LeaseDuration); err != nil {
+				if errors.Is(err, store.ErrNotFound) {
+					return
+				}
+				slog.Warn("heartbeat failed", "queue", queue, "key", key, "error", err)
+			}
+		}
 	}
 }
 

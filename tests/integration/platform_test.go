@@ -894,3 +894,52 @@ func TestEndToEnd_FullHTTPPipeline(t *testing.T) {
 		t.Errorf("expected http-high priority 100, got %d", item.Priority)
 	}
 }
+
+func TestEndToEnd_RejectImmediateDeadLetter(t *testing.T) {
+	var invocations atomic.Int32
+
+	p := newPlatform(t, func(req reconciler.ProcessRequest) reconciler.ProcessResponse {
+		invocations.Add(1)
+		return reconciler.Reject("resource not found")
+	})
+
+	p.enqueue(t, "rejected-item", 0)
+	p.runFor(t, 500*time.Millisecond)
+
+	if invocations.Load() != 1 {
+		t.Errorf("expected exactly 1 invocation (no retries after reject), got %d", invocations.Load())
+	}
+
+	counts, _ := p.store.CountByStatus(context.Background(), "test")
+	if counts[store.StatusDeadLetter] != 1 {
+		t.Errorf("expected 1 dead_letter after reject, got %v", counts)
+	}
+}
+
+func TestEndToEnd_HeartbeatPreventsReaping(t *testing.T) {
+	var processed atomic.Bool
+
+	p := newPlatform(t, func(req reconciler.ProcessRequest) reconciler.ProcessResponse {
+		time.Sleep(400 * time.Millisecond)
+		processed.Store(true)
+		return reconciler.Completed()
+	}, func(cfg *dispatcher.Config) {
+		cfg.LeaseDuration = 100 * time.Millisecond
+		cfg.ReaperInterval = 50 * time.Millisecond
+	})
+
+	p.enqueue(t, "long-task", 0)
+	p.runFor(t, 1*time.Second)
+
+	if !processed.Load() {
+		t.Fatal("reconciler was not called")
+	}
+
+	item, err := p.store.GetItem(context.Background(), "test", "long-task")
+	if err != nil {
+		t.Fatalf("GetItem: %v", err)
+	}
+	if item.Status != store.StatusSucceeded {
+		t.Errorf("expected succeeded (heartbeat prevented reaping), got %s", item.Status)
+	}
+}

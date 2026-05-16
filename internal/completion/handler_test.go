@@ -162,6 +162,39 @@ func TestHandleRequeueAfter(t *testing.T) {
 	}
 }
 
+func TestHandleReject(t *testing.T) {
+	ctx := context.Background()
+	s, h := setup(t)
+	enqueueAndClaim(t, s, "key-1")
+
+	if err := h.HandleReject(ctx, "test", "key-1", "invalid configuration"); err != nil {
+		t.Fatalf("HandleReject: %v", err)
+	}
+
+	counts, _ := s.CountByStatus(ctx, "test")
+	if counts[store.StatusDeadLetter] != 1 {
+		t.Errorf("expected 1 dead_letter after reject, got counts=%v", counts)
+	}
+	if counts[store.StatusPending] != 0 {
+		t.Errorf("expected 0 pending after reject, got counts=%v", counts)
+	}
+}
+
+func TestHandleReject_EmptyReason(t *testing.T) {
+	ctx := context.Background()
+	s, h := setup(t)
+	enqueueAndClaim(t, s, "key-1")
+
+	if err := h.HandleReject(ctx, "test", "key-1", ""); err != nil {
+		t.Fatalf("HandleReject with empty reason: %v", err)
+	}
+
+	counts, _ := s.CountByStatus(ctx, "test")
+	if counts[store.StatusDeadLetter] != 1 {
+		t.Errorf("expected 1 dead_letter, got counts=%v", counts)
+	}
+}
+
 func TestDefaultConfig(t *testing.T) {
 	cfg := completion.DefaultConfig()
 	if cfg.MaxAttempts != 5 {
