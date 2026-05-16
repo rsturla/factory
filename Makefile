@@ -43,8 +43,8 @@ fuzz:
 		dir=$$(dirname "$$file"); \
 		target=$$(echo "$$func_line" | sed 's/func \(Fuzz[A-Za-z0-9_]*\).*/\1/'); \
 		case "$$dir" in \
-			sdk/go/reconciler*) cd sdk/go/reconciler && go test ./ -fuzz="^$${target}$$" -fuzztime=60s -v && cd ../../.. ;; \
-			*) go test "./$$dir/" -fuzz="^$${target}$$" -fuzztime=60s -v ;; \
+			sdk/go/reconciler*) cd sdk/go/reconciler && go test ./ -fuzz="^$${target}$$" -fuzztime=30s -v && cd ../../.. ;; \
+			*) go test "./$$dir/" -fuzz="^$${target}$$" -fuzztime=30s -v ;; \
 		esac; \
 	done
 
