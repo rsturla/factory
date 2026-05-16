@@ -1,8 +1,8 @@
 apiVersion: appstudio.redhat.com/v1alpha1
 kind: Application
 metadata:
-  name: factory
-  namespace: rsturla-tenant  # e.g., rsturla-tenant
+  name: hummingbird-factory
+  namespace: rsturla-tenant
 spec:
-  displayName: Factory
+  displayName: Hummingbird Factory
   description: Software factory platform (workqueue, codegen, rpm-builder)
