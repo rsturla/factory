@@ -762,13 +762,12 @@ func (s *Store) EnsureQueue(ctx context.Context, queue string, cfg store.QueueCo
 	defer s.mu.Unlock()
 
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO queue_state (queue, max_concurrency, max_retry, compute_backend)
-		VALUES (?, ?, ?, ?)
+		INSERT INTO queue_state (queue, max_concurrency, max_retry)
+		VALUES (?, ?, ?)
 		ON CONFLICT (queue) DO UPDATE SET
 			max_concurrency = excluded.max_concurrency,
-			max_retry = excluded.max_retry,
-			compute_backend = excluded.compute_backend
-	`, queue, cfg.MaxConcurrency, cfg.MaxRetry, cfg.ComputeBackend)
+			max_retry = excluded.max_retry
+	`, queue, cfg.MaxConcurrency, cfg.MaxRetry)
 	return err
 }
 
@@ -926,7 +925,7 @@ func (s *Store) GetItem(ctx context.Context, queue, key string) (*store.WorkItem
 
 func (s *Store) ListQueues(ctx context.Context) ([]store.QueueInfo, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT queue, max_concurrency, max_retry, compute_backend, COALESCE(paused, 0), in_progress
+		SELECT queue, max_concurrency, max_retry, COALESCE(paused, 0), in_progress
 		FROM queue_state ORDER BY queue
 	`)
 	if err != nil {
@@ -938,7 +937,7 @@ func (s *Store) ListQueues(ctx context.Context) ([]store.QueueInfo, error) {
 	for rows.Next() {
 		var qi store.QueueInfo
 		var paused int
-		if err := rows.Scan(&qi.Name, &qi.MaxConcurrency, &qi.MaxRetry, &qi.ComputeBackend, &paused, &qi.InProgress); err != nil {
+		if err := rows.Scan(&qi.Name, &qi.MaxConcurrency, &qi.MaxRetry, &paused, &qi.InProgress); err != nil {
 			return nil, err
 		}
 		qi.Paused = paused != 0
@@ -977,7 +976,7 @@ func (s *Store) ListQueues(ctx context.Context) ([]store.QueueInfo, error) {
 }
 
 func (s *Store) ListWorkers(ctx context.Context, queue string) ([]store.WorkerLease, error) {
-	query := `SELECT worker_id, queue, compute_backend, COALESCE(hostname, ''),
+	query := `SELECT worker_id, queue, COALESCE(hostname, ''),
 		started_at, last_heartbeat, items_processed, status FROM worker_leases`
 	var args []any
 	if queue != "" {
@@ -996,7 +995,7 @@ func (s *Store) ListWorkers(ctx context.Context, queue string) ([]store.WorkerLe
 	for rows.Next() {
 		var w store.WorkerLease
 		var startedAt, lastHB string
-		if err := rows.Scan(&w.WorkerID, &w.Queue, &w.ComputeBackend, &w.Hostname,
+		if err := rows.Scan(&w.WorkerID, &w.Queue, &w.Hostname,
 			&startedAt, &lastHB, &w.ItemsProcessed, &w.Status); err != nil {
 			return nil, err
 		}

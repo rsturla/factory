@@ -44,7 +44,6 @@ s := inmem.New()
 s.EnsureQueue(ctx, "my-queue", store.QueueConfig{
     MaxConcurrency: 10,
     MaxRetry:       5,
-    ComputeBackend: "kubernetes",
 })
 ```
 

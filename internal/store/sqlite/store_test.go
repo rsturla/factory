@@ -19,7 +19,6 @@ func TestSQLiteConformance(t *testing.T) {
 		if err := s.EnsureQueue(context.Background(), "test", store.QueueConfig{
 			MaxConcurrency: 10,
 			MaxRetry:       5,
-			ComputeBackend: "kubernetes",
 		}); err != nil {
 			t.Fatalf("EnsureQueue: %v", err)
 		}

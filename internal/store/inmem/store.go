@@ -582,7 +582,6 @@ func (s *Store) ListQueues(_ context.Context) ([]store.QueueInfo, error) {
 			Name:           name,
 			MaxConcurrency: q.config.MaxConcurrency,
 			MaxRetry:       q.config.MaxRetry,
-			ComputeBackend: q.config.ComputeBackend,
 			Paused:         q.paused,
 			InProgress:     q.inProgress,
 			Counts:         make(map[string]int),

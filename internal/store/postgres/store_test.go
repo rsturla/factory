@@ -41,7 +41,6 @@ func TestPostgresConformance(t *testing.T) {
 		if err := s.EnsureQueue(ctx, "test", store.QueueConfig{
 			MaxConcurrency: 10,
 			MaxRetry:       5,
-			ComputeBackend: "kubernetes",
 		}); err != nil {
 			t.Fatalf("EnsureQueue: %v", err)
 		}

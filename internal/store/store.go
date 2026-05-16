@@ -5,8 +5,8 @@
 // from PostgreSQL to CockroachDB or a custom store) requires implementing
 // this interface alone.
 //
-// Data types are defined in pkg/types and re-exported here for backward
-// compatibility. Consumers may import either package.
+// Data types are defined in pkg/types and re-exported here for convenience.
+// Consumers may import either package.
 package store
 
 import (
@@ -16,7 +16,7 @@ import (
 	"github.com/hummingbird-org/factory-workqueue/pkg/types"
 )
 
-// --- Type aliases (re-exported from pkg/types for backward compatibility) ---
+// --- Type aliases (re-exported from pkg/types for convenience) ---
 
 type Status = types.Status
 

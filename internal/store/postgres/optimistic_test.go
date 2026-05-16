@@ -25,7 +25,6 @@ func TestOptimisticConcurrentClaim(t *testing.T) {
 	if err := s.EnsureQueue(ctx, "opt", store.QueueConfig{
 		MaxConcurrency: maxConc,
 		MaxRetry:       5,
-		ComputeBackend: "noop",
 	}); err != nil {
 		t.Fatalf("EnsureQueue: %v", err)
 	}
@@ -78,7 +77,6 @@ func TestOptimisticNoDoubleClaimUnderContention(t *testing.T) {
 	if err := s.EnsureQueue(ctx, "opt", store.QueueConfig{
 		MaxConcurrency: numItems,
 		MaxRetry:       5,
-		ComputeBackend: "noop",
 	}); err != nil {
 		t.Fatalf("EnsureQueue: %v", err)
 	}
@@ -143,7 +141,6 @@ func TestOptimisticClaimThenComplete(t *testing.T) {
 	if err := s.EnsureQueue(ctx, "opt", store.QueueConfig{
 		MaxConcurrency: numItems,
 		MaxRetry:       5,
-		ComputeBackend: "noop",
 	}); err != nil {
 		t.Fatalf("EnsureQueue: %v", err)
 	}
@@ -204,7 +201,6 @@ func TestOptimisticClaimThenFailRequeue(t *testing.T) {
 	if err := s.EnsureQueue(ctx, "opt", store.QueueConfig{
 		MaxConcurrency: 1,
 		MaxRetry:       5,
-		ComputeBackend: "noop",
 	}); err != nil {
 		t.Fatalf("EnsureQueue: %v", err)
 	}
@@ -256,7 +252,6 @@ func TestOptimisticDeadletter(t *testing.T) {
 	if err := s.EnsureQueue(ctx, "opt", store.QueueConfig{
 		MaxConcurrency: 5,
 		MaxRetry:       5,
-		ComputeBackend: "noop",
 	}); err != nil {
 		t.Fatalf("EnsureQueue: %v", err)
 	}

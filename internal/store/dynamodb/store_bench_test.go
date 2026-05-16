@@ -107,7 +107,6 @@ func setupBench(b *testing.B) *storeddb.Store {
 	if err := s.EnsureQueue(ctx, "bench", store.QueueConfig{
 		MaxConcurrency: 100000,
 		MaxRetry:       5,
-		ComputeBackend: "noop",
 	}); err != nil {
 		b.Fatalf("EnsureQueue: %v", err)
 	}

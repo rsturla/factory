@@ -654,7 +654,6 @@ func testMultipleQueuesIsolated(t *testing.T, setup func(t *testing.T) store.Int
 	s.EnsureQueue(ctx, "other", store.QueueConfig{
 		MaxConcurrency: 5,
 		MaxRetry:       3,
-		ComputeBackend: "ec2",
 	})
 
 	// Enqueue to both queues.
@@ -697,7 +696,6 @@ func testEnsureQueueUpdatesConfig(t *testing.T, setup func(t *testing.T) store.I
 	s.EnsureQueue(ctx, "test", store.QueueConfig{
 		MaxConcurrency: 50,
 		MaxRetry:       10,
-		ComputeBackend: "ec2",
 	})
 
 	// Verify config was updated via ListQueues.
@@ -720,9 +718,6 @@ func testEnsureQueueUpdatesConfig(t *testing.T, setup func(t *testing.T) store.I
 	}
 	if found.MaxRetry != 10 {
 		t.Errorf("expected max_retry=10 after update, got %d", found.MaxRetry)
-	}
-	if found.ComputeBackend != "ec2" {
-		t.Errorf("expected compute_backend=ec2 after update, got %s", found.ComputeBackend)
 	}
 
 	// Verify in-progress item was not lost.

@@ -128,7 +128,7 @@ func FuzzWqapiRequeueUndo(f *testing.F) {
 
 func FuzzWqapiEnsureQueue(f *testing.F) {
 	fuzzEndpoint(f, "/wq/ensure-queue",
-		`{"queue":"q","config":{"max_concurrency":10,"max_retry":5,"compute_backend":"kubernetes"}}`,
+		`{"queue":"q","config":{"max_concurrency":10,"max_retry":5}}`,
 		`{"queue":"q","config":{"max_concurrency":-1,"max_retry":-1}}`,
 		`{"queue":"","config":{}}`,
 		`{}`,

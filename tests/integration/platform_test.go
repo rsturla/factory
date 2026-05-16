@@ -45,7 +45,7 @@ func newPlatform(t *testing.T, reconcilerFn func(reconciler.ProcessRequest) reco
 
 	s := inmem.New()
 	s.EnsureQueue(context.Background(), "test", store.QueueConfig{
-		MaxConcurrency: 10, MaxRetry: 3, ComputeBackend: "kubernetes",
+		MaxConcurrency: 10, MaxRetry: 3,
 	})
 
 	// Receiver with workqueue API.
@@ -237,7 +237,7 @@ func TestEndToEnd_DeadLetterAfterMaxRetry(t *testing.T) {
 	ctx := context.Background()
 	s := inmem.New()
 	s.EnsureQueue(ctx, "test", store.QueueConfig{
-		MaxConcurrency: 10, MaxRetry: 3, ComputeBackend: "kubernetes",
+		MaxConcurrency: 10, MaxRetry: 3,
 	})
 
 	s.Enqueue(ctx, "test", "doomed", 0)
@@ -416,7 +416,7 @@ func TestEndToEnd_ReEnqueueAfterComplete(t *testing.T) {
 func TestEndToEnd_StandaloneWorkerViaAPI(t *testing.T) {
 	s := inmem.New()
 	s.EnsureQueue(context.Background(), "test", store.QueueConfig{
-		MaxConcurrency: 10, MaxRetry: 5, ComputeBackend: "ec2",
+		MaxConcurrency: 10, MaxRetry: 5,
 	})
 
 	// Start receiver with workqueue API.
@@ -474,7 +474,7 @@ func TestEndToEnd_StandaloneWorkerViaAPI(t *testing.T) {
 func TestEndToEnd_StandaloneWorkerFailAndRetry(t *testing.T) {
 	s := inmem.New()
 	s.EnsureQueue(context.Background(), "test", store.QueueConfig{
-		MaxConcurrency: 10, MaxRetry: 5, ComputeBackend: "ec2",
+		MaxConcurrency: 10, MaxRetry: 5,
 	})
 
 	mux := http.NewServeMux()
@@ -510,10 +510,10 @@ func TestEndToEnd_MultipleQueuesIsolated(t *testing.T) {
 
 	s := inmem.New()
 	s.EnsureQueue(context.Background(), "build", store.QueueConfig{
-		MaxConcurrency: 10, MaxRetry: 3, ComputeBackend: "kubernetes",
+		MaxConcurrency: 10, MaxRetry: 3,
 	})
 	s.EnsureQueue(context.Background(), "test-run", store.QueueConfig{
-		MaxConcurrency: 10, MaxRetry: 3, ComputeBackend: "kubernetes",
+		MaxConcurrency: 10, MaxRetry: 3,
 	})
 
 	// Two reconcilers — one per queue.
@@ -567,7 +567,7 @@ func TestEndToEnd_MultipleQueuesIsolated(t *testing.T) {
 func TestEndToEnd_ReaperReclaimsExpiredLease(t *testing.T) {
 	s := inmem.New()
 	s.EnsureQueue(context.Background(), "test", store.QueueConfig{
-		MaxConcurrency: 10, MaxRetry: 5, ComputeBackend: "kubernetes",
+		MaxConcurrency: 10, MaxRetry: 5,
 	})
 
 	// Claim with a very short lease.
@@ -612,7 +612,7 @@ func TestEndToEnd_ReaperReclaimsExpiredLease(t *testing.T) {
 func TestEndToEnd_AuthzDeniesUnauthorized(t *testing.T) {
 	s := inmem.New()
 	s.EnsureQueue(context.Background(), "test", store.QueueConfig{
-		MaxConcurrency: 10, MaxRetry: 5, ComputeBackend: "kubernetes",
+		MaxConcurrency: 10, MaxRetry: 5,
 	})
 
 	// Use Cedar with a policy that only allows sre-team.
@@ -670,7 +670,7 @@ permit(
 func TestEndToEnd_StandaloneWorkerHeartbeat(t *testing.T) {
 	s := inmem.New()
 	s.EnsureQueue(context.Background(), "test", store.QueueConfig{
-		MaxConcurrency: 10, MaxRetry: 5, ComputeBackend: "ec2",
+		MaxConcurrency: 10, MaxRetry: 5,
 	})
 
 	mux := http.NewServeMux()
@@ -707,7 +707,7 @@ func TestEndToEnd_StandaloneWorkerHeartbeat(t *testing.T) {
 func TestEndToEnd_AdminRetryAndCancel(t *testing.T) {
 	s := inmem.New()
 	s.EnsureQueue(context.Background(), "test", store.QueueConfig{
-		MaxConcurrency: 10, MaxRetry: 5, ComputeBackend: "kubernetes",
+		MaxConcurrency: 10, MaxRetry: 5,
 	})
 
 	mux := http.NewServeMux()

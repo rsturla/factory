@@ -14,7 +14,6 @@ func TestInMemConformance(t *testing.T) {
 		s.EnsureQueue(nil, "test", store.QueueConfig{
 			MaxConcurrency: 10,
 			MaxRetry:       5,
-			ComputeBackend: "kubernetes",
 		})
 		return s
 	})

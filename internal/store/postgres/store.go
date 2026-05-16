@@ -610,13 +610,12 @@ func (s *Store) Transition(ctx context.Context, queue, key string, from, to stor
 
 func (s *Store) EnsureQueue(ctx context.Context, queue string, cfg store.QueueConfig) error {
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO queue_state (queue, max_concurrency, max_retry, compute_backend)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO queue_state (queue, max_concurrency, max_retry)
+		VALUES ($1, $2, $3)
 		ON CONFLICT (queue) DO UPDATE SET
 			max_concurrency = EXCLUDED.max_concurrency,
-			max_retry = EXCLUDED.max_retry,
-			compute_backend = EXCLUDED.compute_backend
-	`, queue, cfg.MaxConcurrency, cfg.MaxRetry, cfg.ComputeBackend)
+			max_retry = EXCLUDED.max_retry
+	`, queue, cfg.MaxConcurrency, cfg.MaxRetry)
 	return err
 }
 
@@ -815,7 +814,7 @@ func (s *Store) GetItem(ctx context.Context, queue, key string) (*store.WorkItem
 
 func (s *Store) ListQueues(ctx context.Context) ([]store.QueueInfo, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT queue, max_concurrency, max_retry, compute_backend, COALESCE(paused, false), in_progress
+		SELECT queue, max_concurrency, max_retry, COALESCE(paused, false), in_progress
 		FROM queue_state ORDER BY queue
 	`)
 	if err != nil {
@@ -826,7 +825,7 @@ func (s *Store) ListQueues(ctx context.Context) ([]store.QueueInfo, error) {
 	var queues []store.QueueInfo
 	for rows.Next() {
 		var qi store.QueueInfo
-		if err := rows.Scan(&qi.Name, &qi.MaxConcurrency, &qi.MaxRetry, &qi.ComputeBackend, &qi.Paused, &qi.InProgress); err != nil {
+		if err := rows.Scan(&qi.Name, &qi.MaxConcurrency, &qi.MaxRetry, &qi.Paused, &qi.InProgress); err != nil {
 			return nil, fmt.Errorf("scan queue: %w", err)
 		}
 		qi.Counts = make(map[string]int)
@@ -871,7 +870,7 @@ func (s *Store) ListQueues(ctx context.Context) ([]store.QueueInfo, error) {
 
 func (s *Store) ListWorkers(ctx context.Context, queue string) ([]store.WorkerLease, error) {
 	query := `
-		SELECT worker_id, queue, compute_backend, COALESCE(hostname, ''),
+		SELECT worker_id, queue, COALESCE(hostname, ''),
 			started_at, last_heartbeat, items_processed, status
 		FROM worker_leases
 	`
@@ -891,7 +890,7 @@ func (s *Store) ListWorkers(ctx context.Context, queue string) ([]store.WorkerLe
 	var workers []store.WorkerLease
 	for rows.Next() {
 		var w store.WorkerLease
-		if err := rows.Scan(&w.WorkerID, &w.Queue, &w.ComputeBackend, &w.Hostname,
+		if err := rows.Scan(&w.WorkerID, &w.Queue, &w.Hostname,
 			&w.StartedAt, &w.LastHeartbeat, &w.ItemsProcessed, &w.Status); err != nil {
 			return nil, fmt.Errorf("scan worker: %w", err)
 		}

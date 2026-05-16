@@ -1622,7 +1622,6 @@ func (s *Store) ListQueues(ctx context.Context) ([]store.QueueInfo, error) {
 			Name:           queueName,
 			MaxConcurrency: cfg.MaxConcurrency,
 			MaxRetry:       cfg.MaxRetry,
-			ComputeBackend: cfg.ComputeBackend,
 			Paused:         paused,
 			InProgress:     int(counts[store.StatusClaimed] + counts[store.StatusRunning]),
 			Counts:         make(map[string]int),

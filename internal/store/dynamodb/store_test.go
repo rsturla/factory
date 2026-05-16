@@ -111,7 +111,6 @@ func TestDynamoDBConformance(t *testing.T) {
 		if err := s.EnsureQueue(ctx, "test", store.QueueConfig{
 			MaxConcurrency: 10,
 			MaxRetry:       5,
-			ComputeBackend: "kubernetes",
 		}); err != nil {
 			t.Fatalf("EnsureQueue: %v", err)
 		}
@@ -187,7 +186,6 @@ func setupShardedStore(t *testing.T, shards int) store.Interface {
 	if err := s.EnsureQueue(ctx, "test", store.QueueConfig{
 		MaxConcurrency: 100,
 		MaxRetry:       5,
-		ComputeBackend: "kubernetes",
 		ClaimShards:    shards,
 	}); err != nil {
 		t.Fatalf("EnsureQueue: %v", err)

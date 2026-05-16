@@ -526,7 +526,6 @@ func TestEnsureQueue(t *testing.T) {
 		"config": map[string]any{
 			"max_concurrency": 20,
 			"max_retry":       5,
-			"compute_backend": "kubernetes",
 		},
 	})
 	if rr.Code != http.StatusOK {
@@ -552,9 +551,6 @@ func TestEnsureQueue(t *testing.T) {
 			}
 			if q.MaxRetry != 5 {
 				t.Errorf("want max_retry 5, got %d", q.MaxRetry)
-			}
-			if q.ComputeBackend != "kubernetes" {
-				t.Errorf("want compute_backend kubernetes, got %q", q.ComputeBackend)
 			}
 		}
 	}

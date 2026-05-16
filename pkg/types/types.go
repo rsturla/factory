@@ -65,18 +65,14 @@ type WorkItem struct {
 type QueueConfig struct {
 	MaxConcurrency int `json:"max_concurrency"`
 	MaxRetry       int `json:"max_retry"`
-	// Deprecated: scaling is now handled externally via KEDA/HPA.
-	ComputeBackend string `json:"compute_backend,omitempty"`
-	ClaimShards    int    `json:"claim_shards,omitempty"`
+	ClaimShards    int `json:"claim_shards,omitempty"`
 }
 
 // QueueInfo describes a queue and its current state.
 type QueueInfo struct {
-	Name           string `json:"name"`
-	MaxConcurrency int    `json:"max_concurrency"`
-	MaxRetry       int    `json:"max_retry"`
-	// Deprecated: scaling is now handled externally via KEDA/HPA.
-	ComputeBackend string         `json:"compute_backend,omitempty"`
+	Name           string         `json:"name"`
+	MaxConcurrency int            `json:"max_concurrency"`
+	MaxRetry       int            `json:"max_retry"`
 	Paused         bool           `json:"paused"`
 	InProgress     int            `json:"in_progress"`
 	Counts         map[string]int `json:"counts"`
@@ -106,10 +102,8 @@ type HistoryEntry struct {
 
 // WorkerLease describes a registered worker.
 type WorkerLease struct {
-	WorkerID string `json:"worker_id"`
-	Queue    string `json:"queue"`
-	// Deprecated: scaling is now handled externally via KEDA/HPA.
-	ComputeBackend string    `json:"compute_backend,omitempty"`
+	WorkerID       string    `json:"worker_id"`
+	Queue          string    `json:"queue"`
 	Hostname       string    `json:"hostname,omitempty"`
 	StartedAt      time.Time `json:"started_at"`
 	LastHeartbeat  time.Time `json:"last_heartbeat"`

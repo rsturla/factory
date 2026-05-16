@@ -47,7 +47,6 @@ func setupBench(tb testing.TB) (*pgxpool.Pool, *postgres.Store) {
 	if err := s.EnsureQueue(ctx, "bench", store.QueueConfig{
 		MaxConcurrency: 10000,
 		MaxRetry:       5,
-		ComputeBackend: "noop",
 	}); err != nil {
 		pool.Close()
 		tb.Fatalf("EnsureQueue: %v", err)
