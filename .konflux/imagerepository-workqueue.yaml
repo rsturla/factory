@@ -1,0 +1,12 @@
+apiVersion: appstudio.redhat.com/v1alpha1
+kind: ImageRepository
+metadata:
+  name: workqueue
+  namespace: rsturla-tenant
+  labels:
+    appstudio.redhat.com/application: hummingbird-factory
+    appstudio.redhat.com/component: workqueue
+spec:
+  image:
+    name: rsturla-tenant/workqueue
+    visibility: public
