@@ -4,13 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/hummingbird-org/factory-workqueue/sdk/go/reconciler"
 
+	"github.com/hummingbird-org/vuln-ingest/internal/blob"
 	"github.com/hummingbird-org/vuln-ingest/internal/model"
 	"github.com/hummingbird-org/vuln-ingest/internal/resolve"
 	"github.com/hummingbird-org/vuln-ingest/internal/resolve/parser"
@@ -133,13 +133,18 @@ func (m *mockStore) Close()                     {}
 // Helpers
 // ---------------------------------------------------------------------------
 
-func writeFile(t *testing.T, dir, relPath string, data []byte) {
+func testBlobs(t *testing.T) blob.Store {
 	t.Helper()
-	full := filepath.Join(dir, relPath)
-	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+	b, err := blob.NewLocalStore(t.TempDir())
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(full, data, 0o644); err != nil {
+	return b
+}
+
+func writeBlob(t *testing.T, blobs blob.Store, key string, data []byte) {
+	t.Helper()
+	if err := blobs.Put(context.Background(), key, data); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -153,9 +158,9 @@ func makeReq(key string) reconciler.ProcessRequest {
 // ---------------------------------------------------------------------------
 
 func TestReconcile_ValidOSVFile(t *testing.T) {
-	dir := t.TempDir()
+	blobs := testBlobs(t)
 	s := newMockStore()
-	r := resolve.NewReconciler(s, dir)
+	r := resolve.NewReconciler(s, blobs)
 
 	osv := map[string]any{
 		"id":       "GHSA-1234-5678-9012",
@@ -177,7 +182,7 @@ func TestReconcile_ValidOSVFile(t *testing.T) {
 		},
 	}
 	data, _ := json.Marshal(osv)
-	writeFile(t, dir, "ghsa/advisories/GHSA-1234.json", data)
+	writeBlob(t, blobs, "ghsa/advisories/GHSA-1234.json", data)
 
 	resp, err := r.Reconcile(context.Background(), makeReq("ghsa/advisories/GHSA-1234.json"))
 	if err != nil {
@@ -195,9 +200,9 @@ func TestReconcile_ValidOSVFile(t *testing.T) {
 }
 
 func TestReconcile_ValidNVDFile(t *testing.T) {
-	dir := t.TempDir()
+	blobs := testBlobs(t)
 	s := newMockStore()
-	r := resolve.NewReconciler(s, dir)
+	r := resolve.NewReconciler(s, blobs)
 
 	nvd := map[string]any{
 		"id":           "CVE-2024-1234",
@@ -213,7 +218,7 @@ func TestReconcile_ValidNVDFile(t *testing.T) {
 		"weaknesses":     []any{},
 	}
 	data, _ := json.Marshal(nvd)
-	writeFile(t, dir, "nvd/cves/CVE-2024-1234.json", data)
+	writeBlob(t, blobs, "nvd/cves/CVE-2024-1234.json", data)
 
 	resp, err := r.Reconcile(context.Background(), makeReq("nvd/cves/CVE-2024-1234.json"))
 	if err != nil {
@@ -232,9 +237,9 @@ func TestReconcile_ValidNVDFile(t *testing.T) {
 }
 
 func TestReconcile_FileNotFound(t *testing.T) {
-	dir := t.TempDir()
+	blobs := testBlobs(t)
 	s := newMockStore()
-	r := resolve.NewReconciler(s, dir)
+	r := resolve.NewReconciler(s, blobs)
 
 	resp, err := r.Reconcile(context.Background(), makeReq("ghsa/advisories/nonexistent.json"))
 	if err != nil {
@@ -246,11 +251,11 @@ func TestReconcile_FileNotFound(t *testing.T) {
 }
 
 func TestReconcile_UnknownSourcePrefix(t *testing.T) {
-	dir := t.TempDir()
+	blobs := testBlobs(t)
 	s := newMockStore()
-	r := resolve.NewReconciler(s, dir)
+	r := resolve.NewReconciler(s, blobs)
 
-	writeFile(t, dir, "unknown/some-file.json", []byte(`{"id":"X"}`))
+	writeBlob(t, blobs, "unknown/some-file.json", []byte(`{"id":"X"}`))
 
 	resp, err := r.Reconcile(context.Background(), makeReq("unknown/some-file.json"))
 	if err != nil {
@@ -262,23 +267,33 @@ func TestReconcile_UnknownSourcePrefix(t *testing.T) {
 }
 
 func TestReconcile_PathTraversal(t *testing.T) {
-	dir := t.TempDir()
+	blobs := testBlobs(t)
 	s := newMockStore()
-	r := resolve.NewReconciler(s, dir)
+	r := resolve.NewReconciler(s, blobs)
 
-	resp, err := r.Reconcile(context.Background(), makeReq("../../etc/passwd"))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	cases := []string{
+		"../../etc/passwd",
+		"../escape",
+		"foo/../../../bar",
+		"/absolute/path.json",
+		"foo/..%2f..%2fetc/passwd",
 	}
-	if resp.Action != reconciler.ActionReject {
-		t.Fatalf("expected reject for path traversal, got %s", resp.Action)
+
+	for _, key := range cases {
+		resp, err := r.Reconcile(context.Background(), makeReq(key))
+		if err != nil {
+			t.Fatalf("key %q: unexpected error: %v", key, err)
+		}
+		if resp.Action != reconciler.ActionReject {
+			t.Fatalf("key %q: expected reject, got %s", key, resp.Action)
+		}
 	}
 }
 
 func TestReconcile_UnchangedHash(t *testing.T) {
-	dir := t.TempDir()
+	blobs := testBlobs(t)
 	s := newMockStore()
-	r := resolve.NewReconciler(s, dir)
+	r := resolve.NewReconciler(s, blobs)
 
 	osv := map[string]any{
 		"id":       "GHSA-UNCHANGED",
@@ -286,7 +301,7 @@ func TestReconcile_UnchangedHash(t *testing.T) {
 		"modified": "2024-01-01T00:00:00Z",
 	}
 	data, _ := json.Marshal(osv)
-	writeFile(t, dir, "ghsa/unchanged.json", data)
+	writeBlob(t, blobs, "ghsa/unchanged.json", data)
 
 	// First reconcile: populates store.
 	resp, err := r.Reconcile(context.Background(), makeReq("ghsa/unchanged.json"))
@@ -317,11 +332,11 @@ func TestReconcile_UnchangedHash(t *testing.T) {
 }
 
 func TestReconcile_ParserError(t *testing.T) {
-	dir := t.TempDir()
+	blobs := testBlobs(t)
 	s := newMockStore()
-	r := resolve.NewReconciler(s, dir)
+	r := resolve.NewReconciler(s, blobs)
 
-	writeFile(t, dir, "ghsa/bad.json", []byte(`{not valid json!!!`))
+	writeBlob(t, blobs, "ghsa/bad.json", []byte(`{not valid json!!!`))
 
 	resp, err := r.Reconcile(context.Background(), makeReq("ghsa/bad.json"))
 	if err != nil {
@@ -333,9 +348,9 @@ func TestReconcile_ParserError(t *testing.T) {
 }
 
 func TestReconcile_KEVBatch(t *testing.T) {
-	dir := t.TempDir()
+	blobs := testBlobs(t)
 	s := newMockStore()
-	r := resolve.NewReconciler(s, dir)
+	r := resolve.NewReconciler(s, blobs)
 
 	kev := map[string]any{
 		"entries": []map[string]string{
@@ -360,7 +375,7 @@ func TestReconcile_KEVBatch(t *testing.T) {
 		},
 	}
 	data, _ := json.Marshal(kev)
-	writeFile(t, dir, "kev/batch-2024-01-15.json", data)
+	writeBlob(t, blobs, "kev/batch-2024-01-15.json", data)
 
 	resp, err := r.Reconcile(context.Background(), makeReq("kev/batch-2024-01-15.json"))
 	if err != nil {
@@ -378,9 +393,9 @@ func TestReconcile_KEVBatch(t *testing.T) {
 }
 
 func TestReconcile_EPSSBatch(t *testing.T) {
-	dir := t.TempDir()
+	blobs := testBlobs(t)
 	s := newMockStore()
-	r := resolve.NewReconciler(s, dir)
+	r := resolve.NewReconciler(s, blobs)
 
 	epss := map[string]any{
 		"model_version": "v2024.01.01",
@@ -391,7 +406,7 @@ func TestReconcile_EPSSBatch(t *testing.T) {
 		},
 	}
 	data, _ := json.Marshal(epss)
-	writeFile(t, dir, "epss/batch-2024-01-15.json", data)
+	writeBlob(t, blobs, "epss/batch-2024-01-15.json", data)
 
 	resp, err := r.Reconcile(context.Background(), makeReq("epss/batch-2024-01-15.json"))
 	if err != nil {
@@ -409,16 +424,16 @@ func TestReconcile_EPSSBatch(t *testing.T) {
 }
 
 func TestReconcile_RegisterParser(t *testing.T) {
-	dir := t.TempDir()
+	blobs := testBlobs(t)
 	s := newMockStore()
-	r := resolve.NewReconciler(s, dir)
+	r := resolve.NewReconciler(s, blobs)
 
 	// Register a custom parser that always returns a fixed vulnerability.
 	r.RegisterParser("custom", &stubParser{
 		vulns: []model.Vulnerability{{ID: "CUSTOM-001", Summary: "custom parsed"}},
 	})
 
-	writeFile(t, dir, "custom/entry.json", []byte(`{"anything":"goes"}`))
+	writeBlob(t, blobs, "custom/entry.json", []byte(`{"anything":"goes"}`))
 
 	resp, err := r.Reconcile(context.Background(), makeReq("custom/entry.json"))
 	if err != nil {
@@ -437,10 +452,10 @@ func TestReconcile_RegisterParser(t *testing.T) {
 }
 
 func TestReconcile_UpsertVulnerabilityError(t *testing.T) {
-	dir := t.TempDir()
+	blobs := testBlobs(t)
 	s := newMockStore()
 	s.upsertVulnErr = errors.New("db connection lost")
-	r := resolve.NewReconciler(s, dir)
+	r := resolve.NewReconciler(s, blobs)
 
 	osv := map[string]any{
 		"id":       "GHSA-ERR-TEST",
@@ -448,7 +463,7 @@ func TestReconcile_UpsertVulnerabilityError(t *testing.T) {
 		"modified": "2024-01-01T00:00:00Z",
 	}
 	data, _ := json.Marshal(osv)
-	writeFile(t, dir, "ghsa/err.json", data)
+	writeBlob(t, blobs, "ghsa/err.json", data)
 
 	resp, err := r.Reconcile(context.Background(), makeReq("ghsa/err.json"))
 	if err == nil {
@@ -457,6 +472,65 @@ func TestReconcile_UpsertVulnerabilityError(t *testing.T) {
 	// Should NOT be a reject -- it's a retriable error.
 	if resp.Action == reconciler.ActionReject {
 		t.Fatal("expected retriable error, not reject")
+	}
+}
+
+func TestReconcile_UpsertSourceRecordError(t *testing.T) {
+	blobs := testBlobs(t)
+	s := newMockStore()
+	s.upsertSRErr = errors.New("sr write failed")
+	r := resolve.NewReconciler(s, blobs)
+
+	osv := map[string]any{
+		"id":       "GHSA-SR-FAIL",
+		"summary":  "will fail on source record upsert",
+		"modified": "2024-01-01T00:00:00Z",
+	}
+	data, _ := json.Marshal(osv)
+	writeBlob(t, blobs, "ghsa/sr-fail.json", data)
+
+	_, err := r.Reconcile(context.Background(), makeReq("ghsa/sr-fail.json"))
+	if err == nil {
+		t.Fatal("expected error from UpsertSourceRecord, got nil")
+	}
+}
+
+func TestReconcile_UpsertKEVEntriesError(t *testing.T) {
+	blobs := testBlobs(t)
+	s := newMockStore()
+	s.upsertKEVErr = errors.New("kev write failed")
+	r := resolve.NewReconciler(s, blobs)
+
+	kev := map[string]any{
+		"entries": []map[string]string{
+			{"cveID": "CVE-2024-9999", "vendorProject": "V", "product": "P", "dateAdded": "2024-01-01", "shortDescription": "d", "requiredAction": "a", "dueDate": "2024-02-01"},
+		},
+	}
+	data, _ := json.Marshal(kev)
+	writeBlob(t, blobs, "kev/batch-err.json", data)
+
+	_, err := r.Reconcile(context.Background(), makeReq("kev/batch-err.json"))
+	if err == nil {
+		t.Fatal("expected error from UpsertKEVEntries, got nil")
+	}
+}
+
+func TestReconcile_UpsertEPSSScoresError(t *testing.T) {
+	blobs := testBlobs(t)
+	s := newMockStore()
+	s.upsertEPSSErr = errors.New("epss write failed")
+	r := resolve.NewReconciler(s, blobs)
+
+	epss := map[string]any{
+		"model_version": "v1", "score_date": "2024-01-01",
+		"scores": []map[string]any{{"cve": "CVE-2024-8888", "epss": 0.5, "percentile": 0.9}},
+	}
+	data, _ := json.Marshal(epss)
+	writeBlob(t, blobs, "epss/batch-err.json", data)
+
+	_, err := r.Reconcile(context.Background(), makeReq("epss/batch-err.json"))
+	if err == nil {
+		t.Fatal("expected error from UpsertEPSSScores, got nil")
 	}
 }
 
@@ -509,9 +583,9 @@ func (s *sourceTrackingStore) UpsertVulnerability(ctx context.Context, v *model.
 // ---------------------------------------------------------------------------
 
 func TestReconcile_SourceParamPassed(t *testing.T) {
-	dir := t.TempDir()
+	blobs := testBlobs(t)
 	s := newSourceTrackingStore()
-	r := resolve.NewReconciler(s, dir)
+	r := resolve.NewReconciler(s, blobs)
 
 	osv := map[string]any{
 		"id":       "GHSA-SRC-TEST-0001",
@@ -519,7 +593,7 @@ func TestReconcile_SourceParamPassed(t *testing.T) {
 		"modified": "2024-06-01T00:00:00Z",
 	}
 	data, _ := json.Marshal(osv)
-	writeFile(t, dir, "ghsa/source-test.json", data)
+	writeBlob(t, blobs, "ghsa/source-test.json", data)
 
 	resp, err := r.Reconcile(context.Background(), makeReq("ghsa/source-test.json"))
 	if err != nil {
@@ -538,5 +612,78 @@ func TestReconcile_SourceParamPassed(t *testing.T) {
 	}
 	if call.VulnID != "GHSA-SRC-TEST-0001" {
 		t.Errorf("vuln id: got %q, want GHSA-SRC-TEST-0001", call.VulnID)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Fuzz: key validation rejects traversal attempts
+// ---------------------------------------------------------------------------
+
+func FuzzReconcile_KeyValidation(f *testing.F) {
+	f.Add("ghsa/advisory.json")
+	f.Add("../../etc/passwd")
+	f.Add("../escape")
+	f.Add("/absolute")
+	f.Add("foo/../../../bar")
+	f.Add("normal/deep/key.json")
+	f.Add("")
+	f.Add("nvd/CVE-2024-0001.json")
+
+	f.Fuzz(func(t *testing.T, key string) {
+		blobs := testBlobs(t)
+		s := newMockStore()
+		r := resolve.NewReconciler(s, blobs)
+
+		resp, err := r.Reconcile(context.Background(), reconciler.ProcessRequest{Key: key, Attempt: 1})
+
+		hasDotDot := strings.Contains(key, "..")
+		hasLeadingSlash := strings.HasPrefix(key, "/")
+
+		if hasDotDot || hasLeadingSlash {
+			if err != nil {
+				t.Skipf("error is acceptable for malicious key: %v", err)
+			}
+			if resp.Action != reconciler.ActionReject {
+				t.Errorf("key %q contains traversal but was not rejected (action=%s)", key, resp.Action)
+			}
+		}
+		// Valid keys may complete, reject (unknown source), or return not-found — all OK.
+		_ = err
+	})
+}
+
+// ---------------------------------------------------------------------------
+// TestReconcile_LeadingSlashRejected
+// ---------------------------------------------------------------------------
+
+func TestReconcile_DoubleDotInFilename_Rejected(t *testing.T) {
+	// Keys containing ".." anywhere are rejected as defense-in-depth,
+	// even if technically valid (e.g., "foo..bar"). This is intentional.
+	blobs := testBlobs(t)
+	s := newMockStore()
+	r := resolve.NewReconciler(s, blobs)
+
+	writeBlob(t, blobs, "ghsa/foo..bar.json", []byte(`{"id":"X"}`))
+
+	resp, err := r.Reconcile(context.Background(), makeReq("ghsa/foo..bar.json"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Action != reconciler.ActionReject {
+		t.Fatalf("expected reject for key with '..', got %s", resp.Action)
+	}
+}
+
+func TestReconcile_LeadingSlashRejected(t *testing.T) {
+	blobs := testBlobs(t)
+	s := newMockStore()
+	r := resolve.NewReconciler(s, blobs)
+
+	resp, err := r.Reconcile(context.Background(), makeReq("/etc/shadow"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Action != reconciler.ActionReject {
+		t.Fatalf("expected reject for leading slash, got %s", resp.Action)
 	}
 }

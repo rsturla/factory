@@ -5,14 +5,15 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"time"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/hummingbird-org/factory-workqueue/sdk/go/reconciler"
 
+	"github.com/hummingbird-org/vuln-ingest/internal/blob"
 	"github.com/hummingbird-org/vuln-ingest/internal/resolve"
 	"github.com/hummingbird-org/vuln-ingest/internal/store"
 )
@@ -23,7 +24,12 @@ func main() {
 
 	listenAddr := envOr("LISTEN_ADDR", ":8082")
 	databaseURL := envOr("DATABASE_URL", "postgres://localhost:5432/vulndb?sslmode=disable")
-	dataDir := envOr("DATA_DIR", "/data")
+
+	blobs, err := blob.New(ctx, blob.ConfigFromEnv())
+	if err != nil {
+		slog.Error("create blob store", "error", err)
+		os.Exit(1)
+	}
 
 	pool, err := pgxpool.New(ctx, databaseURL)
 	if err != nil {
@@ -38,7 +44,7 @@ func main() {
 	}
 
 	s := store.NewPGStore(pool)
-	rec := resolve.NewReconciler(s, dataDir)
+	rec := resolve.NewReconciler(s, blobs)
 
 	mux := http.NewServeMux()
 	mux.Handle("POST /process", reconciler.ReconcilerHandler(rec.Reconcile))
@@ -66,7 +72,7 @@ func main() {
 		srv.Shutdown(shutdownCtx) //nolint:errcheck
 	}()
 
-	slog.Info("resolver starting", "addr", listenAddr, "data_dir", dataDir)
+	slog.Info("resolver starting", "addr", listenAddr)
 	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
 		slog.Error("server error", "error", err)
 		os.Exit(1)

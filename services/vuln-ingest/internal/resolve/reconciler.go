@@ -3,14 +3,14 @@ package resolve
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/hummingbird-org/factory-workqueue/sdk/go/reconciler"
 
+	"github.com/hummingbird-org/vuln-ingest/internal/blob"
 	"github.com/hummingbird-org/vuln-ingest/internal/model"
 	"github.com/hummingbird-org/vuln-ingest/internal/resolve/parser"
 	"github.com/hummingbird-org/vuln-ingest/internal/store"
@@ -18,16 +18,16 @@ import (
 
 type Reconciler struct {
 	store   store.Store
-	dataDir string
+	blobs   blob.Store
 	parsers map[string]parser.Parser
 }
 
-func NewReconciler(s store.Store, dataDir string) *Reconciler {
+func NewReconciler(s store.Store, blobs blob.Store) *Reconciler {
 	osv := &parser.OSVParser{}
 
 	return &Reconciler{
-		store:   s,
-		dataDir: dataDir,
+		store: s,
+		blobs: blobs,
 		parsers: map[string]parser.Parser{
 			"ghsa":      osv,
 			"rustsec":   osv,
@@ -52,20 +52,18 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconciler.ProcessReques
 	source, _ := splitKey(req.Key)
 	log := slog.With("key", req.Key, "source", source, "attempt", req.Attempt)
 
-	fullPath := filepath.Join(r.dataDir, req.Key)
-	cleanBase := filepath.Clean(r.dataDir) + string(os.PathSeparator)
-	if !strings.HasPrefix(filepath.Clean(fullPath)+string(os.PathSeparator), cleanBase) {
-		log.Error("path traversal detected", "resolved", fullPath)
-		return reconciler.Reject("path traversal in key"), nil
+	if strings.Contains(req.Key, "..") || strings.HasPrefix(req.Key, "/") {
+		log.Error("invalid key", "key", req.Key)
+		return reconciler.Reject("invalid key"), nil
 	}
 
-	data, err := os.ReadFile(fullPath)
+	data, err := r.blobs.Get(ctx, req.Key)
 	if err != nil {
-		if os.IsNotExist(err) {
-			log.Warn("file not found, skipping")
+		if errors.Is(err, blob.ErrNotFound) {
+			log.Warn("blob not found, skipping")
 			return reconciler.Completed(), nil
 		}
-		return reconciler.ProcessResponse{}, fmt.Errorf("read file: %w", err)
+		return reconciler.ProcessResponse{}, fmt.Errorf("read blob: %w", err)
 	}
 
 	// Enrichment sources handled before parser dispatch.
