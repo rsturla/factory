@@ -112,9 +112,15 @@ func (s *PGStore) GetVulnerability(ctx context.Context, id string) (*model.Vulne
 		return nil, fmt.Errorf("get vulnerability: %w", err)
 	}
 
-	json.Unmarshal(severityJSON, &v.Severity)       //nolint:errcheck
-	json.Unmarshal(refsJSON, &v.References)          //nolint:errcheck
-	json.Unmarshal(dbSpecJSON, &v.DatabaseSpecific)  //nolint:errcheck
+	if err := json.Unmarshal(severityJSON, &v.Severity); err != nil {
+		return nil, fmt.Errorf("unmarshal severity for %s: %w", v.ID, err)
+	}
+	if err := json.Unmarshal(refsJSON, &v.References); err != nil {
+		return nil, fmt.Errorf("unmarshal refs for %s: %w", v.ID, err)
+	}
+	if err := json.Unmarshal(dbSpecJSON, &v.DatabaseSpecific); err != nil {
+		return nil, fmt.Errorf("unmarshal database_specific for %s: %w", v.ID, err)
+	}
 
 	affected, err := s.getAffectedPackages(ctx, id)
 	if err != nil {
@@ -174,8 +180,12 @@ func (s *PGStore) getAffectedPackages(ctx context.Context, vulnID string) ([]mod
 		if err := rows.Scan(&ap.Source, &ap.Vendor, &ap.Ecosystem, &ap.PackageName, &ap.Purl, &rangesJSON, &ap.Versions, &dbSpecJSON, &ap.QualityFlags); err != nil {
 			return nil, fmt.Errorf("scan affected package: %w", err)
 		}
-		json.Unmarshal(rangesJSON, &ap.VersionRanges)   //nolint:errcheck
-		json.Unmarshal(dbSpecJSON, &ap.DatabaseSpecific) //nolint:errcheck
+		if err := json.Unmarshal(rangesJSON, &ap.VersionRanges); err != nil {
+			return nil, fmt.Errorf("unmarshal version_ranges for %s: %w", vulnID, err)
+		}
+		if err := json.Unmarshal(dbSpecJSON, &ap.DatabaseSpecific); err != nil {
+			return nil, fmt.Errorf("unmarshal affected database_specific for %s: %w", vulnID, err)
+		}
 		result = append(result, ap)
 	}
 	return result, rows.Err()
@@ -251,9 +261,15 @@ func (s *PGStore) BatchGetVulnerabilities(ctx context.Context, ids []string) ([]
 		if err := rows.Scan(&v.ID, &v.Aliases, &v.Summary, &v.Details, &severityJSON, &v.Published, &v.Modified, &v.Withdrawn, &refsJSON, &dbSpecJSON); err != nil {
 			return nil, err
 		}
-		json.Unmarshal(severityJSON, &v.Severity)      //nolint:errcheck
-		json.Unmarshal(refsJSON, &v.References)         //nolint:errcheck
-		json.Unmarshal(dbSpecJSON, &v.DatabaseSpecific) //nolint:errcheck
+		if err := json.Unmarshal(severityJSON, &v.Severity); err != nil {
+			return nil, fmt.Errorf("unmarshal severity for %s: %w", v.ID, err)
+		}
+		if err := json.Unmarshal(refsJSON, &v.References); err != nil {
+			return nil, fmt.Errorf("unmarshal refs for %s: %w", v.ID, err)
+		}
+		if err := json.Unmarshal(dbSpecJSON, &v.DatabaseSpecific); err != nil {
+			return nil, fmt.Errorf("unmarshal database_specific for %s: %w", v.ID, err)
+		}
 		vulnMap[v.ID] = v
 	}
 	if err := rows.Err(); err != nil {
@@ -286,8 +302,12 @@ func (s *PGStore) BatchGetVulnerabilities(ctx context.Context, ids []string) ([]
 		if err := apRows.Scan(&vulnID, &ap.Source, &ap.Vendor, &ap.Ecosystem, &ap.PackageName, &ap.Purl, &rangesJSON, &ap.Versions, &dbSpecJSON, &ap.QualityFlags); err != nil {
 			return nil, err
 		}
-		json.Unmarshal(rangesJSON, &ap.VersionRanges)   //nolint:errcheck
-		json.Unmarshal(dbSpecJSON, &ap.DatabaseSpecific) //nolint:errcheck
+		if err := json.Unmarshal(rangesJSON, &ap.VersionRanges); err != nil {
+			return nil, fmt.Errorf("unmarshal version_ranges for %s: %w", vulnID, err)
+		}
+		if err := json.Unmarshal(dbSpecJSON, &ap.DatabaseSpecific); err != nil {
+			return nil, fmt.Errorf("unmarshal affected database_specific for %s: %w", vulnID, err)
+		}
 
 		if v, ok := vulnMap[vulnID]; ok {
 			v.AffectedPackages = append(v.AffectedPackages, ap)
@@ -638,11 +658,13 @@ func (s *PGStore) UpsertEPSSScores(ctx context.Context, scores []model.EPSSScore
 	br := tx.SendBatch(ctx, batch)
 	for range scores {
 		if _, err := br.Exec(); err != nil {
-			br.Close()
+			br.Close() //nolint:errcheck // already returning an error
 			return fmt.Errorf("upsert epss score: %w", err)
 		}
 	}
-	br.Close()
+	if err := br.Close(); err != nil {
+		return fmt.Errorf("close batch: %w", err)
+	}
 
 	return tx.Commit(ctx)
 }

@@ -52,7 +52,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconciler.ProcessReques
 		return reconciler.Reject(fmt.Sprintf("unknown source: %s", req.Key)), nil
 	}
 
-	cp, _ := r.store.GetCheckpoint(ctx, req.Key)
+	cp, err := r.store.GetCheckpoint(ctx, req.Key)
+	if err != nil {
+		return reconciler.ProcessResponse{}, fmt.Errorf("get checkpoint for %s: %w", req.Key, err)
+	}
 	var checkpoint string
 	if cp != nil {
 		checkpoint = cp.CheckpointValue
@@ -62,14 +65,18 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconciler.ProcessReques
 
 	result, err := src.Fetch(ctx, r.blobs, checkpoint)
 	if err != nil {
-		r.store.SetCheckpointError(ctx, req.Key, err.Error()) //nolint:errcheck
+		if cpErr := r.store.SetCheckpointError(ctx, req.Key, err.Error()); cpErr != nil {
+			slog.Error("failed to persist checkpoint error", "source", req.Key, "error", cpErr)
+		}
 		return reconciler.ProcessResponse{}, fmt.Errorf("fetch %s: %w", req.Key, err)
 	}
 
 	if len(result.ChangedFiles) == 0 {
 		log.Info("converged, no changes")
 		if result.NewCheckpoint != "" {
-			r.store.UpdateCheckpoint(ctx, req.Key, result.NewCheckpoint, 0) //nolint:errcheck
+			if cpErr := r.store.UpdateCheckpoint(ctx, req.Key, result.NewCheckpoint, 0); cpErr != nil {
+				slog.Error("failed to persist checkpoint", "source", req.Key, "error", cpErr)
+			}
 		}
 		return reconciler.Converged(), nil
 	}
@@ -78,7 +85,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconciler.ProcessReques
 		return reconciler.ProcessResponse{}, fmt.Errorf("enqueue: %w", err)
 	}
 
-	r.store.UpdateCheckpoint(ctx, req.Key, result.NewCheckpoint, int64(result.ItemCount)) //nolint:errcheck
+	if cpErr := r.store.UpdateCheckpoint(ctx, req.Key, result.NewCheckpoint, int64(result.ItemCount)); cpErr != nil {
+		slog.Error("failed to persist checkpoint", "source", req.Key, "error", cpErr)
+	}
 
 	log.Info("fetch complete", "enqueued", result.ItemCount, "new_checkpoint", result.NewCheckpoint)
 	return reconciler.Completed(), nil

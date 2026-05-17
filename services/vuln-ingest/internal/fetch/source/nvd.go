@@ -155,7 +155,10 @@ func (n *NVDSource) downloadFeed(ctx context.Context, log *slog.Logger, blobs bl
 		var idHolder struct {
 			ID string `json:"id"`
 		}
-		json.Unmarshal(vw.CVE, &idHolder) //nolint:errcheck
+		if err := json.Unmarshal(vw.CVE, &idHolder); err != nil {
+			slog.Warn("skip malformed CVE entry", "error", err)
+			continue
+		}
 		if idHolder.ID == "" {
 			continue
 		}

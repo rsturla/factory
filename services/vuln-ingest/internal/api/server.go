@@ -187,7 +187,12 @@ func (s *Server) listAffected(w http.ResponseWriter, r *http.Request) {
 		ecosystem := r.URL.Query().Get("ecosystem")
 		vulns, err = s.store.ListAffectedByPackage(r.Context(), ecosystem, packageName, opts)
 		if err == nil && ecosystem != "" {
-			total, _ = s.store.CountAffectedByPackage(r.Context(), ecosystem, packageName)
+			count, countErr := s.store.CountAffectedByPackage(r.Context(), ecosystem, packageName)
+			if countErr != nil {
+				slog.Error("count affected by package", "error", countErr)
+			} else {
+				total = count
+			}
 		}
 	}
 

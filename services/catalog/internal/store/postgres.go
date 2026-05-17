@@ -270,7 +270,9 @@ func (s *PGStore) ListPlatformsByImage(ctx context.Context, imageID string) ([]m
 		}
 		if configJSON != nil {
 			p.Config = &model.PlatformConfig{}
-			json.Unmarshal(configJSON, p.Config)
+			if err := json.Unmarshal(configJSON, p.Config); err != nil {
+				return nil, fmt.Errorf("unmarshal platform config: %w", err)
+			}
 		}
 		platforms = append(platforms, p)
 	}
@@ -324,11 +326,13 @@ func (s *PGStore) AssociatePackages(ctx context.Context, platformID string, pack
 	br := tx.SendBatch(ctx, batch)
 	for range packageIDs {
 		if _, err := br.Exec(); err != nil {
-			br.Close()
+			br.Close() //nolint:errcheck // already returning an error
 			return fmt.Errorf("associate package: %w", err)
 		}
 	}
-	br.Close()
+	if err := br.Close(); err != nil {
+		return fmt.Errorf("close batch: %w", err)
+	}
 
 	return tx.Commit(ctx)
 }
