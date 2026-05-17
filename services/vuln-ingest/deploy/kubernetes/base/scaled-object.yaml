@@ -9,7 +9,7 @@ spec:
   scaleTargetRef:
     name: vuln-ingest-resolver
   minReplicaCount: 1
-  maxReplicaCount: 10
+  maxReplicaCount: 12
   pollingInterval: 15
   cooldownPeriod: 120
   triggers:
@@ -17,5 +17,5 @@ spec:
       metadata:
         targetValue: "1000"
         format: "json"
-        url: "http://factory-admin:8080/admin/queues/vuln-resolve"
+        url: "http://factory-admin.factory.svc:8080/admin/queues/vuln-resolve"
         valueLocation: "counts.pending"

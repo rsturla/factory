@@ -90,3 +90,22 @@ func TestFilterByGlob_SubdirPaths(t *testing.T) {
 		t.Fatalf("expected 2 .json files in subdirs, got %d: %v", len(got), got)
 	}
 }
+
+func TestFilterByGlob_CVEPrefixRejectsDeltaLog(t *testing.T) {
+	files := []string{
+		"2024/1xxx/CVE-2024-1234.json",
+		"2024/2xxx/CVE-2024-2000.json",
+		"deltaLog.json",
+		"README.md",
+	}
+	got := source.FilterByGlob(files, "CVE-*.json")
+	if len(got) != 2 {
+		t.Fatalf("expected 2 CVE files, got %d: %v", len(got), got)
+	}
+	for _, f := range got {
+		base := f[len(f)-len("CVE-2024-1234.json"):]
+		if base[:4] != "CVE-" {
+			t.Fatalf("expected CVE- prefix, got %q", f)
+		}
+	}
+}

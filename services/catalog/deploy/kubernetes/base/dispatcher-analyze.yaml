@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: catalog-dispatcher-analyze
+  labels:
+    app.kubernetes.io/name: catalog-dispatcher-analyze
+    app.kubernetes.io/component: dispatcher
+    app.kubernetes.io/part-of: catalog
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: catalog-dispatcher-analyze
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: catalog-dispatcher-analyze
+        app.kubernetes.io/component: dispatcher
+        app.kubernetes.io/part-of: catalog
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: dispatcher
+          image: quay.io/hummingbird/factory-dispatcher
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PG_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: factory-db
+                  key: uri
+            - name: FACTORY_LISTEN_ADDR
+              value: ":8080"
+            - name: FACTORY_QUEUE_NAME
+              value: catalog-analyze
+            - name: RECONCILER_ENDPOINT
+              value: http://catalog-analyzer:8082
+            - name: DISPATCH_MAX_CONCURRENCY
+              value: "10"
+            - name: DISPATCH_BATCH_SIZE
+              value: "10"
+            - name: DISPATCH_LEASE_DURATION
+              value: "15m"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5

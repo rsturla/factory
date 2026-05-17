@@ -1,0 +1,39 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: catalog
+    includeSelectors: false
+
+resources:
+  - postgres.yaml
+  - pvc.yaml
+  - receiver-discover.yaml
+  - receiver-fetch.yaml
+  - receiver-analyze.yaml
+  - dispatcher-discover.yaml
+  - dispatcher-fetch.yaml
+  - dispatcher-analyze.yaml
+  - discoverer.yaml
+  - fetcher.yaml
+  - analyzer.yaml
+  - api.yaml
+  - syncer.yaml
+  - scaled-object.yaml
+
+images:
+  - name: quay.io/hummingbird/factory-receiver
+    newTag: latest
+  - name: quay.io/hummingbird/factory-dispatcher
+    newTag: latest
+  - name: quay.io/hummingbird/catalog-discoverer
+    newTag: latest
+  - name: quay.io/hummingbird/catalog-fetcher
+    newTag: latest
+  - name: quay.io/hummingbird/catalog-analyzer
+    newTag: latest
+  - name: quay.io/hummingbird/catalog-api
+    newTag: latest
+  - name: quay.io/hummingbird/catalog-syncer
+    newTag: latest

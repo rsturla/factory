@@ -1,0 +1,93 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+images:
+  - name: quay.io/hummingbird/factory-receiver
+    newTag: dev
+  - name: quay.io/hummingbird/factory-dispatcher
+    newTag: dev
+  - name: quay.io/hummingbird/catalog-discoverer
+    newTag: dev
+  - name: quay.io/hummingbird/catalog-fetcher
+    newTag: dev
+  - name: quay.io/hummingbird/catalog-analyzer
+    newTag: dev
+  - name: quay.io/hummingbird/catalog-api
+    newTag: dev
+  - name: quay.io/hummingbird/catalog-syncer
+    newTag: dev
+  - name: quay.io/hummingbird/postgresql
+    newTag: "18"
+
+patches:
+  - target:
+      kind: Deployment
+      name: catalog-api
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 1
+  - target:
+      kind: Deployment
+      name: catalog-dispatcher-fetch
+    patch: |
+      - op: replace
+        path: /spec/template/spec/containers/0/env
+        value:
+          - name: PG_DATABASE_URL
+            valueFrom:
+              secretKeyRef:
+                name: factory-db
+                key: uri
+          - name: FACTORY_LISTEN_ADDR
+            value: ":8080"
+          - name: FACTORY_QUEUE_NAME
+            value: catalog-fetch
+          - name: RECONCILER_ENDPOINT
+            value: http://catalog-fetcher:8082
+          - name: DISPATCH_MAX_CONCURRENCY
+            value: "5"
+          - name: DISPATCH_BATCH_SIZE
+            value: "5"
+          - name: DISPATCH_LEASE_DURATION
+            value: "15m"
+  - target:
+      kind: Deployment
+      name: catalog-dispatcher-analyze
+    patch: |
+      - op: replace
+        path: /spec/template/spec/containers/0/env
+        value:
+          - name: PG_DATABASE_URL
+            valueFrom:
+              secretKeyRef:
+                name: factory-db
+                key: uri
+          - name: FACTORY_LISTEN_ADDR
+            value: ":8080"
+          - name: FACTORY_QUEUE_NAME
+            value: catalog-analyze
+          - name: RECONCILER_ENDPOINT
+            value: http://catalog-analyzer:8082
+          - name: DISPATCH_MAX_CONCURRENCY
+            value: "5"
+          - name: DISPATCH_BATCH_SIZE
+            value: "5"
+          - name: DISPATCH_LEASE_DURATION
+            value: "15m"
+  - target:
+      kind: CronJob
+      name: catalog-syncer
+    patch: |
+      - op: replace
+        path: /spec/jobTemplate/spec/template/spec/containers/0/env
+        value:
+          - name: RECEIVER_URL
+            value: http://catalog-receiver-discover:8080
+          - name: DISCOVER_QUEUE
+            value: catalog-discover
+          - name: IMAGES
+            value: "quay.io/hummingbird/core-runtime:latest,quay.io/hummingbird/go:1.26"

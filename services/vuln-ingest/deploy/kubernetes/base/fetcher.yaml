@@ -43,6 +43,8 @@ spec:
               value: http://vuln-ingest-receiver-resolve:8080
             - name: RESOLVE_QUEUE
               value: vuln-resolve
+            - name: GIT_SCRATCH_DIR
+              value: /data
           resources:
             requests:
               cpu: 200m

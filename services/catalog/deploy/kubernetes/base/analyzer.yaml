@@ -1,21 +1,21 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: vuln-ingest-resolver
+  name: catalog-analyzer
   labels:
-    app.kubernetes.io/name: vuln-ingest-resolver
+    app.kubernetes.io/name: catalog-analyzer
     app.kubernetes.io/component: reconciler
-    app.kubernetes.io/part-of: vuln-ingest
+    app.kubernetes.io/part-of: catalog
 spec:
   selector:
     matchLabels:
-      app.kubernetes.io/name: vuln-ingest-resolver
+      app.kubernetes.io/name: catalog-analyzer
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: vuln-ingest-resolver
+        app.kubernetes.io/name: catalog-analyzer
         app.kubernetes.io/component: reconciler
-        app.kubernetes.io/part-of: vuln-ingest
+        app.kubernetes.io/part-of: catalog
     spec:
       automountServiceAccountToken: false
       securityContext:
@@ -23,8 +23,8 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       containers:
-        - name: resolver
-          image: quay.io/hummingbird/vuln-ingest-resolver
+        - name: analyzer
+          image: quay.io/hummingbird/catalog-analyzer
           ports:
             - name: http
               containerPort: 8082
@@ -34,25 +34,27 @@ spec:
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
-                  name: vulndb
+                  name: catalogdb
                   key: uri
-            - name: DATA_DIR
-              value: /data
+            - name: BLOB_BACKEND
+              value: local
+            - name: BLOB_LOCAL_DIR
+              value: /data/sboms
           resources:
             requests:
-              cpu: 100m
-              memory: 256Mi
+              cpu: 50m
+              memory: 128Mi
             limits:
-              cpu: 500m
-              memory: 512Mi
+              cpu: 200m
+              memory: 256Mi
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities:
               drop: [ALL]
           volumeMounts:
-            - name: vulndata
-              mountPath: /data
+            - name: sboms
+              mountPath: /data/sboms
               readOnly: true
           livenessProbe:
             httpGet:
@@ -67,20 +69,20 @@ spec:
             initialDelaySeconds: 3
             periodSeconds: 5
       volumes:
-        - name: vulndata
+        - name: sboms
           persistentVolumeClaim:
-            claimName: vulndata
+            claimName: catalog-sboms
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: vuln-ingest-resolver
+  name: catalog-analyzer
   labels:
-    app.kubernetes.io/name: vuln-ingest-resolver
-    app.kubernetes.io/part-of: vuln-ingest
+    app.kubernetes.io/name: catalog-analyzer
+    app.kubernetes.io/part-of: catalog
 spec:
   selector:
-    app.kubernetes.io/name: vuln-ingest-resolver
+    app.kubernetes.io/name: catalog-analyzer
   ports:
     - name: http
       port: 8082

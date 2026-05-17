@@ -52,3 +52,5 @@ patches:
             value: "200"
           - name: DISPATCH_LEASE_DURATION
             value: "5m"
+          - name: DISPATCH_INTERVAL
+            value: "200ms"

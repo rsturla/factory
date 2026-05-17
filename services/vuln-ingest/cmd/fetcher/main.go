@@ -5,15 +5,16 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"time"
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/hummingbird-org/factory-workqueue/sdk/go/reconciler"
 
+	"github.com/hummingbird-org/vuln-ingest/internal/blob"
 	"github.com/hummingbird-org/vuln-ingest/internal/fetch"
 	"github.com/hummingbird-org/vuln-ingest/internal/fetch/source"
 	"github.com/hummingbird-org/vuln-ingest/internal/store"
@@ -25,9 +26,15 @@ func main() {
 
 	listenAddr := envOr("LISTEN_ADDR", ":8082")
 	databaseURL := envOr("DATABASE_URL", "postgres://localhost:5432/vulndb?sslmode=disable")
-	dataDir := envOr("DATA_DIR", "/data")
 	receiverURL := envOr("RECEIVER_URL", "http://localhost:8081")
 	resolveQueue := envOr("RESOLVE_QUEUE", "vuln-resolve")
+	gitScratchDir := envOr("GIT_SCRATCH_DIR", envOr("DATA_DIR", "/data"))
+
+	blobs, err := blob.New(ctx, blob.ConfigFromEnv())
+	if err != nil {
+		slog.Error("create blob store", "error", err)
+		os.Exit(1)
+	}
 
 	pool, err := pgxpool.New(ctx, databaseURL)
 	if err != nil {
@@ -42,9 +49,9 @@ func main() {
 	}
 
 	s := store.NewPGStore(pool)
-	rec := fetch.NewReconciler(s, dataDir, receiverURL, resolveQueue)
+	rec := fetch.NewReconciler(s, blobs, receiverURL, resolveQueue)
 
-	registerSources(rec, s)
+	registerSources(rec, s, gitScratchDir)
 
 	mux := http.NewServeMux()
 	mux.Handle("POST /process", reconciler.ReconcilerHandler(rec.Reconcile))
@@ -72,19 +79,18 @@ func main() {
 		srv.Shutdown(shutdownCtx) //nolint:errcheck
 	}()
 
-	slog.Info("fetcher starting", "addr", listenAddr, "data_dir", dataDir)
+	slog.Info("fetcher starting", "addr", listenAddr)
 	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
 		slog.Error("server error", "error", err)
 		os.Exit(1)
 	}
 }
 
-func registerSources(rec *fetch.Reconciler, s store.Store) {
-	// Git-based sources: all use the shared GitSource implementation.
+func registerSources(rec *fetch.Reconciler, s store.Store, gitScratchDir string) {
 	gitSources := []struct {
 		name, url, subDir, branch, glob string
 	}{
-		{"cvelistv5", "https://github.com/CVEProject/cvelistV5.git", "cves", "main", "*.json"},
+		{"cvelistv5", "https://github.com/CVEProject/cvelistV5.git", "cves", "main", "CVE-*.json"},
 		{"ghsa", "https://github.com/github/advisory-database.git", "advisories/github-reviewed", "main", "*.json"},
 		{"rustsec", "https://github.com/rustsec/advisory-db.git", ".", "osv", "*.json"},
 		{"govuln", "https://github.com/golang/vulndb.git", "data/osv", "master", "*.json"},
@@ -95,7 +101,7 @@ func registerSources(rec *fetch.Reconciler, s store.Store) {
 	}
 
 	for _, gs := range gitSources {
-		rec.RegisterSource(source.NewGitSource(gs.name, gs.url, gs.subDir, gs.branch, gs.glob))
+		rec.RegisterSource(source.NewGitSource(gs.name, gs.url, gs.subDir, gs.branch, gs.glob, gitScratchDir))
 	}
 
 	// REST/download sources.

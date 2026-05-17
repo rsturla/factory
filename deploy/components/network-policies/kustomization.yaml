@@ -5,3 +5,5 @@ resources:
   - default-deny.yaml
   - workqueue.yaml
   - vuln-ingest.yaml
+  - registry-probe.yaml
+  - catalog.yaml

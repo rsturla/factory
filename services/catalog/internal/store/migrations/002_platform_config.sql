@@ -1,0 +1,1 @@
+ALTER TABLE platforms ADD COLUMN IF NOT EXISTS config JSONB;

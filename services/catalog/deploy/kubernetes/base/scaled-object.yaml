@@ -1,0 +1,43 @@
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: catalog-fetcher
+  labels:
+    app.kubernetes.io/name: catalog-fetcher
+    app.kubernetes.io/part-of: catalog
+spec:
+  scaleTargetRef:
+    name: catalog-fetcher
+  minReplicaCount: 1
+  maxReplicaCount: 10
+  pollingInterval: 15
+  cooldownPeriod: 120
+  triggers:
+    - type: metrics-api
+      metadata:
+        targetValue: "3"
+        format: "json"
+        url: "http://factory-admin.factory.svc:8080/admin/queues/catalog-fetch"
+        valueLocation: "counts.pending"
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: catalog-analyzer
+  labels:
+    app.kubernetes.io/name: catalog-analyzer
+    app.kubernetes.io/part-of: catalog
+spec:
+  scaleTargetRef:
+    name: catalog-analyzer
+  minReplicaCount: 1
+  maxReplicaCount: 5
+  pollingInterval: 15
+  cooldownPeriod: 120
+  triggers:
+    - type: metrics-api
+      metadata:
+        targetValue: "5"
+        format: "json"
+        url: "http://factory-admin.factory.svc:8080/admin/queues/catalog-analyze"
+        valueLocation: "counts.pending"
