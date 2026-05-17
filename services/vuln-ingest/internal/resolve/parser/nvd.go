@@ -209,7 +209,10 @@ func extractNodeAffected(node nvdNode) []model.AffectedPackage {
 			if len(parts) >= 6 && parts[5] != "*" {
 				ap.Versions = []string{parts[5]}
 			} else {
-				flags = append(flags, "unmapped_cpe")
+				vr.Introduced = "0"
+				vr.Fixed = "*"
+				ap.VersionRanges = []model.VersionRange{vr}
+				flags = append(flags, "all_versions_affected")
 			}
 		} else {
 			if vr.Fixed == "" && vr.LastAffected == "" {

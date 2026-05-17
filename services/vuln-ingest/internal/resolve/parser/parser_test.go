@@ -835,8 +835,14 @@ func TestNVDParser_UnmappedCPEFlag(t *testing.T) {
 	requireNoError(t, err)
 
 	ap := vulns[0].AffectedPackages[0]
-	if !containsFlag(ap.QualityFlags, "unmapped_cpe") {
-		t.Errorf("expected unmapped_cpe flag, got %v", ap.QualityFlags)
+	if !containsFlag(ap.QualityFlags, "all_versions_affected") {
+		t.Errorf("expected all_versions_affected flag, got %v", ap.QualityFlags)
+	}
+	if len(ap.VersionRanges) != 1 {
+		t.Fatalf("expected 1 version range, got %d", len(ap.VersionRanges))
+	}
+	if ap.VersionRanges[0].Fixed != "*" {
+		t.Errorf("expected fixed=*, got %q", ap.VersionRanges[0].Fixed)
 	}
 }
 
