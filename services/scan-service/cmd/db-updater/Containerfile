@@ -1,0 +1,14 @@
+FROM quay.io/hummingbird/go:1.26 AS builder
+WORKDIR /build
+COPY workqueue/sdk/go/reconciler/ workqueue/sdk/go/reconciler/
+COPY services/scan-service/go.mod services/scan-service/go.sum services/scan-service/
+WORKDIR /build/services/scan-service
+RUN go mod download
+COPY services/scan-service/ /build/services/scan-service/
+RUN CGO_ENABLED=0 go build -o /app ./cmd/db-updater
+
+FROM quay.io/hummingbird/core-runtime:latest
+COPY --from=builder /app /usr/local/bin/app
+ENV LISTEN_ADDR=:8080
+EXPOSE 8080
+ENTRYPOINT ["app"]

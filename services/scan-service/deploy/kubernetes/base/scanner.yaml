@@ -1,0 +1,104 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: scan-scanner
+  labels:
+    app.kubernetes.io/name: scan-scanner
+    app.kubernetes.io/component: reconciler
+    app.kubernetes.io/part-of: scan-service
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: scan-scanner
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: scan-scanner
+        app.kubernetes.io/component: reconciler
+        app.kubernetes.io/part-of: scan-service
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: scanner
+          image: quay.io/hummingbird/scan-scanner
+          ports:
+            - name: http
+              containerPort: 8082
+          env:
+            - name: LISTEN_ADDR
+              value: ":8082"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: scandb
+                  key: uri
+            - name: BLOB_BACKEND
+              value: local
+            - name: BLOB_LOCAL_DIR
+              value: /data/sboms
+            - name: GRYPE_DB_DIR
+              value: /data/grypedb
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: sboms
+              mountPath: /data/sboms
+              readOnly: true
+            - name: grypedb
+              mountPath: /data/grypedb
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+      volumes:
+        - name: sboms
+          persistentVolumeClaim:
+            claimName: catalog-sboms
+            readOnly: true
+        - name: grypedb
+          persistentVolumeClaim:
+            claimName: grypedb
+            readOnly: true
+        - name: tmp
+          emptyDir:
+            sizeLimit: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: scan-scanner
+  labels:
+    app.kubernetes.io/name: scan-scanner
+    app.kubernetes.io/part-of: scan-service
+spec:
+  selector:
+    app.kubernetes.io/name: scan-scanner
+  ports:
+    - name: http
+      port: 8082
+      targetPort: http

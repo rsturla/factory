@@ -1,0 +1,32 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: scan-service
+    includeSelectors: false
+
+resources:
+  - postgres.yaml
+  - pvc.yaml
+  - receiver-scan.yaml
+  - dispatcher-scan.yaml
+  - scanner.yaml
+  - api.yaml
+  - syncer.yaml
+  - db-updater.yaml
+  - scaled-object.yaml
+
+images:
+  - name: quay.io/hummingbird/factory-receiver
+    newTag: latest
+  - name: quay.io/hummingbird/factory-dispatcher
+    newTag: latest
+  - name: quay.io/hummingbird/scan-scanner
+    newTag: latest
+  - name: quay.io/hummingbird/scan-api
+    newTag: latest
+  - name: quay.io/hummingbird/scan-syncer
+    newTag: latest
+  - name: quay.io/hummingbird/scan-db-updater
+    newTag: latest

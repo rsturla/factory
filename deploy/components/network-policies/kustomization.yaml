@@ -7,3 +7,4 @@ resources:
   - vuln-ingest.yaml
   - registry-probe.yaml
   - catalog.yaml
+  - scan-service.yaml

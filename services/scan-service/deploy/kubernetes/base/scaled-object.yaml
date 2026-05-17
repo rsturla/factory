@@ -1,0 +1,21 @@
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: scan-scanner
+  labels:
+    app.kubernetes.io/name: scan-scanner
+    app.kubernetes.io/part-of: scan-service
+spec:
+  scaleTargetRef:
+    name: scan-scanner
+  minReplicaCount: 0
+  maxReplicaCount: 10
+  pollingInterval: 15
+  cooldownPeriod: 120
+  triggers:
+    - type: metrics-api
+      metadata:
+        targetValue: "10"
+        format: "json"
+        url: "http://factory-admin.factory.svc:8080/admin/queues/scan"
+        valueLocation: "counts.pending"

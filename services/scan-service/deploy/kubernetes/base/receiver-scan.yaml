@@ -1,0 +1,80 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: scan-receiver
+  labels:
+    app.kubernetes.io/name: scan-receiver
+    app.kubernetes.io/component: receiver
+    app.kubernetes.io/part-of: scan-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: scan-receiver
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: scan-receiver
+        app.kubernetes.io/component: receiver
+        app.kubernetes.io/part-of: scan-service
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: receiver
+          image: quay.io/hummingbird/factory-receiver
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PG_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: factory-db
+                  key: uri
+            - name: FACTORY_LISTEN_ADDR
+              value: ":8080"
+            - name: FACTORY_QUEUE_NAME
+              value: scan
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: scan-receiver
+  labels:
+    app.kubernetes.io/name: scan-receiver
+    app.kubernetes.io/part-of: scan-service
+spec:
+  selector:
+    app.kubernetes.io/name: scan-receiver
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

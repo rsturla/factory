@@ -1,0 +1,75 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: scan-dispatcher
+  labels:
+    app.kubernetes.io/name: scan-dispatcher
+    app.kubernetes.io/component: dispatcher
+    app.kubernetes.io/part-of: scan-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: scan-dispatcher
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: scan-dispatcher
+        app.kubernetes.io/component: dispatcher
+        app.kubernetes.io/part-of: scan-service
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: dispatcher
+          image: quay.io/hummingbird/factory-dispatcher
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PG_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: factory-db
+                  key: uri
+            - name: FACTORY_LISTEN_ADDR
+              value: ":8080"
+            - name: FACTORY_QUEUE_NAME
+              value: scan
+            - name: RECONCILER_ENDPOINT
+              value: http://scan-scanner:8082
+            - name: DISPATCH_MAX_CONCURRENCY
+              value: "20"
+            - name: DISPATCH_BATCH_SIZE
+              value: "20"
+            - name: DISPATCH_LEASE_DURATION
+              value: "5m"
+            - name: DISPATCH_INTERVAL
+              value: "200ms"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5

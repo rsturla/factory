@@ -1,0 +1,78 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: scan-api
+  labels:
+    app.kubernetes.io/name: scan-api
+    app.kubernetes.io/component: api
+    app.kubernetes.io/part-of: scan-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: scan-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: scan-api
+        app.kubernetes.io/component: api
+        app.kubernetes.io/part-of: scan-service
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: api
+          image: quay.io/hummingbird/scan-api
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: LISTEN_ADDR
+              value: ":8080"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: scandb
+                  key: uri
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: scan-api
+  labels:
+    app.kubernetes.io/name: scan-api
+    app.kubernetes.io/part-of: scan-service
+spec:
+  selector:
+    app.kubernetes.io/name: scan-api
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

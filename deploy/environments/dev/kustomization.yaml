@@ -8,6 +8,7 @@ resources:
   - ../../../services/vuln-ingest/deploy/kubernetes/overlays/dev
   - ../../../services/registry-probe/deploy/kubernetes/overlays/dev
   - ../../../services/catalog/deploy/kubernetes/overlays/dev
+  - ../../../services/scan-service/deploy/kubernetes/overlays/dev
 
 components:
   - ../../components/postgres
