@@ -4,7 +4,12 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/anchore/clio"
 	"github.com/anchore/grype/grype"
@@ -12,10 +17,16 @@ import (
 	v6inst "github.com/anchore/grype/grype/db/v6/installation"
 	"github.com/anchore/grype/grype/matcher"
 	"github.com/anchore/grype/grype/pkg"
+	"github.com/anchore/grype/grype/vulnerability"
 )
 
 type GrypeScanner struct {
 	dbPath string
+
+	mu        sync.RWMutex
+	provider  vulnerability.Provider
+	dbVersion string
+	dbModTime time.Time
 }
 
 func NewGrypeScanner(dbPath string) *GrypeScanner {
@@ -29,28 +40,9 @@ func (g *GrypeScanner) Scan(ctx context.Context, sbomBytes []byte) ([]Finding, S
 		return nil, ScanMeta{}, fmt.Errorf("empty SBOM data")
 	}
 
-	provider, status, err := grype.LoadVulnerabilityDB(
-		v6dist.Config{
-			ID:                 clio.Identification{Name: "scan-service"},
-			RequireUpdateCheck: false,
-		},
-		v6inst.Config{
-			DBRootDir:      g.dbPath,
-			ValidateAge:    false,
-			ValidateChecksum: false,
-		},
-		false,
-	)
+	provider, dbVersion, err := g.getProvider()
 	if err != nil {
-		return nil, ScanMeta{}, fmt.Errorf("load grype db: %w", err)
-	}
-
-	dbVersion := "unknown"
-	if status != nil {
-		dbVersion = status.SchemaVersion
-		if status.Built.String() != "" {
-			dbVersion = status.Built.String()
-		}
+		return nil, ScanMeta{}, err
 	}
 
 	reader := bytes.NewReader(sbomBytes)
@@ -106,4 +98,78 @@ func (g *GrypeScanner) Scan(ctx context.Context, sbomBytes []byte) ([]Finding, S
 	}
 
 	return findings, ScanMeta{DBVersion: dbVersion}, nil
+}
+
+func (g *GrypeScanner) getProvider() (vulnerability.Provider, string, error) {
+	modTime := g.dbFileModTime()
+
+	g.mu.RLock()
+	if g.provider != nil && g.dbModTime.Equal(modTime) {
+		p, v := g.provider, g.dbVersion
+		g.mu.RUnlock()
+		return p, v, nil
+	}
+	g.mu.RUnlock()
+
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	// Double-check after acquiring write lock
+	if g.provider != nil && g.dbModTime.Equal(modTime) {
+		return g.provider, g.dbVersion, nil
+	}
+
+	slog.Info("loading grype db", "path", g.dbPath, "mod_time", modTime)
+
+	provider, status, err := grype.LoadVulnerabilityDB(
+		v6dist.Config{
+			ID:                 clio.Identification{Name: "scan-service"},
+			RequireUpdateCheck: false,
+		},
+		v6inst.Config{
+			DBRootDir:        g.dbPath,
+			ValidateAge:      false,
+			ValidateChecksum: false,
+		},
+		false,
+	)
+	if err != nil {
+		return nil, "", fmt.Errorf("load grype db: %w", err)
+	}
+
+	dbVersion := "unknown"
+	if status != nil {
+		dbVersion = status.SchemaVersion
+		if status.Built.String() != "" {
+			dbVersion = status.Built.String()
+		}
+	}
+
+	g.provider = provider
+	g.dbVersion = dbVersion
+	g.dbModTime = modTime
+
+	slog.Info("grype db loaded", "version", dbVersion)
+
+	return provider, dbVersion, nil
+}
+
+func (g *GrypeScanner) dbFileModTime() time.Time {
+	entries, err := os.ReadDir(g.dbPath)
+	if err != nil {
+		return time.Time{}
+	}
+	var latest time.Time
+	for _, e := range entries {
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		full := filepath.Join(g.dbPath, e.Name())
+		_ = full
+		if info.ModTime().After(latest) {
+			latest = info.ModTime()
+		}
+	}
+	return latest
 }

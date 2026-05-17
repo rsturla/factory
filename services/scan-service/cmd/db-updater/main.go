@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -149,10 +148,11 @@ func updateDB(ctx context.Context, s store.Store, dbDir string) bool {
 	status := curator.Status()
 	slog.Info("grype db status", "version", status.SchemaVersion, "built", status.Built, "updated", updated)
 
+	dbVersionStr := status.Built.String()
 	if err := s.UpsertDBState(ctx, model.ScannerDBState{
 		Scanner:   "grype",
-		Version:   status.SchemaVersion,
-		Checksum:  fmt.Sprintf("built:%s", status.Built),
+		Version:   dbVersionStr,
+		Checksum:  status.SchemaVersion,
 		UpdatedAt: time.Now(),
 	}); err != nil {
 		slog.Error("persist db state", "error", err)

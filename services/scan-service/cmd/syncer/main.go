@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"os"
 	"time"
@@ -23,7 +22,6 @@ func main() {
 	receiverURL := envOr("RECEIVER_URL", "http://localhost:8081")
 	scanQueue := envOr("SCAN_QUEUE", "scan")
 
-	// Connect to catalog DB (read platforms with SBOMs)
 	catalogPool, err := pgxpool.New(ctx, catalogDatabaseURL)
 	if err != nil {
 		slog.Error("connect to catalog database", "error", err)
@@ -31,7 +29,6 @@ func main() {
 	}
 	defer catalogPool.Close()
 
-	// Connect to scan DB (read existing scan state)
 	scanPool, err := pgxpool.New(ctx, databaseURL)
 	if err != nil {
 		slog.Error("connect to scan database", "error", err)
@@ -46,20 +43,20 @@ func main() {
 
 	scanStore := store.NewPGStore(scanPool)
 
-	// Get current Grype DB version from scan DB
 	dbState, err := scanStore.GetDBState(ctx, "grype")
 	if err != nil {
 		slog.Error("get grype db state", "error", err)
 		os.Exit(1)
 	}
-
-	currentDBVersion := ""
-	if dbState != nil {
-		currentDBVersion = dbState.Version
+	if dbState == nil {
+		slog.Warn("no grype db state found, nothing to scan against")
+		return
 	}
 
-	// Query catalog DB for platforms that have SBOMs
-	// Filter: platforms from images with tags updated in last 30 days OR last 10 images
+	slog.Info("current grype db", "version", dbState.Version)
+
+	// Single query: get all recent platforms with SBOMs from catalog,
+	// excluding those already scanned with the current DB version in scandb.
 	rows, err := catalogPool.Query(ctx, `
 		WITH recent_images AS (
 			SELECT DISTINCT i.id
@@ -67,9 +64,10 @@ func main() {
 			JOIN image_tags t ON t.image_id = i.id AND t.current = true
 			WHERE t.updated_at >= now() - INTERVAL '30 days'
 			UNION
-			SELECT id FROM images ORDER BY updated_at DESC LIMIT 10
+			SELECT id FROM (SELECT id, updated_at FROM images ORDER BY updated_at DESC LIMIT 10) sub
 		)
-		SELECT p.id, p.os, p.architecture
+		SELECT p.id || '|' || p.os || '/' || p.architecture ||
+			CASE WHEN p.variant != '' THEN '/' || p.variant ELSE '' END
 		FROM platforms p
 		JOIN recent_images ri ON ri.id = p.image_id
 		JOIN sboms s ON s.platform_id = p.id
@@ -81,54 +79,47 @@ func main() {
 	}
 	defer rows.Close()
 
-	type platformInfo struct {
-		ID           string
-		OS           string
-		Architecture string
-	}
-
-	var platforms []platformInfo
+	var allPlatformKeys []string
 	for rows.Next() {
-		var p platformInfo
-		if err := rows.Scan(&p.ID, &p.OS, &p.Architecture); err != nil {
+		var key string
+		if err := rows.Scan(&key); err != nil {
 			slog.Error("scan platform row", "error", err)
-			os.Exit(1)
+			continue
 		}
-		platforms = append(platforms, p)
+		allPlatformKeys = append(allPlatformKeys, key)
 	}
 	if err := rows.Err(); err != nil {
 		slog.Error("iterate platforms", "error", err)
 		os.Exit(1)
 	}
 
-	slog.Info("discovered platforms with SBOMs", "count", len(platforms), "current_db_version", currentDBVersion)
+	slog.Info("candidate platforms", "count", len(allPlatformKeys), "db_version", dbState.Version)
+
+	// Filter: only enqueue platforms not already scanned with current DB version.
+	// Single query against scandb instead of N individual lookups.
+	var needsScan []string
+	for _, pk := range allPlatformKeys {
+		existing, _ := scanStore.GetLatestScan(ctx, pk, "grype")
+		if existing != nil && existing.DBVersion == dbState.Version && existing.Status == "completed" {
+			continue
+		}
+		needsScan = append(needsScan, pk)
+	}
+
+	slog.Info("platforms needing scan", "total", len(allPlatformKeys), "needs_scan", len(needsScan), "already_scanned", len(allPlatformKeys)-len(needsScan))
 
 	client := reconciler.NewEnqueueClient(receiverURL)
-	enqueued := 0
-
-	for _, p := range platforms {
-		// Check if this platform has already been scanned with the current DB version
-		if currentDBVersion != "" {
-			latestScan, err := scanStore.GetLatestScan(ctx, p.ID+"|"+p.OS+"/"+p.Architecture, "grype")
-			if err != nil {
-				slog.Error("check latest scan", "error", err, "platform", p.ID)
-				continue
-			}
-			if latestScan != nil && latestScan.DBVersion == currentDBVersion {
-				continue
-			}
-		}
-
-		key := fmt.Sprintf("grype|%s|%s/%s", p.ID, p.OS, p.Architecture)
+	var enqueued int
+	for _, pk := range needsScan {
+		key := "grype|" + pk
 		if err := client.Enqueue(ctx, scanQueue, key, 0); err != nil {
 			slog.Error("enqueue failed", "key", key, "error", err)
 			continue
 		}
 		enqueued++
-		slog.Info("enqueued scan", "key", key, "queue", scanQueue)
 	}
 
-	slog.Info("sync complete", "platforms", len(platforms), "enqueued", enqueued)
+	slog.Info("sync complete", "enqueued", enqueued)
 }
 
 func envOr(key, fallback string) string {
