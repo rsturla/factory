@@ -1,0 +1,14 @@
+FROM quay.io/hummingbird/go:1.26 AS builder
+WORKDIR /build
+COPY workqueue/sdk/go/reconciler/ workqueue/sdk/go/reconciler/
+COPY services/vuln-ingest/go.mod services/vuln-ingest/go.sum services/vuln-ingest/
+WORKDIR /build/services/vuln-ingest
+RUN go mod download
+COPY services/vuln-ingest/ /build/services/vuln-ingest/
+RUN CGO_ENABLED=0 go build -o /api ./cmd/api
+
+FROM quay.io/hummingbird/core-runtime:latest
+COPY --from=builder /api /usr/local/bin/api
+ENV LISTEN_ADDR=:8080
+EXPOSE 8080
+ENTRYPOINT ["api"]

@@ -1,0 +1,18 @@
+FROM quay.io/hummingbird/go:1.26 AS builder
+WORKDIR /build
+COPY workqueue/sdk/go/reconciler/ workqueue/sdk/go/reconciler/
+COPY services/vuln-ingest/go.mod services/vuln-ingest/go.sum services/vuln-ingest/
+WORKDIR /build/services/vuln-ingest
+RUN go mod download
+COPY services/vuln-ingest/ /build/services/vuln-ingest/
+RUN CGO_ENABLED=0 go build -o /fetcher ./cmd/fetcher
+
+FROM quay.io/hummingbird/core-runtime:latest-builder
+USER 0
+RUN dnf install -y git-core && dnf clean all
+RUN mkdir -p /data && chown 65532:0 /data
+USER 65532
+COPY --from=builder /fetcher /usr/local/bin/fetcher
+ENV LISTEN_ADDR=:8082
+EXPOSE 8082
+ENTRYPOINT ["fetcher"]

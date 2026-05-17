@@ -1,0 +1,146 @@
+services:
+  postgres:
+    image: quay.io/hummingbird/postgresql:18
+    command: ["-c", "max_connections=200"]
+    environment:
+      POSTGRES_DB: vulndb
+      POSTGRES_USER: vulndb
+      POSTGRES_PASSWORD: vulndb
+      PGDATA: /var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vulndb"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Receiver for vuln-fetch queue (syncer enqueues here).
+  receiver-fetch:
+    image: factory-workqueue-receiver:latest
+    environment:
+      STORE_BACKEND: postgres
+      PG_DATABASE_URL: postgres://vulndb:vulndb@postgres:5432/vulndb?sslmode=disable
+      FACTORY_QUEUE_NAME: vuln-fetch
+      FACTORY_LISTEN_ADDR: ":8081"
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Receiver for vuln-resolve queue (fetcher enqueues here).
+  receiver-resolve:
+    image: factory-workqueue-receiver:latest
+    environment:
+      STORE_BACKEND: postgres
+      PG_DATABASE_URL: postgres://vulndb:vulndb@postgres:5432/vulndb?sslmode=disable
+      FACTORY_QUEUE_NAME: vuln-resolve
+      FACTORY_LISTEN_ADDR: ":8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Dispatcher for vuln-fetch queue.
+  dispatcher-fetch:
+    image: factory-workqueue-dispatcher:latest
+    environment:
+      STORE_BACKEND: postgres
+      PG_DATABASE_URL: postgres://vulndb:vulndb@postgres:5432/vulndb?sslmode=disable
+      FACTORY_QUEUE_NAME: vuln-fetch
+      RECONCILER_ENDPOINT: http://fetcher:8082
+      DISPATCH_MAX_CONCURRENCY: 2
+      DISPATCH_MAX_RETRY: 3
+      DISPATCH_BATCH_SIZE: 2
+      DISPATCH_LEASE_DURATION: 30m
+    depends_on:
+      postgres:
+        condition: service_healthy
+      fetcher:
+        condition: service_started
+
+  # Dispatcher for vuln-resolve queue.
+  dispatcher-resolve:
+    image: factory-workqueue-dispatcher:latest
+    environment:
+      STORE_BACKEND: postgres
+      PG_DATABASE_URL: postgres://vulndb:vulndb@postgres:5432/vulndb?sslmode=disable
+      FACTORY_QUEUE_NAME: vuln-resolve
+      RECONCILER_ENDPOINT: http://resolver:8082
+      DISPATCH_MAX_CONCURRENCY: 100
+      DISPATCH_MAX_RETRY: 3
+      DISPATCH_BATCH_SIZE: 100
+      DISPATCH_LEASE_DURATION: 5m
+    depends_on:
+      postgres:
+        condition: service_healthy
+      resolver:
+        condition: service_started
+
+  # Fetch reconciler.
+  fetcher:
+    build:
+      context: ../..
+      dockerfile: services/vuln-ingest/cmd/fetcher/Containerfile
+    environment:
+      LISTEN_ADDR: ":8082"
+      DATABASE_URL: postgres://vulndb:vulndb@postgres:5432/vulndb?sslmode=disable
+      DATA_DIR: /data
+      RECEIVER_URL: http://receiver-resolve:8081
+      RESOLVE_QUEUE: vuln-resolve
+    volumes:
+      - vulndata:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Resolve reconciler.
+  resolver:
+    build:
+      context: ../..
+      dockerfile: services/vuln-ingest/cmd/resolver/Containerfile
+    deploy:
+      replicas: 5
+    environment:
+      LISTEN_ADDR: ":8082"
+      DATABASE_URL: postgres://vulndb:vulndb@postgres:5432/vulndb?sslmode=disable&pool_max_conns=4
+      DATA_DIR: /data
+    volumes:
+      - vulndata:/data:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Query API.
+  api:
+    build:
+      context: ../..
+      dockerfile: services/vuln-ingest/cmd/api/Containerfile
+    environment:
+      LISTEN_ADDR: ":8080"
+      DATABASE_URL: postgres://vulndb:vulndb@postgres:5432/vulndb?sslmode=disable
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Syncer (one-shot trigger).
+  syncer:
+    build:
+      context: ../..
+      dockerfile: services/vuln-ingest/cmd/syncer/Containerfile
+    environment:
+      RECEIVER_URL: http://receiver-fetch:8081
+      FETCH_QUEUE: vuln-fetch
+    profiles:
+      - tools
+    depends_on:
+      receiver-fetch:
+        condition: service_started
+
+volumes:
+  pgdata:
+  vulndata:

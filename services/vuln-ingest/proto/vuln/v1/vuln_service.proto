@@ -1,0 +1,82 @@
+syntax = "proto3";
+
+package vuln.v1;
+
+option go_package = "github.com/hummingbird-org/vuln-ingest/gen/vuln/v1;vulnv1";
+
+import "google/api/annotations.proto";
+import "vuln/v1/vuln.proto";
+
+service VulnService {
+  rpc GetVulnerability(GetVulnerabilityRequest) returns (Vulnerability) {
+    option (google.api.http) = {
+      get: "/v1/vulns/{id}"
+    };
+  }
+
+  rpc ListVulnerabilities(ListVulnerabilitiesRequest) returns (ListVulnerabilitiesResponse) {
+    option (google.api.http) = {
+      get: "/v1/vulns"
+    };
+  }
+
+  rpc BatchGetVulnerabilities(BatchGetVulnerabilitiesRequest) returns (BatchGetVulnerabilitiesResponse) {
+    option (google.api.http) = {
+      post: "/v1/vulns:batchGet"
+      body: "*"
+    };
+  }
+
+  rpc ListAffectedPackages(ListAffectedPackagesRequest) returns (ListAffectedPackagesResponse) {
+    option (google.api.http) = {
+      get: "/v1/affected"
+    };
+  }
+
+  rpc GetSourceStatus(GetSourceStatusRequest) returns (GetSourceStatusResponse) {
+    option (google.api.http) = {
+      get: "/v1/sources"
+    };
+  }
+}
+
+message GetVulnerabilityRequest {
+  string id = 1;
+}
+
+message ListVulnerabilitiesRequest {
+  int32 limit = 1;
+  int32 offset = 2;
+  string modified_since = 3;
+}
+
+message ListVulnerabilitiesResponse {
+  repeated Vulnerability vulnerabilities = 1;
+  int32 total = 2;
+}
+
+message BatchGetVulnerabilitiesRequest {
+  repeated string ids = 1;
+}
+
+message BatchGetVulnerabilitiesResponse {
+  repeated Vulnerability vulnerabilities = 1;
+}
+
+message ListAffectedPackagesRequest {
+  string ecosystem = 1;
+  string package_name = 2;
+  int32 limit = 3;
+  int32 offset = 4;
+}
+
+message ListAffectedPackagesResponse {
+  repeated Vulnerability vulnerabilities = 1;
+  int32 total = 2;
+}
+
+message GetSourceStatusRequest {}
+
+message GetSourceStatusResponse {
+  repeated SourceStatus sources = 1;
+}

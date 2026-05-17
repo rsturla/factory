@@ -1,0 +1,77 @@
+syntax = "proto3";
+
+package vuln.v1;
+
+option go_package = "github.com/hummingbird-org/vuln-ingest/gen/vuln/v1;vulnv1";
+
+import "google/protobuf/timestamp.proto";
+
+message Vulnerability {
+  string id = 1;
+  repeated string aliases = 2;
+  string summary = 3;
+  string details = 4;
+  repeated Severity severity = 5;
+  google.protobuf.Timestamp published = 6;
+  google.protobuf.Timestamp modified = 7;
+  google.protobuf.Timestamp withdrawn = 8;
+  repeated Reference references = 9;
+  repeated AffectedPackage affected_packages = 10;
+
+  // Enrichment data (populated when available).
+  KEVEntry kev = 11;
+  EPSSScore epss = 12;
+}
+
+message Severity {
+  string type = 1;
+  string score = 2;
+  string vector = 3;
+}
+
+message Reference {
+  string type = 1;
+  string url = 2;
+}
+
+message AffectedPackage {
+  string ecosystem = 1;
+  string package_name = 2;
+  string purl = 3;
+  repeated VersionRange version_ranges = 4;
+  repeated string versions = 5;
+  repeated string quality_flags = 6;
+}
+
+message VersionRange {
+  string introduced = 1;
+  string fixed = 2;
+  string last_affected = 3;
+}
+
+message KEVEntry {
+  string cve_id = 1;
+  string vendor_project = 2;
+  string product = 3;
+  string date_added = 4;
+  string due_date = 5;
+  string short_description = 6;
+  string required_action = 7;
+  string notes = 8;
+}
+
+message EPSSScore {
+  string cve_id = 1;
+  float score = 2;
+  float percentile = 3;
+  string model_version = 4;
+  string score_date = 5;
+}
+
+message SourceStatus {
+  string source = 1;
+  string checkpoint_value = 2;
+  google.protobuf.Timestamp last_sync_at = 3;
+  int64 items_synced = 4;
+  string error_message = 5;
+}
