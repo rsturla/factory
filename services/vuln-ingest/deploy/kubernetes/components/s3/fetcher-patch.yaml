@@ -1,0 +1,55 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vuln-ingest-fetcher
+spec:
+  template:
+    spec:
+      containers:
+        - name: fetcher
+          env:
+            - name: LISTEN_ADDR
+              value: ":8082"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: vulndb
+                  key: uri
+            - name: RECEIVER_URL
+              value: http://vuln-ingest-receiver-resolve:8080
+            - name: RESOLVE_QUEUE
+              value: vuln-resolve
+            - name: GIT_SCRATCH_DIR
+              value: /scratch
+            - name: BLOB_BACKEND
+              value: s3
+            - name: BLOB_BUCKET
+              valueFrom:
+                configMapKeyRef:
+                  name: vuln-ingest-s3
+                  key: bucket
+            - name: BLOB_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: vuln-ingest-s3
+                  key: endpoint
+                  optional: true
+            - name: BLOB_REGION
+              valueFrom:
+                configMapKeyRef:
+                  name: vuln-ingest-s3
+                  key: region
+                  optional: true
+            - name: BLOB_PREFIX
+              valueFrom:
+                configMapKeyRef:
+                  name: vuln-ingest-s3
+                  key: prefix
+                  optional: true
+          volumeMounts:
+            - name: git-scratch
+              mountPath: /scratch
+      volumes:
+        - name: git-scratch
+          emptyDir:
+            sizeLimit: 20Gi
