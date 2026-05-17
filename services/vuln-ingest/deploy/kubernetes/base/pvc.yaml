@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: vulndata
+  labels:
+    app.kubernetes.io/name: vulndata
+    app.kubernetes.io/component: storage
+    app.kubernetes.io/part-of: vuln-ingest
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi

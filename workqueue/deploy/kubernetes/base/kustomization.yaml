@@ -10,14 +10,7 @@ resources:
   - serviceaccount.yaml
   - deployment.yaml
   - service.yaml
-  - receiver.yaml
-  - dispatcher.yaml
-  - hpa.yaml
 
 images:
   - name: quay.io/hummingbird/factory-admin
-    newTag: latest
-  - name: quay.io/hummingbird/factory-receiver
-    newTag: latest
-  - name: quay.io/hummingbird/factory-dispatcher
     newTag: latest

@@ -1,0 +1,54 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+images:
+  - name: quay.io/hummingbird/factory-receiver
+    newTag: dev
+  - name: quay.io/hummingbird/factory-dispatcher
+    newTag: dev
+  - name: quay.io/hummingbird/vuln-ingest-fetcher
+    newTag: dev
+  - name: quay.io/hummingbird/vuln-ingest-resolver
+    newTag: dev
+  - name: quay.io/hummingbird/vuln-ingest-api
+    newTag: dev
+  - name: quay.io/hummingbird/vuln-ingest-syncer
+    newTag: dev
+  - name: quay.io/hummingbird/postgresql
+    newTag: "18"
+
+patches:
+  - target:
+      kind: Deployment
+      name: vuln-ingest-api
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 1
+  - target:
+      kind: Deployment
+      name: vuln-ingest-dispatcher-resolve
+    patch: |
+      - op: replace
+        path: /spec/template/spec/containers/0/env
+        value:
+          - name: PG_DATABASE_URL
+            valueFrom:
+              secretKeyRef:
+                name: factory-db
+                key: uri
+          - name: FACTORY_LISTEN_ADDR
+            value: ":8080"
+          - name: FACTORY_QUEUE_NAME
+            value: vuln-resolve
+          - name: RECONCILER_ENDPOINT
+            value: http://vuln-ingest-resolver:8082
+          - name: DISPATCH_MAX_CONCURRENCY
+            value: "200"
+          - name: DISPATCH_BATCH_SIZE
+            value: "200"
+          - name: DISPATCH_LEASE_DURATION
+            value: "5m"

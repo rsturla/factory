@@ -1,18 +1,28 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: factory-dispatcher
+  name: vuln-ingest-dispatcher-resolve
+  labels:
+    app.kubernetes.io/name: vuln-ingest-dispatcher-resolve
+    app.kubernetes.io/component: dispatcher
+    app.kubernetes.io/part-of: vuln-ingest
 spec:
   replicas: 2
   selector:
     matchLabels:
-      app.kubernetes.io/name: factory-dispatcher
+      app.kubernetes.io/name: vuln-ingest-dispatcher-resolve
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: factory-dispatcher
+        app.kubernetes.io/name: vuln-ingest-dispatcher-resolve
         app.kubernetes.io/component: dispatcher
+        app.kubernetes.io/part-of: vuln-ingest
     spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: dispatcher
           image: quay.io/hummingbird/factory-dispatcher
@@ -27,6 +37,16 @@ spec:
                   key: uri
             - name: FACTORY_LISTEN_ADDR
               value: ":8080"
+            - name: FACTORY_QUEUE_NAME
+              value: vuln-resolve
+            - name: RECONCILER_ENDPOINT
+              value: http://vuln-ingest-resolver:8082
+            - name: DISPATCH_MAX_CONCURRENCY
+              value: "100"
+            - name: DISPATCH_BATCH_SIZE
+              value: "100"
+            - name: DISPATCH_LEASE_DURATION
+              value: "5m"
           resources:
             requests:
               cpu: 100m
@@ -34,6 +54,11 @@ spec:
             limits:
               cpu: 500m
               memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
           livenessProbe:
             httpGet:
               path: /healthz

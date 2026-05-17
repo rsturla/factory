@@ -1,18 +1,28 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: factory-receiver
+  name: vuln-ingest-receiver-resolve
+  labels:
+    app.kubernetes.io/name: vuln-ingest-receiver-resolve
+    app.kubernetes.io/component: receiver
+    app.kubernetes.io/part-of: vuln-ingest
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
-      app.kubernetes.io/name: factory-receiver
+      app.kubernetes.io/name: vuln-ingest-receiver-resolve
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: factory-receiver
+        app.kubernetes.io/name: vuln-ingest-receiver-resolve
         app.kubernetes.io/component: receiver
+        app.kubernetes.io/part-of: vuln-ingest
     spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: receiver
           image: quay.io/hummingbird/factory-receiver
@@ -27,13 +37,20 @@ spec:
                   key: uri
             - name: FACTORY_LISTEN_ADDR
               value: ":8080"
+            - name: FACTORY_QUEUE_NAME
+              value: vuln-resolve
           resources:
             requests:
-              cpu: 100m
-              memory: 128Mi
+              cpu: 50m
+              memory: 64Mi
             limits:
-              cpu: 500m
-              memory: 256Mi
+              cpu: 200m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
           livenessProbe:
             httpGet:
               path: /healthz
@@ -50,10 +67,13 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: factory-receiver
+  name: vuln-ingest-receiver-resolve
+  labels:
+    app.kubernetes.io/name: vuln-ingest-receiver-resolve
+    app.kubernetes.io/part-of: vuln-ingest
 spec:
   selector:
-    app.kubernetes.io/name: factory-receiver
+    app.kubernetes.io/name: vuln-ingest-receiver-resolve
   ports:
     - name: http
       port: 8080

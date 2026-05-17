@@ -1,32 +1,31 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: factory-admin
+  name: vuln-ingest-dispatcher-fetch
   labels:
-    app.kubernetes.io/name: factory-admin
-    app.kubernetes.io/component: admin
-    app.kubernetes.io/part-of: factory
+    app.kubernetes.io/name: vuln-ingest-dispatcher-fetch
+    app.kubernetes.io/component: dispatcher
+    app.kubernetes.io/part-of: vuln-ingest
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
-      app.kubernetes.io/name: factory-admin
+      app.kubernetes.io/name: vuln-ingest-dispatcher-fetch
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: factory-admin
-        app.kubernetes.io/component: admin
-        app.kubernetes.io/part-of: factory
+        app.kubernetes.io/name: vuln-ingest-dispatcher-fetch
+        app.kubernetes.io/component: dispatcher
+        app.kubernetes.io/part-of: vuln-ingest
     spec:
-      serviceAccountName: factory-admin
       automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         seccompProfile:
           type: RuntimeDefault
       containers:
-        - name: admin
-          image: quay.io/hummingbird/factory-admin:latest
+        - name: dispatcher
+          image: quay.io/hummingbird/factory-dispatcher
           ports:
             - name: http
               containerPort: 8080
@@ -36,15 +35,25 @@ spec:
                 secretKeyRef:
                   name: factory-db
                   key: uri
-            - name: AUTHZ_BACKEND
-              value: noop
+            - name: FACTORY_LISTEN_ADDR
+              value: ":8080"
+            - name: FACTORY_QUEUE_NAME
+              value: vuln-fetch
+            - name: RECONCILER_ENDPOINT
+              value: http://vuln-ingest-fetcher:8082
+            - name: DISPATCH_MAX_CONCURRENCY
+              value: "2"
+            - name: DISPATCH_BATCH_SIZE
+              value: "2"
+            - name: DISPATCH_LEASE_DURATION
+              value: "30m"
           resources:
             requests:
-              cpu: 100m
-              memory: 128Mi
+              cpu: 50m
+              memory: 64Mi
             limits:
-              cpu: 500m
-              memory: 256Mi
+              cpu: 200m
+              memory: 128Mi
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

@@ -1,0 +1,50 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: vuln-ingest-syncer
+  labels:
+    app.kubernetes.io/name: vuln-ingest-syncer
+    app.kubernetes.io/component: syncer
+    app.kubernetes.io/part-of: vuln-ingest
+spec:
+  schedule: "0 */6 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 300
+      backoffLimit: 3
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: vuln-ingest-syncer
+            app.kubernetes.io/component: syncer
+            app.kubernetes.io/part-of: vuln-ingest
+        spec:
+          restartPolicy: OnFailure
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: syncer
+              image: quay.io/hummingbird/vuln-ingest-syncer
+              env:
+                - name: RECEIVER_URL
+                  value: http://vuln-ingest-receiver-fetch:8080
+                - name: FETCH_QUEUE
+                  value: vuln-fetch
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  cpu: 200m
+                  memory: 128Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: [ALL]

@@ -1,0 +1,20 @@
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: vuln-ingest-api
+  labels:
+    app.kubernetes.io/name: vuln-ingest-api
+    app.kubernetes.io/part-of: vuln-ingest
+    shard: internal
+  annotations:
+    haproxy.router.openshift.io/timeout: 5m
+spec:
+  host: vuln-ingest-api-hummingbird--factory-sandbox.apps.int.spoke.preprod.us-east-1.aws.paas.redhat.com
+  to:
+    kind: Service
+    name: vuln-ingest-api
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: None

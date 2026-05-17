@@ -1,0 +1,43 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: hummingbird--factory-sandbox
+
+labels:
+  - pairs:
+      paas.redhat.com/appcode: RPRM-001
+
+resources:
+  - ../../../workqueue/deploy/kubernetes/base
+  - ../../../services/vuln-ingest/deploy/kubernetes/overlays/prod
+  - route-factory-admin.yaml
+  - route-vuln-ingest-api.yaml
+
+components:
+  - ../../components/postgres
+  - ../../components/network-policies
+
+patches:
+  - target:
+      kind: PersistentVolumeClaim
+    patch: |
+      - op: add
+        path: /spec/storageClassName
+        value: aws-ebs
+      - op: add
+        path: /metadata/annotations/kubernetes.io~1reclaimPolicy
+        value: Delete
+  - target:
+      kind: Deployment
+      name: factory-admin
+    path: patches/factory-admin.yaml
+
+configMapGenerator:
+  - name: factory-cedar-policies
+    files:
+      - factory.cedar
+    options:
+      disableNameSuffixHash: true
+
+generatorOptions:
+  disableNameSuffixHash: true

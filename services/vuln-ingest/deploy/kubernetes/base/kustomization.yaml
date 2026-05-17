@@ -1,0 +1,34 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: vuln-ingest
+    includeSelectors: false
+
+resources:
+  - postgres.yaml
+  - pvc.yaml
+  - receiver-fetch.yaml
+  - receiver-resolve.yaml
+  - dispatcher-fetch.yaml
+  - dispatcher-resolve.yaml
+  - fetcher.yaml
+  - resolver.yaml
+  - api.yaml
+  - syncer.yaml
+  - scaled-object.yaml
+
+images:
+  - name: quay.io/hummingbird/factory-receiver
+    newTag: latest
+  - name: quay.io/hummingbird/factory-dispatcher
+    newTag: latest
+  - name: quay.io/hummingbird/vuln-ingest-fetcher
+    newTag: latest
+  - name: quay.io/hummingbird/vuln-ingest-resolver
+    newTag: latest
+  - name: quay.io/hummingbird/vuln-ingest-api
+    newTag: latest
+  - name: quay.io/hummingbird/vuln-ingest-syncer
+    newTag: latest

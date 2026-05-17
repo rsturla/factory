@@ -1,0 +1,21 @@
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: vuln-ingest-resolver
+  labels:
+    app.kubernetes.io/name: vuln-ingest-resolver
+    app.kubernetes.io/part-of: vuln-ingest
+spec:
+  scaleTargetRef:
+    name: vuln-ingest-resolver
+  minReplicaCount: 1
+  maxReplicaCount: 10
+  pollingInterval: 15
+  cooldownPeriod: 120
+  triggers:
+    - type: metrics-api
+      metadata:
+        targetValue: "1000"
+        format: "json"
+        url: "http://factory-admin:8080/admin/queues/vuln-resolve"
+        valueLocation: "counts.pending"
