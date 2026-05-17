@@ -88,7 +88,7 @@ func registerSources(rec *fetch.Reconciler, s store.Store) {
 		{"ghsa", "https://github.com/github/advisory-database.git", "advisories/github-reviewed", "main", "*.json"},
 		{"rustsec", "https://github.com/rustsec/advisory-db.git", ".", "osv", "*.json"},
 		{"govuln", "https://github.com/golang/vulndb.git", "data/osv", "master", "*.json"},
-		{"pypa", "https://github.com/pypa/advisory-database.git", "vulns", "main", "*.json"},
+		{"pypa", "https://github.com/pypa/advisory-database.git", "vulns", "main", "*.yaml"},
 		{"psf", "https://github.com/psf/advisory-database.git", "advisories", "main", "*.json"},
 		{"kernel", "https://git.kernel.org/pub/scm/linux/security/vulns.git", "cve/published", "master", "*.json"},
 		{"anchore-nvd-overrides", "https://github.com/anchore/nvd-data-overrides.git", "data", "main", "*.json"},

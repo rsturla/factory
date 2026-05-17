@@ -1,11 +1,13 @@
 package parser
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
 
 	"github.com/hummingbird-org/vuln-ingest/internal/model"
+	"go.yaml.in/yaml/v4"
 )
 
 // OSVParser handles the OSV schema used by GHSA, RUSTSEC, govuln, PyPA, PSF, and OSV bucket.
@@ -65,7 +67,7 @@ type osvRef struct {
 
 func (p *OSVParser) Parse(data []byte) ([]model.Vulnerability, error) {
 	var rec osvRecord
-	if err := json.Unmarshal(data, &rec); err != nil {
+	if err := unmarshalJSONOrYAML(data, &rec); err != nil {
 		return nil, fmt.Errorf("unmarshal osv: %w", err)
 	}
 
@@ -172,6 +174,14 @@ func appendUnique(slice []string, items ...string) []string {
 		}
 	}
 	return slice
+}
+
+func unmarshalJSONOrYAML(data []byte, v any) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[') {
+		return json.Unmarshal(data, v)
+	}
+	return yaml.Unmarshal(data, v)
 }
 
 func mergeDBSpec(dbSpec, ecoSpec any) any {

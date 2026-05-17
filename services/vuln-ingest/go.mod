@@ -5,6 +5,7 @@ go 1.26.1
 require (
 	github.com/hummingbird-org/factory-workqueue/sdk/go/reconciler v0.0.0
 	github.com/jackc/pgx/v5 v5.7.5
+	go.yaml.in/yaml/v4 v4.0.0-rc.4
 )
 
 require (
