@@ -1,12 +1,16 @@
 package source
 
-import "context"
+import (
+	"context"
+
+	"github.com/hummingbird-org/vuln-ingest/internal/blob"
+)
 
 // Source fetches changes from an upstream vulnerability feed.
 // Adding a new data source = implement this interface + register in config.
 type Source interface {
 	Name() string
-	Fetch(ctx context.Context, dataDir string, checkpoint string) (FetchResult, error)
+	Fetch(ctx context.Context, blobs blob.Store, checkpoint string) (FetchResult, error)
 }
 
 type FetchResult struct {

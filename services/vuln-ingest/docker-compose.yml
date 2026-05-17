@@ -90,6 +90,7 @@ services:
       DATA_DIR: /data
       RECEIVER_URL: http://receiver-resolve:8081
       RESOLVE_QUEUE: vuln-resolve
+      GIT_SCRATCH_DIR: /data
     volumes:
       - vulndata:/data
     depends_on:

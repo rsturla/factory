@@ -9,11 +9,11 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/hummingbird-org/vuln-ingest/internal/blob"
 )
 
 // EPSSIndex is the subset of store needed for EPSS diffing.
@@ -44,7 +44,7 @@ type epssEntry struct {
 	Percentile float32 `json:"percentile"`
 }
 
-func (e *EPSSSource) Fetch(ctx context.Context, dataDir string, checkpoint string) (FetchResult, error) {
+func (e *EPSSSource) Fetch(ctx context.Context, blobs blob.Store, checkpoint string) (FetchResult, error) {
 	log := slog.With("source", "epss")
 
 	entries, modelVersion, scoreDate, err := e.download(ctx)
@@ -75,11 +75,8 @@ func (e *EPSSSource) Fetch(ctx context.Context, dataDir string, checkpoint strin
 		return FetchResult{NewCheckpoint: scoreDate}, nil
 	}
 
-	outDir := filepath.Join(dataDir, "epss")
-	os.MkdirAll(outDir, 0o755) //nolint:errcheck
-
 	batchName := fmt.Sprintf("batch-%s.json", scoreDate)
-	batchPath := filepath.Join(outDir, batchName)
+	key := "epss/" + batchName
 
 	batch := map[string]any{
 		"model_version": modelVersion,
@@ -90,11 +87,10 @@ func (e *EPSSSource) Fetch(ctx context.Context, dataDir string, checkpoint strin
 	if err != nil {
 		return FetchResult{}, fmt.Errorf("marshal epss batch: %w", err)
 	}
-	if err := os.WriteFile(batchPath, batchData, 0o644); err != nil {
+	if err := blobs.Put(ctx, key, batchData); err != nil {
 		return FetchResult{}, err
 	}
 
-	key := "epss/" + batchName
 	log.Info("epss changes detected", "changed", len(changed), "total", len(entries))
 
 	return FetchResult{

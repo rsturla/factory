@@ -8,10 +8,10 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strconv"
 	"time"
+
+	"github.com/hummingbird-org/vuln-ingest/internal/blob"
 )
 
 // NVDSource fetches from the NVD JSON 2.0 data feeds.
@@ -53,12 +53,8 @@ type nvdVulnWrap struct {
 	CVE json.RawMessage `json:"cve"`
 }
 
-func (n *NVDSource) Fetch(ctx context.Context, dataDir string, checkpoint string) (FetchResult, error) {
+func (n *NVDSource) Fetch(ctx context.Context, blobs blob.Store, checkpoint string) (FetchResult, error) {
 	log := slog.With("source", "nvd")
-	outDir := filepath.Join(dataDir, "nvd")
-	if err := os.MkdirAll(outDir, 0o755); err != nil {
-		return FetchResult{}, err
-	}
 
 	prev := parseNVDCheckpoint(checkpoint)
 	currentYear := time.Now().Year()
@@ -84,7 +80,7 @@ func (n *NVDSource) Fetch(ctx context.Context, dataDir string, checkpoint string
 			continue
 		}
 
-		keys, err := n.downloadFeed(ctx, log, outDir, feedURL, label)
+		keys, err := n.downloadFeed(ctx, log, blobs, feedURL, label)
 		if err != nil {
 			return FetchResult{}, fmt.Errorf("year %s: %w", label, err)
 		}
@@ -97,7 +93,7 @@ func (n *NVDSource) Fetch(ctx context.Context, dataDir string, checkpoint string
 	next.Etags["modified"] = modEtag
 
 	if modEtag == "" || modEtag != prev.Etags["modified"] {
-		keys, err := n.downloadFeed(ctx, log, outDir, modURL, "modified")
+		keys, err := n.downloadFeed(ctx, log, blobs, modURL, "modified")
 		if err != nil {
 			return FetchResult{}, err
 		}
@@ -126,7 +122,7 @@ func parseNVDCheckpoint(cp string) nvdCheckpoint {
 	return c
 }
 
-func (n *NVDSource) downloadFeed(ctx context.Context, log *slog.Logger, outDir, feedURL, label string) ([]string, error) {
+func (n *NVDSource) downloadFeed(ctx context.Context, log *slog.Logger, blobs blob.Store, feedURL, label string) ([]string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, feedURL, nil)
 	if err != nil {
 		return nil, err
@@ -164,12 +160,12 @@ func (n *NVDSource) downloadFeed(ctx context.Context, log *slog.Logger, outDir, 
 			continue
 		}
 
-		filePath := filepath.Join(outDir, idHolder.ID+".json")
-		if err := os.WriteFile(filePath, vw.CVE, 0o644); err != nil {
+		key := "nvd/" + idHolder.ID + ".json"
+		if err := blobs.Put(ctx, key, vw.CVE); err != nil {
 			return nil, fmt.Errorf("write %s: %w", idHolder.ID, err)
 		}
 
-		keys = append(keys, "nvd/"+idHolder.ID+".json")
+		keys = append(keys, key)
 	}
 
 	log.Info("downloaded feed", "feed", label, "cves", len(keys))

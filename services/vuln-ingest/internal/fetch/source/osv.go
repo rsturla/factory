@@ -9,10 +9,10 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/hummingbird-org/vuln-ingest/internal/blob"
 )
 
 // OSVSource fetches from the OSV GCS bucket via all.zip downloads per ecosystem.
@@ -35,12 +35,8 @@ type osvCheckpoint struct {
 	Etags map[string]string `json:"etags"`
 }
 
-func (o *OSVSource) Fetch(ctx context.Context, dataDir string, checkpoint string) (FetchResult, error) {
+func (o *OSVSource) Fetch(ctx context.Context, blobs blob.Store, checkpoint string) (FetchResult, error) {
 	log := slog.With("source", "osv")
-	outDir := filepath.Join(dataDir, "osv")
-	if err := os.MkdirAll(outDir, 0o755); err != nil {
-		return FetchResult{}, err
-	}
 
 	prev := parseOSVCheckpoint(checkpoint)
 	next := osvCheckpoint{Etags: make(map[string]string)}
@@ -63,7 +59,7 @@ func (o *OSVSource) Fetch(ctx context.Context, dataDir string, checkpoint string
 			continue
 		}
 
-		keys, err := o.fetchEcosystem(ctx, log, outDir, eco, zipURL)
+		keys, err := o.fetchEcosystem(ctx, log, blobs, eco, zipURL)
 		if err != nil {
 			log.Error("fetch ecosystem failed", "ecosystem", eco, "error", err)
 			continue
@@ -85,7 +81,7 @@ func (o *OSVSource) Fetch(ctx context.Context, dataDir string, checkpoint string
 	}, nil
 }
 
-func (o *OSVSource) fetchEcosystem(ctx context.Context, log *slog.Logger, outDir, ecosystem, zipURL string) ([]string, error) {
+func (o *OSVSource) fetchEcosystem(ctx context.Context, log *slog.Logger, blobs blob.Store, ecosystem, zipURL string) ([]string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, zipURL, nil)
 	if err != nil {
 		return nil, err
@@ -111,9 +107,6 @@ func (o *OSVSource) fetchEcosystem(ctx context.Context, log *slog.Logger, outDir
 		return nil, fmt.Errorf("zip %s: %w", ecosystem, err)
 	}
 
-	ecoDir := filepath.Join(outDir, strings.ToLower(ecosystem))
-	os.MkdirAll(ecoDir, 0o755) //nolint:errcheck
-
 	var keys []string
 	for _, f := range zr.File {
 		if !strings.HasSuffix(f.Name, ".json") {
@@ -130,12 +123,12 @@ func (o *OSVSource) fetchEcosystem(ctx context.Context, log *slog.Logger, outDir
 			continue
 		}
 
-		outPath := filepath.Join(ecoDir, f.Name)
-		if err := os.WriteFile(outPath, data, 0o644); err != nil {
+		key := "osv/" + strings.ToLower(ecosystem) + "/" + f.Name
+		if err := blobs.Put(ctx, key, data); err != nil {
 			return nil, fmt.Errorf("write %s: %w", f.Name, err)
 		}
 
-		keys = append(keys, "osv/"+strings.ToLower(ecosystem)+"/"+f.Name)
+		keys = append(keys, key)
 	}
 
 	log.Info("downloaded ecosystem", "ecosystem", ecosystem, "entries", len(keys))

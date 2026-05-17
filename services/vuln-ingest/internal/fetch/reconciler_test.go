@@ -13,6 +13,7 @@ import (
 
 	"github.com/hummingbird-org/factory-workqueue/sdk/go/reconciler"
 
+	"github.com/hummingbird-org/vuln-ingest/internal/blob"
 	"github.com/hummingbird-org/vuln-ingest/internal/fetch"
 	"github.com/hummingbird-org/vuln-ingest/internal/fetch/source"
 	"github.com/hummingbird-org/vuln-ingest/internal/model"
@@ -136,7 +137,7 @@ type mockSource struct {
 
 func (s *mockSource) Name() string { return s.name }
 
-func (s *mockSource) Fetch(_ context.Context, _ string, checkpoint string) (source.FetchResult, error) {
+func (s *mockSource) Fetch(_ context.Context, _ blob.Store, checkpoint string) (source.FetchResult, error) {
 	s.calledCheckpoint = checkpoint
 	return s.result, s.err
 }
@@ -190,9 +191,18 @@ func makeReq(key string) reconciler.ProcessRequest {
 	return reconciler.ProcessRequest{Key: key, Attempt: 1}
 }
 
+func testBlobs(t *testing.T) blob.Store {
+	t.Helper()
+	b, err := blob.NewLocalStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
 func makeReconciler(t *testing.T, s *mockStore, src *mockSource, receiverURL string) *fetch.Reconciler {
 	t.Helper()
-	r := fetch.NewReconciler(s, t.TempDir(), receiverURL, "vuln-resolve")
+	r := fetch.NewReconciler(s, testBlobs(t), receiverURL, "vuln-resolve")
 	r.RegisterSource(src)
 	return r
 }
@@ -203,7 +213,7 @@ func makeReconciler(t *testing.T, s *mockStore, src *mockSource, receiverURL str
 
 func TestReconcile_UnknownSourceKey(t *testing.T) {
 	s := newMockStore()
-	r := fetch.NewReconciler(s, t.TempDir(), "http://unused", "vuln-resolve")
+	r := fetch.NewReconciler(s, testBlobs(t), "http://unused", "vuln-resolve")
 	// No sources registered.
 
 	resp, err := r.Reconcile(context.Background(), makeReq("nonexistent"))

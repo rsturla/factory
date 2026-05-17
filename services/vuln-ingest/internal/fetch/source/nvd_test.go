@@ -7,12 +7,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/hummingbird-org/vuln-ingest/internal/blob"
 	"github.com/hummingbird-org/vuln-ingest/internal/fetch/source"
 )
 
@@ -53,6 +52,15 @@ func makeCheckpoint(t *testing.T, etags map[string]string) string {
 	return string(cp)
 }
 
+func testBlobStore(t *testing.T) blob.Store {
+	t.Helper()
+	s, err := blob.NewLocalStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
 func TestNVDSource_Bootstrap(t *testing.T) {
 	feed2024 := makeFeed(t, "CVE-2024-0001", "CVE-2024-0002")
 	feed2025 := makeFeed(t, "CVE-2025-0001")
@@ -74,9 +82,9 @@ func TestNVDSource_Bootstrap(t *testing.T) {
 	defer srv.Close()
 
 	s := source.NewNVDSourceWithURL(srv.URL)
-	dir := t.TempDir()
+	blobs := testBlobStore(t)
 
-	result, err := s.Fetch(context.Background(), dir, "")
+	result, err := s.Fetch(context.Background(), blobs, "")
 	if err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
@@ -84,8 +92,13 @@ func TestNVDSource_Bootstrap(t *testing.T) {
 	if result.ItemCount < 3 {
 		t.Errorf("items: got %d, want >= 3", result.ItemCount)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "nvd", "CVE-2024-0001.json")); err != nil {
-		t.Error("CVE-2024-0001.json not written")
+	data, getErr := blobs.Get(context.Background(), "nvd/CVE-2024-0001.json")
+	if getErr != nil {
+		t.Fatal("CVE-2024-0001.json not written")
+	}
+	var cve struct{ ID string `json:"id"` }
+	if err := json.Unmarshal(data, &cve); err != nil || cve.ID != "CVE-2024-0001" {
+		t.Errorf("CVE-2024-0001 content: got id=%q, err=%v", cve.ID, err)
 	}
 	if result.NewCheckpoint == "" {
 		t.Error("checkpoint empty after bootstrap")
@@ -111,9 +124,9 @@ func TestNVDSource_OngoingNoChanges(t *testing.T) {
 	etags["modified"] = `"same-modified"`
 
 	s := source.NewNVDSourceWithURL(srv.URL)
-	dir := t.TempDir()
+	blobs := testBlobStore(t)
 
-	result, err := s.Fetch(context.Background(), dir, makeCheckpoint(t, etags))
+	result, err := s.Fetch(context.Background(), blobs, makeCheckpoint(t, etags))
 	if err != nil {
 		t.Fatalf("unchanged: %v", err)
 	}
@@ -150,16 +163,16 @@ func TestNVDSource_OngoingOneYearChanged(t *testing.T) {
 	etags["modified"] = `"same-modified"`
 
 	s := source.NewNVDSourceWithURL(srv.URL)
-	dir := t.TempDir()
+	blobs := testBlobStore(t)
 
-	result, err := s.Fetch(context.Background(), dir, makeCheckpoint(t, etags))
+	result, err := s.Fetch(context.Background(), blobs, makeCheckpoint(t, etags))
 	if err != nil {
 		t.Fatalf("one year changed: %v", err)
 	}
 	if result.ItemCount != 1 {
 		t.Errorf("items: got %d, want 1", result.ItemCount)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "nvd", "CVE-2023-9999.json")); err != nil {
+	if _, err := blobs.Get(context.Background(), "nvd/CVE-2023-9999.json"); err != nil {
 		t.Error("CVE-2023-9999.json not written")
 	}
 }
@@ -192,9 +205,9 @@ func TestNVDSource_ModifiedFeedChanged(t *testing.T) {
 	etags["modified"] = `"mod-old"`
 
 	s := source.NewNVDSourceWithURL(srv.URL)
-	dir := t.TempDir()
+	blobs := testBlobStore(t)
 
-	result, err := s.Fetch(context.Background(), dir, makeCheckpoint(t, etags))
+	result, err := s.Fetch(context.Background(), blobs, makeCheckpoint(t, etags))
 	if err != nil {
 		t.Fatalf("modified changed: %v", err)
 	}
@@ -210,9 +223,9 @@ func TestNVDSource_FeedError(t *testing.T) {
 	defer srv.Close()
 
 	s := source.NewNVDSourceWithURL(srv.URL)
-	dir := t.TempDir()
+	blobs := testBlobStore(t)
 
-	_, err := s.Fetch(context.Background(), dir, "")
+	_, err := s.Fetch(context.Background(), blobs, "")
 	if err == nil {
 		t.Fatal("expected error on 503")
 	}
@@ -231,11 +244,11 @@ func TestNVDSource_CVEFileContent(t *testing.T) {
 	defer srv.Close()
 
 	s := source.NewNVDSourceWithURL(srv.URL)
-	dir := t.TempDir()
+	blobs := testBlobStore(t)
 
-	s.Fetch(context.Background(), dir, makeCheckpoint(t, map[string]string{"modified": `"old"`})) //nolint:errcheck
+	s.Fetch(context.Background(), blobs, makeCheckpoint(t, map[string]string{"modified": `"old"`})) //nolint:errcheck
 
-	data, err := os.ReadFile(filepath.Join(dir, "nvd", "CVE-2024-5555.json"))
+	data, err := blobs.Get(context.Background(), "nvd/CVE-2024-5555.json")
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}

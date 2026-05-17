@@ -8,32 +8,36 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/hummingbird-org/vuln-ingest/internal/blob"
 )
 
 // GitSource handles git-based vulnerability feeds.
 // Parameterized to cover cvelistV5, GHSA, RUSTSEC, govuln, PyPA, PSF.
 type GitSource struct {
-	name     string
-	repoURL  string
-	subDir   string
-	branch   string
-	fileGlob string
+	name       string
+	repoURL    string
+	subDir     string
+	branch     string
+	fileGlob   string
+	scratchDir string
 }
 
-func NewGitSource(name, repoURL, subDir, branch, fileGlob string) *GitSource {
+func NewGitSource(name, repoURL, subDir, branch, fileGlob, scratchDir string) *GitSource {
 	return &GitSource{
-		name:     name,
-		repoURL:  repoURL,
-		subDir:   subDir,
-		branch:   branch,
-		fileGlob: fileGlob,
+		name:       name,
+		repoURL:    repoURL,
+		subDir:     subDir,
+		branch:     branch,
+		fileGlob:   fileGlob,
+		scratchDir: scratchDir,
 	}
 }
 
 func (g *GitSource) Name() string { return g.name }
 
-func (g *GitSource) Fetch(ctx context.Context, dataDir string, checkpoint string) (FetchResult, error) {
-	repoDir := filepath.Join(dataDir, g.name)
+func (g *GitSource) Fetch(ctx context.Context, blobs blob.Store, checkpoint string) (FetchResult, error) {
+	repoDir := filepath.Join(g.scratchDir, g.name)
 	log := slog.With("source", g.name, "repo", g.repoURL)
 
 	if _, err := os.Stat(filepath.Join(repoDir, ".git")); os.IsNotExist(err) {
@@ -61,23 +65,47 @@ func (g *GitSource) Fetch(ctx context.Context, dataDir string, checkpoint string
 	var changedFiles []string
 
 	if checkpoint == "" {
-		// First sync: list all matching files.
 		changedFiles, err = g.listAllFiles(ctx, repoDir)
 	} else {
-		// Diff since last checkpoint.
 		changedFiles, err = g.diffFiles(ctx, repoDir, checkpoint, head)
 	}
 	if err != nil {
 		return FetchResult{}, err
 	}
 
-	// Prefix with source name for resolve queue key format.
 	var keys []string
 	for _, f := range changedFiles {
-		keys = append(keys, g.name+"/"+f)
+		filePath := filepath.Join(repoDir, f)
+
+		// Reject symlinks to prevent reading files outside the repo.
+		fi, statErr := os.Lstat(filePath)
+		if statErr != nil {
+			log.Warn("stat changed file failed, skipping", "file", f, "error", statErr)
+			continue
+		}
+		if fi.Mode()&os.ModeSymlink != 0 {
+			log.Warn("skipping symlink", "file", f)
+			continue
+		}
+
+		data, readErr := os.ReadFile(filePath)
+		if readErr != nil {
+			log.Warn("read changed file failed, skipping", "file", f, "error", readErr)
+			continue
+		}
+
+		key := g.name + "/" + f
+		if putErr := blobs.Put(ctx, key, data); putErr != nil {
+			return FetchResult{}, fmt.Errorf("put %s: %w", key, putErr)
+		}
+		keys = append(keys, key)
 	}
 
-	log.Info("fetched changes", "count", len(keys), "checkpoint", head[:12])
+	shortHead := head
+	if len(shortHead) > 12 {
+		shortHead = shortHead[:12]
+	}
+	log.Info("fetched changes", "count", len(keys), "checkpoint", shortHead)
 
 	return FetchResult{
 		ChangedFiles:  keys,

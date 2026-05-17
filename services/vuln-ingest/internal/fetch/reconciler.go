@@ -12,6 +12,7 @@ import (
 
 	"github.com/hummingbird-org/factory-workqueue/sdk/go/reconciler"
 
+	"github.com/hummingbird-org/vuln-ingest/internal/blob"
 	"github.com/hummingbird-org/vuln-ingest/internal/fetch/source"
 	"github.com/hummingbird-org/vuln-ingest/internal/store"
 )
@@ -21,17 +22,17 @@ const MaxBatchSize = 5000
 type Reconciler struct {
 	sources      map[string]source.Source
 	store        store.Store
-	dataDir      string
+	blobs        blob.Store
 	receiverURL  string
 	resolveQueue string
 	httpClient   *http.Client
 }
 
-func NewReconciler(s store.Store, dataDir, receiverURL, resolveQueue string) *Reconciler {
+func NewReconciler(s store.Store, blobs blob.Store, receiverURL, resolveQueue string) *Reconciler {
 	return &Reconciler{
 		sources:      make(map[string]source.Source),
 		store:        s,
-		dataDir:      dataDir,
+		blobs:        blobs,
 		receiverURL:  receiverURL,
 		resolveQueue: resolveQueue,
 		httpClient:   &http.Client{Timeout: 30 * time.Second},
@@ -59,7 +60,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconciler.ProcessReques
 
 	log.Info("fetching", "checkpoint", checkpoint)
 
-	result, err := src.Fetch(ctx, r.dataDir, checkpoint)
+	result, err := src.Fetch(ctx, r.blobs, checkpoint)
 	if err != nil {
 		r.store.SetCheckpointError(ctx, req.Key, err.Error()) //nolint:errcheck
 		return reconciler.ProcessResponse{}, fmt.Errorf("fetch %s: %w", req.Key, err)

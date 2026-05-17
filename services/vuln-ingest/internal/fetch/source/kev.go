@@ -7,9 +7,9 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"os"
-	"path/filepath"
 	"time"
+
+	"github.com/hummingbird-org/vuln-ingest/internal/blob"
 )
 
 // KEVIndex is the subset of store needed for KEV diffing.
@@ -53,7 +53,7 @@ type kevVulnRaw struct {
 	Notes            string `json:"notes"`
 }
 
-func (k *KEVSource) Fetch(ctx context.Context, dataDir string, checkpoint string) (FetchResult, error) {
+func (k *KEVSource) Fetch(ctx context.Context, blobs blob.Store, checkpoint string) (FetchResult, error) {
 	log := slog.With("source", "kev")
 
 	catalog, err := k.download(ctx)
@@ -91,22 +91,18 @@ func (k *KEVSource) Fetch(ctx context.Context, dataDir string, checkpoint string
 		return FetchResult{NewCheckpoint: catalog.CatalogVersion}, nil
 	}
 
-	outDir := filepath.Join(dataDir, "kev")
-	os.MkdirAll(outDir, 0o755) //nolint:errcheck
-
 	batchName := fmt.Sprintf("batch-%s.json", time.Now().UTC().Format("2006-01-02T150405"))
-	batchPath := filepath.Join(outDir, batchName)
+	key := "kev/" + batchName
 
 	batch := map[string]any{"entries": changed}
 	batchData, err := json.Marshal(batch)
 	if err != nil {
 		return FetchResult{}, fmt.Errorf("marshal kev batch: %w", err)
 	}
-	if err := os.WriteFile(batchPath, batchData, 0o644); err != nil {
+	if err := blobs.Put(ctx, key, batchData); err != nil {
 		return FetchResult{}, err
 	}
 
-	key := "kev/" + batchName
 	log.Info("kev changes detected", "changed", len(changed), "total", len(catalog.Vulnerabilities))
 
 	return FetchResult{
