@@ -32,6 +32,11 @@ spec:
           env:
             - name: LISTEN_ADDR
               value: ":8080"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: scandb
+                  key: uri
             - name: GRYPE_DB_DIR
               value: /data/grypedb
             - name: CATALOG_DATABASE_URL
@@ -43,13 +48,15 @@ spec:
               value: http://scan-receiver:8080
             - name: SCAN_QUEUE
               value: scan
+            - name: CHECK_INTERVAL
+              value: "1h"
           resources:
             requests:
               cpu: 50m
-              memory: 64Mi
+              memory: 128Mi
             limits:
-              cpu: 200m
-              memory: 256Mi
+              cpu: 500m
+              memory: 512Mi
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -58,6 +65,8 @@ spec:
           volumeMounts:
             - name: grypedb
               mountPath: /data/grypedb
+            - name: tmp
+              mountPath: /tmp
           livenessProbe:
             httpGet:
               path: /healthz
@@ -74,3 +83,6 @@ spec:
         - name: grypedb
           persistentVolumeClaim:
             claimName: grypedb
+        - name: tmp
+          emptyDir:
+            sizeLimit: 1Gi
