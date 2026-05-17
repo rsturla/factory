@@ -1,6 +1,6 @@
 # vuln-ingest
 
-Vulnerability knowledge base for Hummingbird. Ingests CVE data from 12 upstream feeds, normalizes to a common schema, and serves via REST API. Search index — not source of truth. Flags quality issues, does not correct upstream data.
+Vulnerability knowledge base for Hummingbird. Ingests CVE data from multiple upstream feeds, normalizes to a common schema, and serves via REST API. Search index — not source of truth. Flags quality issues, does not correct upstream data.
 
 ## Architecture
 
@@ -36,11 +36,11 @@ Each source's affected_packages are stored with a `source` column — multiple s
 | PyPA | git | OSVParser (shared) | git diff |
 | PSF | git | OSVParser (shared) | git diff |
 | kernel | git | OSVParser (shared) | git diff |
-| OSV | GCS bucket | OSVParser (shared) | modified since timestamp |
-| NVD | REST API | NVDParser | lastModStartDate param |
-| anchore-nvd-overrides | git | NVDOverridesParser | git diff (Anchore CPE enrichment for NVD backlog) |
+| OSV | GCS bucket (zip) | OSVParser (shared) | etag per ecosystem |
+| NVD | JSON 2.0 gz feeds | NVDParser | etag per yearly + modified feed |
+| anchore-nvd-overrides | git | NVDOverridesParser | git diff |
 | KEV | file download | ParseKEVBatch | diff against DB by catalog version |
-| EPSS | CSV download | ParseEPSSBatch | diff against DB (>0.01 delta) |
+| EPSS | CSV gz download | ParseEPSSBatch | diff against DB (>0.01 delta) |
 
 ## Adding a New Source
 
@@ -55,13 +55,13 @@ Each source's affected_packages are stored with a `source` column — multiple s
 - **Source-scoped storage**: affected_packages carry a `source` column; deletes scoped to `(vuln_id, source)` to prevent cross-source clobbering
 - **Vendor separation**: `vendor` and `package_name` stored as separate columns for clean downstream matching
 - **Range type preserved**: `VersionRange.RangeType` captures SEMVER/ECOSYSTEM/GIT/semver/git so downstream knows which comparator to use
-- **Exports over APIs**: prefer git clone over REST for feed ingestion
-- **Shared OSV parser**: single parser handles 7 sources (GHSA, RUSTSEC, govuln, PyPA, PSF, kernel, OSV)
-- **NVD overrides**: Anchore's nvd-data-overrides provides ~25K CPE configurations for CVEs not yet analyzed by NVD, filling the `unmapped_cpe`/`empty_range` gap
+- **Exports over APIs**: prefer git clone and bulk feed downloads over REST API pagination
+- **Shared OSV parser**: single parser handles all OSV-format sources (GHSA, RUSTSEC, govuln, PyPA, PSF, kernel, OSV)
+- **NVD overrides**: Anchore's nvd-data-overrides provides CPE configurations for CVEs not yet analyzed by NVD
 - **Enrichment via two-queue**: KEV/EPSS download → diff → batch file → resolve
-- **Batch enqueue**: up to 5K items per `/wq/enqueue-batch` call
-- **Raw hash dedup**: source_records.raw_hash skips unchanged files
+- **Raw hash dedup**: source_records.raw_hash skips unchanged files on re-processing
 - **ADP containers**: cvelistV5 parser processes ADP (CISA-ADP, vendor) containers for additional affected entries and CVSS metrics
+- **Alias-aware lookups**: GET /v1/vulns/{id} follows alias links to return related vulnerability records from other sources
 
 ## Environment Variables
 
@@ -70,7 +70,6 @@ Each source's affected_packages are stored with a `source` column — multiple s
 - `DATA_DIR` — shared volume mount path (default: `/data`)
 - `RECEIVER_URL` — workqueue receiver endpoint
 - `RESOLVE_QUEUE` — resolve queue name (default: `vuln-resolve`)
-- `NVD_API_KEY` — optional NVD API key for higher rate limits
 - `OSV_ECOSYSTEMS` — comma-separated OSV ecosystems (default: `Linux,OSS-Fuzz`)
 
 ### Resolver
@@ -83,11 +82,11 @@ Each source's affected_packages are stored with a `source` column — multiple s
 ### Syncer
 - `RECEIVER_URL` — workqueue receiver endpoint
 - `FETCH_QUEUE` — fetch queue name (default: `vuln-fetch`)
-- `SOURCES` — comma-separated source list (default: all 11)
+- `SOURCES` — comma-separated source list (default: all configured sources)
 
 ## API Endpoints
 
-- `GET /v1/vulns/{id}` — single vulnerability with KEV/EPSS enrichment
+- `GET /v1/vulns/{id}` — single vulnerability with KEV/EPSS enrichment + alias-linked related vulns
 - `GET /v1/vulns?modified_since=&updated_since=&limit=&offset=&enrich=false` — list/changelog feed
 - `POST /v1/vulns:batchGet` — bulk lookup `{"ids": [...]}`
 - `GET /v1/affected?package_name=&ecosystem=&purl=&enrich=false` — vulns affecting a package (ecosystem optional, purl alternative)

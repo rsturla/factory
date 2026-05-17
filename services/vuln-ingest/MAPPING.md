@@ -65,7 +65,7 @@ For each RPM:
      {"queries": [{"purl": "pkg:generic/libxml2"}]}
 ```
 
-Use `POST /v1/affected:batchQuery` to query all 440 RPMs in a single HTTP call (max 500 queries per request).
+Use `POST /v1/affected:batchQuery` to query all RPMs in a single HTTP call (max 500 queries per request).
 
 ### 3. Version Comparison
 
@@ -174,7 +174,7 @@ AI agents reduce manual effort at four points in the matching workflow. In each 
 
 ### Auto-populate `cve_identifiers`
 
-The 440 identity mappings are the setup bottleneck. An agent can:
+The identity mappings are the setup bottleneck. An agent can:
 
 1. Read the RPM spec file — extract `Name:`, `Version:`, `URL:`, `Source0:`
 2. Query NVD's CPE dictionary for matching vendor/product pairs
@@ -182,7 +182,7 @@ The 440 identity mappings are the setup bottleneck. An agent can:
 4. Cross-reference: if both NVD and cvelistV5 agree on `xmlsoft/libxml2`, high confidence
 5. Write the `cve_identifiers` block to the metadata file
 
-Agent proposes all 440 mappings. Engineer bulk-reviews. Most are obvious (`curl` → `haxx/curl`). Agent flags ambiguous cases (multiple CPE matches, name mismatches) for closer review.
+Agent proposes all mappings. Engineer bulk-reviews. Most are obvious (`curl` → `haxx/curl`). Agent flags ambiguous cases (multiple CPE matches, name mismatches) for closer review.
 
 ### Resolve ambiguous version comparisons
 
