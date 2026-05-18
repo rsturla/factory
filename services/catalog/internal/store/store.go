@@ -35,6 +35,7 @@ type Store interface {
 	// SBOMs
 	UpsertSBOM(ctx context.Context, sbom model.SBOM) error
 	GetSBOM(ctx context.Context, platformID, source string) (*model.SBOM, error)
+	HasSBOM(ctx context.Context, platformID string) (bool, error)
 
 	// Checkpoints
 	GetCheckpoint(ctx context.Context, source string) (string, error)

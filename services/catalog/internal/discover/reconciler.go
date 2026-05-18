@@ -124,7 +124,24 @@ func (r *Reconciler) discoverTaggedImage(ctx context.Context, log *slog.Logger, 
 		return reconciler.ProcessResponse{}, fmt.Errorf("check existing: %w", err)
 	}
 	if existing != nil && len(existing.Platforms) > 0 {
-		log.Info("digest already cataloged, tag updated", "digest", indexDigest)
+		// Check if all platforms have SBOMs — if not, re-enqueue unfetched ones
+		var unfetched []string
+		for _, p := range existing.Platforms {
+			has, _ := r.store.HasSBOM(ctx, p.ID)
+			if !has {
+				unfetched = append(unfetched, platformKey(p))
+			}
+		}
+		if len(unfetched) == 0 {
+			log.Info("digest already cataloged, tag updated", "digest", indexDigest)
+			return reconciler.Completed(), nil
+		}
+		log.Info("re-enqueuing platforms missing SBOMs", "digest", indexDigest, "count", len(unfetched))
+		for _, k := range unfetched {
+			if err := r.enqueueFetch.Enqueue(ctx, r.fetchQueue, k, 0); err != nil {
+				return reconciler.ProcessResponse{}, fmt.Errorf("enqueue unfetched %s: %w", k, err)
+			}
+		}
 		return reconciler.Completed(), nil
 	}
 

@@ -562,6 +562,17 @@ func (s *PGStore) GetSBOM(ctx context.Context, platformID, source string) (*mode
 	return sbom, nil
 }
 
+func (s *PGStore) HasSBOM(ctx context.Context, platformID string) (bool, error) {
+	var exists bool
+	err := s.pool.QueryRow(ctx, `
+		SELECT EXISTS(SELECT 1 FROM sboms WHERE platform_id = $1)
+	`, platformID).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("check sbom exists: %w", err)
+	}
+	return exists, nil
+}
+
 // --- Checkpoints ---
 
 func (s *PGStore) GetCheckpoint(ctx context.Context, source string) (string, error) {
