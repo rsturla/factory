@@ -56,17 +56,17 @@ TOOL_DEFINITIONS = [
     {
         "name": "search_cve_context",
         "description": (
-            "Search the web for additional context about a CVE. "
-            "Use this when the CVE description is ambiguous or you need "
-            "to verify which project/product is actually affected. "
-            "Returns top search result snippets."
+            "Search the vulnerability database for CVEs related to a query. "
+            "Use this to find additional CVEs affecting a package, or to "
+            "check if a CVE ID exists under a different identifier. "
+            "Queries the vuln-ingest database, not external services."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Search query (e.g., 'CVE-2026-1234 openssl affected versions')",
+                    "description": "CVE ID or package name to search for (e.g., 'CVE-2026-1234' or 'openssl')",
                 },
             },
             "required": ["query"],
@@ -213,29 +213,30 @@ class ToolExecutor:
 
     def _search_cve_context(self, input: dict) -> str:
         query = input["query"]
-        # Try NVD page directly
+        if not self._vuln_api_url:
+            return json.dumps({"error": "vuln_api_url not configured"})
+
+        # If query contains a CVE ID, look it up directly
         cve_match = re.search(r"(CVE-\d{4}-\d+)", query)
         if cve_match:
-            cve_id = cve_match.group(1)
-            try:
-                resp = self._http.get(
-                    f"https://services.nvd.nist.gov/rest/json/cves/2.0?cveId={cve_id}",
-                    headers={"Accept": "application/json"},
+            return self._query_vulnerability({"cve_id": cve_match.group(1)})
+
+        # Otherwise search by package name via affected endpoint
+        pkg_name = query.strip()
+        try:
+            resp = self._http.get(
+                f"{self._vuln_api_url}/v1/affected",
+                params={"ecosystem": "", "package_name": pkg_name, "limit": "10"},
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                return json.dumps(
+                    {"source": "vulndb", "package": pkg_name, "results": data[:10]},
+                    indent=2,
+                    default=str,
                 )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    vulns = data.get("vulnerabilities", [])
-                    if vulns:
-                        cve_data = vulns[0].get("cve", {})
-                        descriptions = cve_data.get("descriptions", [])
-                        en_desc = next((d["value"] for d in descriptions if d.get("lang") == "en"), "")
-                        refs = [r.get("url", "") for r in cve_data.get("references", [])[:5]]
-                        return json.dumps(
-                            {"source": "NVD", "description": en_desc[:2000], "references": refs},
-                            indent=2,
-                        )
-            except Exception as e:
-                logger.debug("NVD lookup failed: %s", e)
+        except Exception as e:
+            logger.debug("vulndb search failed: %s", e)
 
         return json.dumps({"error": "no results found", "query": query})
 

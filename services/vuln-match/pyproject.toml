@@ -25,6 +25,7 @@ dev = [
 [project.scripts]
 vuln-match-matcher = "vuln_match.cli:run_matcher"
 vuln-match-syncer = "vuln_match.cli:run_syncer"
+vuln-match-triage = "vuln_match.cli:run_triage"
 vuln-match-api = "vuln_match.cli:run_api"
 
 [tool.hatch.build.targets.wheel]

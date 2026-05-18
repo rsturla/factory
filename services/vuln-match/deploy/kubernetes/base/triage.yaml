@@ -1,0 +1,79 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: vuln-match-triage
+  labels:
+    app.kubernetes.io/name: vuln-match-triage
+    app.kubernetes.io/component: triage
+    app.kubernetes.io/part-of: vuln-match
+spec:
+  schedule: "0 */6 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 1800
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: vuln-match-triage
+            app.kubernetes.io/component: triage
+            app.kubernetes.io/part-of: vuln-match
+        spec:
+          automountServiceAccountToken: false
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: triage
+              image: quay.io/hummingbird/vuln-match-triage
+              command: ["vuln-match-triage"]
+              env:
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: matchdb
+                      key: uri
+                - name: VULN_API_URL
+                  value: http://vuln-ingest-api:8080
+                - name: RPMS_REPO_PATH
+                  value: /data/rpms
+                - name: GOOGLE_CLOUD_PROJECT
+                  valueFrom:
+                    secretKeyRef:
+                      name: vertex-ai
+                      key: project_id
+                - name: GOOGLE_APPLICATION_CREDENTIALS
+                  value: /var/secrets/google/adc.json
+                - name: CLOUD_ML_REGION
+                  value: global
+                - name: AGENT_ENABLED
+                  value: "true"
+                - name: AGENT_BATCH_SIZE
+                  value: "15"
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 256Mi
+                limits:
+                  cpu: 500m
+                  memory: 512Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: [ALL]
+              volumeMounts:
+                - name: gcp-creds
+                  mountPath: /var/secrets/google
+                  readOnly: true
+          volumes:
+            - name: gcp-creds
+              secret:
+                secretName: vertex-ai
+                items:
+                  - key: adc.json
+                    path: adc.json

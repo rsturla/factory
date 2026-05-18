@@ -57,6 +57,13 @@ def run_syncer() -> None:
     run_sync(cfg)
 
 
+def run_triage() -> None:
+    from .syncer.triage import run_triage
+
+    cfg = Config.from_env()
+    run_triage(cfg)
+
+
 def run_api() -> None:
     from .db.pool import create_pool, run_migrations
     from .api.server import create_server

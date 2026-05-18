@@ -5,3 +5,4 @@ resources:
   - matcher.yaml
   - api.yaml
   - syncer.yaml
+  - triage.yaml
