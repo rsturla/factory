@@ -1,0 +1,119 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vuln-match-matcher
+  labels:
+    app.kubernetes.io/name: vuln-match-matcher
+    app.kubernetes.io/component: matcher
+    app.kubernetes.io/part-of: vuln-match
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vuln-match-matcher
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: vuln-match-matcher
+        app.kubernetes.io/component: matcher
+        app.kubernetes.io/part-of: vuln-match
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: matcher
+          image: quay.io/hummingbird/vuln-match-matcher
+          command: ["vuln-match-matcher"]
+          ports:
+            - name: http
+              containerPort: 8082
+          env:
+            - name: LISTEN_ADDR
+              value: ":8082"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: matchdb
+                  key: uri
+            - name: CATALOG_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: catalogdb
+                  key: uri
+            - name: VULN_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: vulndb
+                  key: uri
+            - name: VULN_API_URL
+              value: http://vuln-ingest-api:8080
+            - name: CPE_INDEX_PATH
+              value: /app/data/cpe_index.json
+            - name: RPMS_REPO_PATH
+              value: /data/rpms
+            - name: GOOGLE_CLOUD_PROJECT
+              valueFrom:
+                secretKeyRef:
+                  name: vertex-ai
+                  key: project_id
+            - name: CLOUD_ML_REGION
+              value: global
+            - name: AGENT_ENABLED
+              value: "true"
+            - name: AGENT_BATCH_SIZE
+              value: "15"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: rpms-repo
+              mountPath: /data/rpms
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 100Mi
+        - name: rpms-repo
+          persistentVolumeClaim:
+            claimName: rpms-repo
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vuln-match-matcher
+  labels:
+    app.kubernetes.io/name: vuln-match-matcher
+    app.kubernetes.io/part-of: vuln-match
+spec:
+  selector:
+    app.kubernetes.io/name: vuln-match-matcher
+  ports:
+    - port: 8082
+      targetPort: http
+      name: http

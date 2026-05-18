@@ -1,0 +1,20 @@
+[
+  {
+    "cve_id": "CVE-2025-0001",
+    "status": "not-affected",
+    "confidence": "high",
+    "reasoning": "CVE affects OpenSSL 1.1.x branch only. Package version 3.5.6 is on the 3.x branch which is not affected."
+  },
+  {
+    "cve_id": "CVE-2025-0002",
+    "status": "affected",
+    "confidence": "high",
+    "reasoning": "Affects OpenSSL 3.0.0 through 3.5.9. Package version 3.5.6 is within the affected range. Fixed in 3.5.10."
+  },
+  {
+    "cve_id": "CVE-2025-0003",
+    "status": "under-review",
+    "confidence": "low",
+    "reasoning": "CVE description mentions OpenSSL but only when compiled with specific engine support. Need to verify if Hummingbird build enables this."
+  }
+]

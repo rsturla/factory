@@ -1,0 +1,18 @@
+FROM registry.access.redhat.com/ubi9/python-312:latest AS builder
+
+WORKDIR /app
+
+COPY pyproject.toml .
+COPY src/ src/
+
+RUN pip install --no-cache-dir --prefix=/install .
+
+FROM registry.access.redhat.com/ubi9/python-312:latest
+
+COPY --from=builder /install /usr
+COPY data/ /app/data/
+
+WORKDIR /app
+USER 1001
+
+ENTRYPOINT ["python", "-m"]

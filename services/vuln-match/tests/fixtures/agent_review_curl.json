@@ -1,0 +1,14 @@
+[
+  {
+    "cve_id": "CVE-2026-1001",
+    "status": "not-affected",
+    "confidence": "high",
+    "reasoning": "This CVE is for a WordPress plugin named 'curl-log', not GNU curl. False positive from name matching."
+  },
+  {
+    "cve_id": "CVE-2026-1002",
+    "status": "affected",
+    "confidence": "high",
+    "reasoning": "Affects curl 8.0.0 through 8.19.9. Package version 8.19.0 is within range. Fixed in 8.20.0."
+  }
+]
