@@ -68,9 +68,11 @@ def make_reconciler(cfg: Config, pool: Any):
 
     def _get_cached(key: str, loader: Callable, ttl: float = CACHE_TTL):
         now = time.monotonic()
-        if now - _cache[f"{key}_at"] > ttl:
-            _cache[key] = loader()
-            _cache[f"{key}_at"] = now
+        at_key = f"{key}_at"
+        if now - _cache.get(at_key, 0.0) > ttl:
+            result = loader()
+            _cache[key] = result
+            _cache[at_key] = now
         return _cache[key]
 
     def reconcile(req: ProcessRequest) -> ProcessResponse:

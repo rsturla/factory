@@ -1,0 +1,71 @@
+{
+  "status": "REVIEWED",
+  "mappings": [
+    {
+      "rpm_name": "dotnet10.0",
+      "proposed_names": [
+        ".net",
+        ".net 10.0",
+        "asp.net core 10.0",
+        "asp.net_core"
+      ],
+      "confidence": "high"
+    },
+    {
+      "rpm_name": "dotnet9.0",
+      "proposed_names": [
+        ".net",
+        ".net 9.0",
+        "asp.net core 9.0",
+        "asp.net_core"
+      ],
+      "confidence": "high"
+    },
+    {
+      "rpm_name": "dotnet8.0",
+      "proposed_names": [
+        ".net",
+        ".net 8.0",
+        "asp.net core 8.0",
+        "asp.net_core"
+      ],
+      "confidence": "high"
+    },
+    {
+      "rpm_name": "httpd",
+      "proposed_names": [
+        "http_server",
+        "apache http server"
+      ],
+      "confidence": "high"
+    },
+    {
+      "rpm_name": "krb5",
+      "proposed_names": [
+        "kerberos 5"
+      ],
+      "confidence": "high"
+    },
+    {
+      "rpm_name": "openssl-fips-provider",
+      "proposed_names": [
+        "openssl"
+      ],
+      "confidence": "medium"
+    },
+    {
+      "rpm_name": "mpfr",
+      "proposed_names": [
+        "gnu_mpfr"
+      ],
+      "confidence": "high"
+    },
+    {
+      "rpm_name": "php-pecl-zip",
+      "proposed_names": [
+        "php"
+      ],
+      "confidence": "medium"
+    }
+  ]
+}
