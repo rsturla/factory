@@ -12,7 +12,7 @@ axum-handler = ["dep:axum", "tokio/rt-multi-thread"]
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-tls"] }
 axum = { version = "0.8", optional = true }
 tokio = { version = "1", features = ["time"] }
 chrono = { version = "0.4", features = ["serde"] }
