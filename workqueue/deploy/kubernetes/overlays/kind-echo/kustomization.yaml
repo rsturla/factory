@@ -32,4 +32,4 @@ images:
     newTag: test
   - name: quay.io/hummingbird/postgresql
     newName: docker.io/library/postgres
-    newTag: "17"
+    newTag: "18"
