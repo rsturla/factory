@@ -51,7 +51,7 @@ require (
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/secure-systems-lab/go-securesystemslib v0.9.1 // indirect
 	github.com/sigstore/fulcio v1.7.1 // indirect
-	github.com/sigstore/protobuf-specs v0.4.1 // indirect
+	github.com/sigstore/protobuf-specs v0.5.1 // indirect
 	github.com/sigstore/sigstore v1.9.5 // indirect
 	github.com/sirupsen/logrus v1.9.4 // indirect
 	github.com/smallstep/pkcs7 v0.1.1 // indirect
@@ -71,6 +71,6 @@ require (
 	google.golang.org/genproto/googleapis/api v0.0.0-20250414145226-207652e42e2e // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20250414145226-207652e42e2e // indirect
 	google.golang.org/grpc v1.72.2 // indirect
-	google.golang.org/protobuf v1.36.9 // indirect
+	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
