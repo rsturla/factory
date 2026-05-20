@@ -10,7 +10,7 @@ require (
 	github.com/aws/smithy-go v1.24.2
 	github.com/containers/image/v5 v5.35.0
 	github.com/hummingbird-org/factory-workqueue/sdk/go/reconciler v0.0.0
-	github.com/jackc/pgx/v5 v5.7.5
+	github.com/jackc/pgx/v5 v5.9.2
 	github.com/opencontainers/go-digest v1.0.0
 	modernc.org/sqlite v1.46.2
 )
