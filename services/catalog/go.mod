@@ -42,7 +42,7 @@ require (
 	github.com/STARRY-S/zip v0.2.3 // indirect
 	github.com/acobaugh/osrelease v0.1.0 // indirect
 	github.com/adrg/xdg v0.5.3 // indirect
-	github.com/agext/levenshtein v1.2.1 // indirect
+	github.com/agext/levenshtein v1.2.3 // indirect
 	github.com/anchore/clio v0.1.0 // indirect
 	github.com/anchore/fangs v0.1.0 // indirect
 	github.com/anchore/go-collections v0.1.0 // indirect
