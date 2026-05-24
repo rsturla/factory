@@ -16,19 +16,15 @@ import (
 // Parameterized to cover cvelistV5, GHSA, RUSTSEC, govuln, PyPA, PSF.
 type GitSource struct {
 	name       string
-	repoURL    string
 	subDir     string
-	branch     string
 	fileGlob   string
 	scratchDir string
 }
 
-func NewGitSource(name, repoURL, subDir, branch, fileGlob, scratchDir string) *GitSource {
+func NewGitSource(name, subDir, fileGlob, scratchDir string) *GitSource {
 	return &GitSource{
 		name:       name,
-		repoURL:    repoURL,
 		subDir:     subDir,
-		branch:     branch,
 		fileGlob:   fileGlob,
 		scratchDir: scratchDir,
 	}
@@ -38,18 +34,10 @@ func (g *GitSource) Name() string { return g.name }
 
 func (g *GitSource) Fetch(ctx context.Context, blobs blob.Store, checkpoint string) (FetchResult, error) {
 	repoDir := filepath.Join(g.scratchDir, g.name)
-	log := slog.With("source", g.name, "repo", g.repoURL)
+	log := slog.With("source", g.name)
 
 	if _, err := os.Stat(filepath.Join(repoDir, ".git")); os.IsNotExist(err) {
-		log.Info("cloning repository")
-		if err := g.clone(ctx, repoDir); err != nil {
-			return FetchResult{}, fmt.Errorf("clone: %w", err)
-		}
-	} else {
-		log.Info("pulling repository")
-		if err := g.pull(ctx, repoDir); err != nil {
-			return FetchResult{}, fmt.Errorf("pull: %w", err)
-		}
+		return FetchResult{}, fmt.Errorf("repo not found at %s (git-mirror must sync first)", repoDir)
 	}
 
 	head, err := gitOutput(ctx, repoDir, "rev-parse", "HEAD")
@@ -112,21 +100,6 @@ func (g *GitSource) Fetch(ctx context.Context, blobs blob.Store, checkpoint stri
 		NewCheckpoint: head,
 		ItemCount:     len(keys),
 	}, nil
-}
-
-func (g *GitSource) clone(ctx context.Context, dir string) error {
-	args := []string{"clone", "--depth=1", "--single-branch", "--branch", g.branch, g.repoURL, dir}
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
-}
-
-func (g *GitSource) pull(ctx context.Context, dir string) error {
-	cmd := exec.CommandContext(ctx, "git", "-C", dir, "pull", "--ff-only")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
 }
 
 func (g *GitSource) listAllFiles(ctx context.Context, repoDir string) ([]string, error) {

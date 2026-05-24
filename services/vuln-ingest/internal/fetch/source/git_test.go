@@ -70,6 +70,19 @@ func addAndPush(t *testing.T, workDir string, files map[string]string, msg strin
 	return trimOutput(out)
 }
 
+// mirrorClone clones bare into scratch/name, simulating what git-mirror does.
+func mirrorClone(t *testing.T, bare, scratch, name string) {
+	t.Helper()
+	dst := filepath.Join(scratch, name)
+	run(t, "git", "clone", bare, dst)
+}
+
+// mirrorPull pulls latest into scratch/name.
+func mirrorPull(t *testing.T, scratch, name string) {
+	t.Helper()
+	run(t, "git", "-C", filepath.Join(scratch, name), "pull", "--ff-only")
+}
+
 func run(t *testing.T, name string, args ...string) {
 	t.Helper()
 	cmd := exec.Command(name, args...)
@@ -110,7 +123,8 @@ func TestGitSource_Bootstrap(t *testing.T) {
 
 	blobs := testBlobs(t)
 	scratch := t.TempDir()
-	gs := source.NewGitSource("testgh", bare, "advisories", "main", "*.json", scratch)
+	mirrorClone(t, bare, scratch, "testgh")
+	gs := source.NewGitSource("testgh", "advisories", "*.json", scratch)
 
 	result, err := gs.Fetch(context.Background(), blobs, "")
 	if err != nil {
@@ -158,7 +172,8 @@ func TestGitSource_IncrementalDiff(t *testing.T) {
 
 	blobs := testBlobs(t)
 	scratch := t.TempDir()
-	gs := source.NewGitSource("testrepo", bare, "data", "main", "*.json", scratch)
+	mirrorClone(t, bare, scratch, "testrepo")
+	gs := source.NewGitSource("testrepo", "data", "*.json", scratch)
 
 	// First fetch — bootstrap.
 	result1, err := gs.Fetch(context.Background(), blobs, "")
@@ -169,10 +184,11 @@ func TestGitSource_IncrementalDiff(t *testing.T) {
 		t.Errorf("checkpoint: got %q, want %q", result1.NewCheckpoint, sha1)
 	}
 
-	// Add a second file and push.
+	// Add a second file and push, then pull into mirror.
 	sha2 := addAndPush(t, work, map[string]string{
 		"data/CVE-0002.json": `{"id":"CVE-0002"}`,
 	}, "second")
+	mirrorPull(t, scratch, "testrepo")
 
 	// Second fetch — incremental.
 	result2, err := gs.Fetch(context.Background(), blobs, sha1)
@@ -208,9 +224,10 @@ func TestGitSource_NoChanges(t *testing.T) {
 
 	blobs := testBlobs(t)
 	scratch := t.TempDir()
-	gs := source.NewGitSource("nochg", bare, ".", "main", "*.json", scratch)
+	mirrorClone(t, bare, scratch, "nochg")
+	gs := source.NewGitSource("nochg", ".", "*.json", scratch)
 
-	// First fetch clones.
+	// First fetch.
 	_, err := gs.Fetch(context.Background(), blobs, "")
 	if err != nil {
 		t.Fatal(err)
@@ -243,7 +260,8 @@ func TestGitSource_GlobFiltering(t *testing.T) {
 
 	blobs := testBlobs(t)
 	scratch := t.TempDir()
-	gs := source.NewGitSource("yamlsrc", bare, "vulns", "main", "*.yaml", scratch)
+	mirrorClone(t, bare, scratch, "yamlsrc")
+	gs := source.NewGitSource("yamlsrc", "vulns", "*.yaml", scratch)
 
 	result, err := gs.Fetch(context.Background(), blobs, "")
 	if err != nil {
@@ -267,7 +285,8 @@ func TestGitSource_SubdirFiltering(t *testing.T) {
 
 	blobs := testBlobs(t)
 	scratch := t.TempDir()
-	gs := source.NewGitSource("subdir", bare, "advisories", "main", "*.json", scratch)
+	mirrorClone(t, bare, scratch, "subdir")
+	gs := source.NewGitSource("subdir", "advisories", "*.json", scratch)
 
 	result, err := gs.Fetch(context.Background(), blobs, "")
 	if err != nil {
