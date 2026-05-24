@@ -79,6 +79,18 @@ services:
       resolver:
         condition: service_started
 
+  # Git mirror — clones/pulls all git-based sources.
+  git-mirror:
+    build:
+      context: ../..
+      dockerfile: services/vuln-ingest/cmd/git-mirror/Containerfile
+    environment:
+      DATA_DIR: /data
+    volumes:
+      - vulndata:/data
+    profiles:
+      - tools
+
   # Fetch reconciler.
   fetcher:
     build:
@@ -92,7 +104,7 @@ services:
       RESOLVE_QUEUE: vuln-resolve
       GIT_SCRATCH_DIR: /data
     volumes:
-      - vulndata:/data
+      - vulndata:/data:ro
     depends_on:
       postgres:
         condition: service_healthy

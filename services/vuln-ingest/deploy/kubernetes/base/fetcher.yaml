@@ -60,6 +60,7 @@ spec:
           volumeMounts:
             - name: vulndata
               mountPath: /data
+              readOnly: true
           livenessProbe:
             httpGet:
               path: /healthz

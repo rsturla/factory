@@ -8,7 +8,7 @@ metadata:
     app.kubernetes.io/part-of: vuln-ingest
 spec:
   accessModes:
-    - ReadWriteOnce
+    - ReadWriteMany
   resources:
     requests:
       storage: 10Gi

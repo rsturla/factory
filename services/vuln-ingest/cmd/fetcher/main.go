@@ -88,20 +88,21 @@ func main() {
 
 func registerSources(rec *fetch.Reconciler, s store.Store, gitScratchDir string) {
 	gitSources := []struct {
-		name, url, subDir, branch, glob string
+		name, subDir, glob string
 	}{
-		{"cvelistv5", "https://github.com/CVEProject/cvelistV5.git", "cves", "main", "CVE-*.json"},
-		{"ghsa", "https://github.com/github/advisory-database.git", "advisories/github-reviewed", "main", "*.json"},
-		{"rustsec", "https://github.com/rustsec/advisory-db.git", ".", "osv", "*.json"},
-		{"govuln", "https://github.com/golang/vulndb.git", "data/osv", "master", "*.json"},
-		{"pypa", "https://github.com/pypa/advisory-database.git", "vulns", "main", "*.yaml"},
-		{"psf", "https://github.com/psf/advisory-database.git", "advisories", "main", "*.json"},
-		{"kernel", "https://git.kernel.org/pub/scm/linux/security/vulns.git", "cve/published", "master", "*.json"},
-		{"anchore-nvd-overrides", "https://github.com/anchore/nvd-data-overrides.git", "data", "main", "*.json"},
+		{"cvelistv5", "cves", "CVE-*.json"},
+		{"ghsa", "advisories/github-reviewed", "*.json"},
+		{"rustsec", ".", "*.json"},
+		{"govuln", "data/osv", "*.json"},
+		{"pypa", "vulns", "*.yaml"},
+		{"psf", "advisories", "*.json"},
+		{"kernel", "cve/published", "*.json"},
+		{"anchore-nvd-overrides", "data", "*.json"},
+		{"vendor-notes-debian", "data/CVE", "list"},
 	}
 
 	for _, gs := range gitSources {
-		rec.RegisterSource(source.NewGitSource(gs.name, gs.url, gs.subDir, gs.branch, gs.glob, gitScratchDir))
+		rec.RegisterSource(source.NewGitSource(gs.name, gs.subDir, gs.glob, gitScratchDir))
 	}
 
 	// REST/download sources.
@@ -109,9 +110,6 @@ func registerSources(rec *fetch.Reconciler, s store.Store, gitScratchDir string)
 	rec.RegisterSource(source.NewOSVSource(defaultOSVEcosystems()))
 	rec.RegisterSource(source.NewKEVSource(s))
 	rec.RegisterSource(source.NewEPSSSource(s))
-
-	// Vendor note sources.
-	rec.RegisterSource(source.NewDebianSource(s, gitScratchDir))
 }
 
 func defaultOSVEcosystems() []string {
