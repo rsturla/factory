@@ -41,9 +41,13 @@ type Store interface {
 	UpsertEPSSScores(ctx context.Context, scores []model.EPSSScore) error
 	GetEPSSScore(ctx context.Context, cveID string) (*model.EPSSScore, error)
 
+	UpsertVendorNotes(ctx context.Context, notes []model.VendorNote) error
+	GetVendorNotes(ctx context.Context, cveID string) ([]model.VendorNote, error)
+
 	// Enrichment diff helpers
 	GetAllEPSSScoreMap(ctx context.Context) (map[string]float32, error)
 	GetAllKEVIDs(ctx context.Context) (map[string]time.Time, error)
+	GetVendorNoteCVEIDs(ctx context.Context, vendor string) (map[string]time.Time, error)
 
 	// Health
 	Ping(ctx context.Context) error

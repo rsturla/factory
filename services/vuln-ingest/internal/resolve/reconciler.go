@@ -67,11 +67,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconciler.ProcessReques
 	}
 
 	// Enrichment sources handled before parser dispatch.
-	switch source {
-	case "kev":
+	switch {
+	case source == "kev":
 		return r.handleKEV(ctx, data, log)
-	case "epss":
+	case source == "epss":
 		return r.handleEPSS(ctx, data, log)
+	case strings.HasPrefix(source, "vendor-notes-"):
+		return r.handleVendorNotes(ctx, data, log)
 	}
 
 	p, ok := r.parsers[source]
@@ -141,6 +143,20 @@ func (r *Reconciler) handleEPSS(ctx context.Context, data []byte, log *slog.Logg
 	}
 
 	log.Info("upserted epss scores", "count", len(scores))
+	return reconciler.Completed(), nil
+}
+
+func (r *Reconciler) handleVendorNotes(ctx context.Context, data []byte, log *slog.Logger) (reconciler.ProcessResponse, error) {
+	notes, err := parser.ParseVendorNoteBatch(data)
+	if err != nil {
+		return reconciler.Reject(fmt.Sprintf("vendor notes parse: %v", err)), nil
+	}
+
+	if err := r.store.UpsertVendorNotes(ctx, notes); err != nil {
+		return reconciler.ProcessResponse{}, fmt.Errorf("upsert vendor notes: %w", err)
+	}
+
+	log.Info("upserted vendor notes", "count", len(notes))
 	return reconciler.Completed(), nil
 }
 

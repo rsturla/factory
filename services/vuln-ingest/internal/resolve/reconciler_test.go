@@ -112,6 +112,15 @@ func (m *mockStore) GetAllEPSSScoreMap(context.Context) (map[string]float32, err
 	return nil, nil
 }
 func (m *mockStore) GetAllKEVIDs(context.Context) (map[string]time.Time, error) { return nil, nil }
+func (m *mockStore) UpsertVendorNotes(_ context.Context, _ []model.VendorNote) error {
+	return nil
+}
+func (m *mockStore) GetVendorNotes(context.Context, string) ([]model.VendorNote, error) {
+	return nil, nil
+}
+func (m *mockStore) GetVendorNoteCVEIDs(context.Context, string) (map[string]time.Time, error) {
+	return nil, nil
+}
 func (m *mockStore) ListAffectedByPurl(context.Context, string, store.ListOpts) ([]*model.Vulnerability, error) {
 	return nil, nil
 }

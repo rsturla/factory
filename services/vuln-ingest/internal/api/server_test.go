@@ -192,6 +192,15 @@ func (m *mockStore) CountAffectedByPackage(_ context.Context, eco, pkg string) (
 func (m *mockStore) GetRelatedVulnerabilities(_ context.Context, _ string) ([]*model.Vulnerability, error) {
 	return nil, nil
 }
+func (m *mockStore) UpsertVendorNotes(_ context.Context, _ []model.VendorNote) error {
+	return nil
+}
+func (m *mockStore) GetVendorNotes(_ context.Context, _ string) ([]model.VendorNote, error) {
+	return nil, nil
+}
+func (m *mockStore) GetVendorNoteCVEIDs(_ context.Context, _ string) (map[string]time.Time, error) {
+	return nil, nil
+}
 
 func (m *mockStore) Ping(_ context.Context) error { return nil }
 func (m *mockStore) Close()                        {}

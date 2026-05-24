@@ -273,8 +273,9 @@ func (s *Server) getSourceStatus(w http.ResponseWriter, r *http.Request) {
 
 type vulnResponse struct {
 	*model.Vulnerability
-	KEV  *model.KEVEntry  `json:"kev,omitempty"`
-	EPSS *model.EPSSScore `json:"epss,omitempty"`
+	KEV         *model.KEVEntry     `json:"kev,omitempty"`
+	EPSS        *model.EPSSScore    `json:"epss,omitempty"`
+	VendorNotes []model.VendorNote  `json:"vendor_notes,omitempty"`
 }
 
 type vulnWithRelated struct {
@@ -301,6 +302,11 @@ func (s *Server) enrichVuln(ctx context.Context, v *model.Vulnerability) (vulnRe
 
 		epss, _ := s.store.GetEPSSScore(ctx, id)
 		resp.EPSS = epss
+
+		vendorNotes, _ := s.store.GetVendorNotes(ctx, id)
+		if len(vendorNotes) > 0 {
+			resp.VendorNotes = vendorNotes
+		}
 	}
 
 	return resp, nil

@@ -13,6 +13,7 @@ import (
 var defaultSources = []string{
 	"cvelistv5", "ghsa", "rustsec", "govuln", "pypa", "psf",
 	"kernel", "anchore-nvd-overrides", "osv", "nvd", "kev", "epss",
+	"vendor-notes-debian",
 }
 
 func main() {

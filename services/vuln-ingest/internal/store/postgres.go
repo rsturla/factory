@@ -720,3 +720,99 @@ func (s *PGStore) GetAllKEVIDs(ctx context.Context) (map[string]time.Time, error
 	}
 	return m, rows.Err()
 }
+
+// --- Vendor Notes ---
+
+const vendorNoteSubBatchSize = 500
+
+func (s *PGStore) UpsertVendorNotes(ctx context.Context, notes []model.VendorNote) error {
+	if len(notes) == 0 {
+		return nil
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	for i := 0; i < len(notes); i += vendorNoteSubBatchSize {
+		end := i + vendorNoteSubBatchSize
+		if end > len(notes) {
+			end = len(notes)
+		}
+		chunk := notes[i:end]
+
+		batch := &pgx.Batch{}
+		for _, n := range chunk {
+			contentJSON, err := json.Marshal(n.Content)
+			if err != nil {
+				return fmt.Errorf("marshal vendor note content for %s/%s: %w", n.CVEID, n.Vendor, err)
+			}
+
+			batch.Queue(`
+				INSERT INTO vendor_notes (cve_id, vendor, content, updated_at)
+				VALUES ($1, $2, $3, now())
+				ON CONFLICT (cve_id, vendor) DO UPDATE SET
+					content = EXCLUDED.content,
+					updated_at = now()
+			`, n.CVEID, n.Vendor, contentJSON)
+		}
+
+		br := tx.SendBatch(ctx, batch)
+		for range chunk {
+			if _, err := br.Exec(); err != nil {
+				br.Close() //nolint:errcheck
+				return fmt.Errorf("upsert vendor note: %w", err)
+			}
+		}
+		if err := br.Close(); err != nil {
+			return fmt.Errorf("close batch: %w", err)
+		}
+	}
+
+	return tx.Commit(ctx)
+}
+
+func (s *PGStore) GetVendorNotes(ctx context.Context, cveID string) ([]model.VendorNote, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT cve_id, vendor, content FROM vendor_notes WHERE cve_id = $1 ORDER BY vendor
+	`, cveID)
+	if err != nil {
+		return nil, fmt.Errorf("get vendor notes: %w", err)
+	}
+	defer rows.Close()
+
+	var result []model.VendorNote
+	for rows.Next() {
+		var n model.VendorNote
+		var contentJSON []byte
+		if err := rows.Scan(&n.CVEID, &n.Vendor, &contentJSON); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(contentJSON, &n.Content); err != nil {
+			return nil, fmt.Errorf("unmarshal vendor note content for %s/%s: %w", n.CVEID, n.Vendor, err)
+		}
+		result = append(result, n)
+	}
+	return result, rows.Err()
+}
+
+func (s *PGStore) GetVendorNoteCVEIDs(ctx context.Context, vendor string) (map[string]time.Time, error) {
+	rows, err := s.pool.Query(ctx, "SELECT cve_id, updated_at FROM vendor_notes WHERE vendor = $1", vendor)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	m := make(map[string]time.Time)
+	for rows.Next() {
+		var id string
+		var updatedAt time.Time
+		if err := rows.Scan(&id, &updatedAt); err != nil {
+			return nil, err
+		}
+		m[id] = updatedAt
+	}
+	return m, rows.Err()
+}
