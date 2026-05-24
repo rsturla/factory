@@ -109,6 +109,9 @@ func registerSources(rec *fetch.Reconciler, s store.Store, gitScratchDir string)
 	rec.RegisterSource(source.NewOSVSource(defaultOSVEcosystems()))
 	rec.RegisterSource(source.NewKEVSource(s))
 	rec.RegisterSource(source.NewEPSSSource(s))
+
+	// Vendor note sources.
+	rec.RegisterSource(source.NewDebianSource(s, gitScratchDir))
 }
 
 func defaultOSVEcosystems() []string {

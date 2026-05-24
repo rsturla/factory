@@ -73,3 +73,9 @@ type EPSSScore struct {
 	ModelVersion string     `json:"model_version,omitempty"`
 	ScoreDate    *time.Time `json:"score_date,omitempty"`
 }
+
+type VendorNote struct {
+	CVEID   string `json:"cve_id"`
+	Vendor  string `json:"vendor"`
+	Content any    `json:"content"`
+}
