@@ -20,7 +20,7 @@ spec:
             - name: RESOLVE_QUEUE
               value: vuln-resolve
             - name: GIT_SCRATCH_DIR
-              value: /scratch
+              value: /data
             - name: BLOB_BACKEND
               value: s3
             - name: BLOB_BUCKET
@@ -46,10 +46,3 @@ spec:
                   name: vuln-ingest-s3
                   key: prefix
                   optional: true
-          volumeMounts:
-            - name: git-scratch
-              mountPath: /scratch
-      volumes:
-        - name: git-scratch
-          emptyDir:
-            sizeLimit: 20Gi

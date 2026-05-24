@@ -13,6 +13,7 @@ resources:
   - receiver-resolve.yaml
   - dispatcher-fetch.yaml
   - dispatcher-resolve.yaml
+  - git-mirror.yaml
   - fetcher.yaml
   - resolver.yaml
   - api.yaml
@@ -31,4 +32,6 @@ images:
   - name: quay.io/hummingbird/vuln-ingest-api
     newTag: latest
   - name: quay.io/hummingbird/vuln-ingest-syncer
+    newTag: latest
+  - name: quay.io/hummingbird/vuln-ingest-git-mirror
     newTag: latest
