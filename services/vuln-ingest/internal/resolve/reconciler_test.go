@@ -332,8 +332,8 @@ func TestReconcile_UnchangedHash(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second reconcile error: %v", err)
 	}
-	if resp.Action != reconciler.ActionCompleted {
-		t.Fatalf("second reconcile: expected completed, got %s", resp.Action)
+	if resp.Action != reconciler.ActionConverged {
+		t.Fatalf("second reconcile: expected converged, got %s", resp.Action)
 	}
 	if len(s.vulns) != 0 {
 		t.Fatal("expected upsert to be skipped for unchanged hash")
