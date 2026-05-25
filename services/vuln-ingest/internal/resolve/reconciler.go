@@ -68,12 +68,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconciler.ProcessReques
 	}
 
 	// Enrichment sources handled before parser dispatch.
-	switch {
-	case source == "kev":
+	switch source {
+	case "kev":
 		return r.handleKEV(ctx, data, log)
-	case source == "epss":
+	case "epss":
 		return r.handleEPSS(ctx, data, log)
-	case source == "vendor-notes-debian":
+	case "vendor-notes-debian":
 		return r.handleDebianVendorNotes(ctx, data, log)
 	}
 
@@ -91,6 +91,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconciler.ProcessReques
 		return reconciler.Reject(fmt.Sprintf("parse error: %v", err)), nil
 	}
 
+	var upserted int
 	for i := range vulns {
 		v := &vulns[i]
 
@@ -113,9 +114,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconciler.ProcessReques
 			return reconciler.ProcessResponse{}, fmt.Errorf("upsert source record: %w", err)
 		}
 
+		upserted++
 		log.Info("upserted", "vuln", v.ID)
 	}
 
+	if upserted == 0 {
+		return reconciler.Converged(), nil
+	}
 	return reconciler.Completed(), nil
 }
 
@@ -184,9 +189,13 @@ func (r *Reconciler) handleDebianVendorNotes(ctx context.Context, data []byte, l
 	}
 
 	if err := r.saveHashMap(ctx, debianHashKey, newHashes); err != nil {
-		log.Warn("failed to save content hashes", "error", err)
+		return reconciler.ProcessResponse{}, fmt.Errorf("save content hashes: %w", err)
 	}
 
+	if len(changed) == 0 {
+		log.Info("debian vendor notes converged", "total", len(entries))
+		return reconciler.Converged(), nil
+	}
 	log.Info("upserted debian vendor notes", "changed", len(changed), "total", len(entries))
 	return reconciler.Completed(), nil
 }
